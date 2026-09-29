@@ -25,7 +25,7 @@ export function LyfeOnboardingPage(): JSX.Element {
   const [results, setResults] = useState<DrChronoPatientSummary[]>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | undefined>(undefined);
   const [tab, setTab] = useState<string | null>('search');
 
   useEffect(() => {

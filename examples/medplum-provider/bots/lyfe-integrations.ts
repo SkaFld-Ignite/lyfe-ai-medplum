@@ -53,6 +53,7 @@ import {
   readCredentialRecord,
   writeCredentialRecord,
 } from './shared/credentials';
+import { resolveCallerOrganization } from './shared/tenant.ts';
 
 /** Fallback DrChrono API base, matching lyfe-provider-ui's DRCHRONO_API. */
 const DRCHRONO_API_URL = 'https://app.drchrono.com/api';
