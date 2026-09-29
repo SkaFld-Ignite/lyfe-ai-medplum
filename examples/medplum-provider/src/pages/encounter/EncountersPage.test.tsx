@@ -11,6 +11,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { LYFE_SOURCE_TAG_SYSTEM } from '../../utils/data-source';
 import { EncountersPage } from './EncountersPage';
 
 const QUERY = '?_count=20&_fields=_lastUpdated,period,status,serviceType&_sort=-_lastUpdated';
@@ -38,6 +39,7 @@ describe('EncountersPage', () => {
   async function createVisit(subject: WithId<Patient>, props?: Partial<Encounter>): Promise<WithId<Encounter>> {
     return medplum.createResource<Encounter>({
       resourceType: 'Encounter',
+      meta: { tag: [{ system: LYFE_SOURCE_TAG_SYSTEM, code: 'drchrono' }] },
       status: 'in-progress',
       class: { code: 'AMB', display: 'Ambulatory' },
       type: [{ text: 'Office Visit' }],
@@ -91,6 +93,23 @@ describe('EncountersPage', () => {
 
     expect(await screen.findByText('Office Visit')).toBeInTheDocument();
     expect(screen.queryByText('Telehealth Visit')).not.toBeInTheDocument();
+  });
+
+  test('Lists only DrChrono visits', async () => {
+    await createVisit(patient, { type: [{ text: 'Office Visit' }] });
+    // An old Lyfe booking synced through Zus, and a visit with no source tag.
+    await createVisit(patient, {
+      type: [{ text: 'Lyfe booking' }],
+      meta: { tag: [{ system: LYFE_SOURCE_TAG_SYSTEM, code: 'zus' }] },
+      identifier: [{ system: 'https://lyfeco.ai/appointments', value: 'a1' }],
+    });
+    await createVisit(patient, { type: [{ text: 'Untagged visit' }], meta: undefined });
+    // A _tag in the URL cannot widen the list.
+    renderAt(`/Patient/${patient.id}/Encounter${QUERY}&_tag=${encodeURIComponent(`${LYFE_SOURCE_TAG_SYSTEM}|zus`)}`);
+
+    expect(await screen.findByText('Office Visit')).toBeInTheDocument();
+    expect(screen.queryByText('Lyfe booking')).not.toBeInTheDocument();
+    expect(screen.queryByText('Untagged visit')).not.toBeInTheDocument();
   });
 
   test('Shows the encounter chart as the detail pane for the selected encounter', async () => {

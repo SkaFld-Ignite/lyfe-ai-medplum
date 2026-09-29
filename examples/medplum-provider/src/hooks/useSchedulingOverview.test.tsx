@@ -6,6 +6,7 @@ import { MedplumProvider } from '@medplum/react';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { JSX, ReactNode } from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { DRCHRONO_SOURCE_TAG, LYFE_SOURCE_TAG_SYSTEM } from '../utils/data-source';
 import {
   fetchOverviewBundle,
   OVERVIEW_MAX_PAGES,
@@ -25,6 +26,7 @@ function at(dayOffset: number, hour: number, minute = 0): Date {
 function makeAppointment(start: Date, minutes: number, status: Appointment['status'] = 'booked'): Appointment {
   return {
     resourceType: 'Appointment',
+    meta: { tag: [{ system: LYFE_SOURCE_TAG_SYSTEM, code: 'drchrono' }] },
     status,
     start: start.toISOString(),
     end: new Date(start.getTime() + minutes * 60_000).toISOString(),
@@ -52,6 +54,12 @@ describe('useSchedulingOverview', () => {
     await medplum.createResource(makeAppointment(at(0, 12), 15, 'entered-in-error'));
     // Outside the requested range
     await medplum.createResource(makeAppointment(at(20, 9), 30));
+    // Not from DrChrono
+    await medplum.createResource({
+      ...makeAppointment(at(0, 10), 30),
+      meta: { tag: [{ system: LYFE_SOURCE_TAG_SYSTEM, code: 'zus' }] },
+    });
+    await medplum.createResource({ ...makeAppointment(at(0, 13), 30), meta: undefined });
   });
 
   test('does nothing until the calendar reports a range', () => {
@@ -69,7 +77,8 @@ describe('useSchedulingOverview', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     const rows = result.current.appointments;
-    // Entered-in-error is excluded by the query; cancelled is kept so the page can toggle it.
+    // Entered-in-error and non-DrChrono appointments are excluded by the query; cancelled is kept
+    // so the page can toggle it.
     expect(rows.map((r) => r.appointment.status)).toEqual(['booked', 'cancelled', 'booked']);
     expect(rows[0].patient?.name).toBe('Homer Simpson');
     expect(rows[0].providerName).toBe('Alice Smith');
@@ -160,7 +169,7 @@ describe('fetchOverviewBundle', () => {
     expect(truncated).toBe(true);
   });
 
-  test('queries the range, excludes entered-in-error and includes related resources', async () => {
+  test('queries the range and DrChrono tag, excludes entered-in-error and includes related resources', async () => {
     const medplum = new MockClient();
     const search = vi
       .spyOn(medplum, 'search')
@@ -171,6 +180,7 @@ describe('fetchOverviewBundle', () => {
     const params = search.mock.calls[0][1] as URLSearchParams;
     expect(params.getAll('date')).toEqual([`ge${week.start.toISOString()}`, `lt${week.end.toISOString()}`]);
     expect(params.get('status:not')).toBe('entered-in-error');
+    expect(params.get('_tag')).toBe(DRCHRONO_SOURCE_TAG);
     expect(params.getAll('_include')).toEqual([
       'Appointment:patient',
       'Appointment:practitioner',

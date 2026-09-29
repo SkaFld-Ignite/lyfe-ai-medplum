@@ -6,6 +6,7 @@ import type { Bundle, BundleEntry } from '@medplum/fhirtypes';
 import { useMedplum } from '@medplum/react';
 import type { DateTimeRange } from '@medplum/react-scheduling';
 import { useCallback, useEffect, useState } from 'react';
+import { DRCHRONO_SOURCE_TAG } from '../utils/data-source';
 import type { OverviewAppointment } from '../utils/scheduling-overview';
 import { addDays, buildOverviewAppointments, startOfDay } from '../utils/scheduling-overview';
 
@@ -23,10 +24,12 @@ export interface SchedulingOverviewResult {
   reload: () => void;
 }
 
+// Only DrChrono appointments are shown; other sources (e.g. Zus) are excluded by the server.
 function rangeParams(start: Date, end: Date): string[][] {
   return [
     ['date', `ge${start.toISOString()}`],
     ['date', `lt${end.toISOString()}`],
+    ['_tag', DRCHRONO_SOURCE_TAG],
   ];
 }
 
