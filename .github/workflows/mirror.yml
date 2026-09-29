@@ -1,0 +1,171 @@
+# Mirror this repository to the paired tenant.
+#
+# Topology: exactly one of the two repositories is upstream at any time. This
+# workflow runs in BOTH, and each copy decides at run time whether it is the
+# upstream by comparing itself to the UPSTREAM_REPOSITORY variable. Only the
+# upstream pushes; on the mirror this job exits immediately.
+#
+# That indirection is the point. Flipping which side is authoritative is then a
+# variable change on two repositories, not a code edit — and because both
+# copies read the same variable, there is no window in which both believe they
+# are upstream and push over each other.
+#
+# The downstream copy is force-updated on every sync, so a commit authored
+# there is destroyed on the next run. That is intended: it is what keeps the
+# two from diverging.
+#
+# Required on BOTH repositories:
+#   vars.UPSTREAM_REPOSITORY   owner/name of whichever side is authoritative
+#   vars.MIRROR_REPOSITORY     owner/name of the other side
+#   secrets.MIRROR_REPO_URL    git@github.com:<other>.git, or https://github.com/<other>.git
+#
+# Plus ONE of these, matching the URL scheme above:
+#   secrets.MIRROR_SSH_KEY     deploy key with write access on the destination
+#   secrets.MIRROR_TOKEN       PAT with contents:write on the destination
+#
+# Both are supported because organizations can disable deploy keys by policy —
+# Lyfe-AI does — in which case a token is the only route.
+#
+# Copied from SkaFld-Ignite/lyfe-provider-ui, which mirrors to Lyfe-AI the same
+# way. To flip direction, follow step 8 of infra/docs/MIGRATION-RUNBOOK.md in
+# that repository.
+
+name: Mirror to paired tenant
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+  # Hourly catch-up, so a transient push failure self-heals rather than
+  # leaving the mirror silently stale.
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  # A --mirror push is not safe to overlap with another.
+  group: mirror-sync
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    # Only the upstream pushes. On the downstream copy, and on any fork, this
+    # is false and the job is skipped.
+    if: github.repository == vars.UPSTREAM_REPOSITORY
+
+    steps:
+      - name: Verify direction is configured coherently
+        env:
+          UPSTREAM: ${{ vars.UPSTREAM_REPOSITORY }}
+          MIRROR: ${{ vars.MIRROR_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$UPSTREAM" || -z "$MIRROR" ]]; then
+            echo "::error::UPSTREAM_REPOSITORY and MIRROR_REPOSITORY must both be set."
+            exit 1
+          fi
+          if [[ "$UPSTREAM" == "$MIRROR" ]]; then
+            echo "::error::UPSTREAM_REPOSITORY and MIRROR_REPOSITORY are identical ($UPSTREAM)."
+            exit 1
+          fi
+          echo "Mirroring $UPSTREAM -> $MIRROR"
+
+      - name: Configure SSH, when mirroring over SSH
+        env:
+          MIRROR_REPO_URL: ${{ secrets.MIRROR_REPO_URL }}
+          MIRROR_SSH_KEY: ${{ secrets.MIRROR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          # The branch is decided here rather than in a step-level `if`:
+          # the `secrets` context is not available in step conditions.
+          if [[ "$MIRROR_REPO_URL" != git@* ]]; then
+            echo "HTTPS remote; skipping SSH setup."
+            exit 0
+          fi
+          if [[ -z "$MIRROR_SSH_KEY" ]]; then
+            echo "::error::MIRROR_REPO_URL is an SSH URL but MIRROR_SSH_KEY is unset."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$MIRROR_SSH_KEY" > ~/.ssh/mirror_key
+          chmod 600 ~/.ssh/mirror_key
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+          printf 'Host github.com\n  IdentityFile ~/.ssh/mirror_key\n  IdentitiesOnly yes\n' > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Clone the upstream as a bare mirror
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Deliberately NOT actions/checkout. A working-tree checkout has one
+          # branch checked out, and `git fetch '+refs/heads/*:refs/heads/*'`
+          # then refuses to write that ref ("refusing to fetch into branch
+          # ... checked out at"). The local clone ends up holding only the
+          # checked-out branch, and the --prune below reads every OTHER branch
+          # as deleted upstream and removes it from the mirror.
+          #
+          # This is not hypothetical: run 35290493523 deleted two branches from
+          # Lyfe-AI/lyfe-provider-ui and attempted to delete main, which
+          # survived only because GitHub refuses to delete a default branch.
+          #
+          # A bare mirror clone holds every ref by construction, so prune has
+          # the correct picture.
+          git clone --mirror \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            upstream.git
+
+      - name: Push mirror
+        working-directory: upstream.git
+        env:
+          MIRROR_REPO_URL: ${{ secrets.MIRROR_REPO_URL }}
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          target="$MIRROR_REPO_URL"
+          if [[ "$target" == https://* ]]; then
+            if [[ -z "$MIRROR_TOKEN" ]]; then
+              echo "::error::MIRROR_REPO_URL is an HTTPS URL but MIRROR_TOKEN is unset."
+              exit 1
+            fi
+            # Inject credentials at push time only. Written into the argument
+            # rather than into .git/config so the token never lands on disk.
+            target="https://x-access-token:${MIRROR_TOKEN}@${MIRROR_REPO_URL#https://}"
+          fi
+
+          # Explicit refspecs rather than --mirror. --mirror pushes EVERY ref
+          # under refs/, which on a GitHub clone includes the synthetic
+          # refs/pull/*/head that the remote always rejects as hidden refs:
+          # branches and tags land, git still exits non-zero, and the job fails
+          # on every run. Verified against this repository — 5 pull refs
+          # rejected, exit 1, while all 3 branches and the tag pushed fine.
+          #
+          # --prune deletes refs on the mirror that no longer exist upstream,
+          # which is the part of --mirror worth keeping.
+          if ! git push --force --prune "$target" \
+                 'refs/heads/*:refs/heads/*' \
+                 'refs/tags/*:refs/tags/*' >/tmp/push.log 2>&1; then
+            grep -v '^remote:' /tmp/push.log || true
+            echo "::error::Mirror push to $MIRROR_REPO_URL failed."
+            exit 1
+          fi
+          grep -v '^remote:' /tmp/push.log || true
+
+      - name: Report mirror state
+        if: always()
+        working-directory: upstream.git
+        env:
+          UPSTREAM: ${{ vars.UPSTREAM_REPOSITORY }}
+          MIRROR: ${{ vars.MIRROR_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Mirror sync"
+            echo ""
+            echo "- Direction: \`$UPSTREAM\` -> \`$MIRROR\`"
+            echo "- Upstream commit: \`$(git rev-parse HEAD)\`"
+            echo "- Branches: $(git for-each-ref --format='%(refname:short)' refs/heads | wc -l | tr -d ' ')"
+            echo "- Tags: $(git tag | wc -l | tr -d ' ')"
+          } >> "$GITHUB_STEP_SUMMARY"
