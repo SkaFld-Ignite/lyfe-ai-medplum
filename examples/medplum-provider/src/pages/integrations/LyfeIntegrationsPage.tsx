@@ -174,6 +174,8 @@ function StatusBadge(props: StatusBadgeProps): JSX.Element {
 interface ConfigRowProps {
   readonly label: string;
   readonly value?: string;
+  /** Shown, marked as unsaved, when nothing is stored for this setting. */
+  readonly fallback?: string;
 }
 
 /**
@@ -182,15 +184,26 @@ interface ConfigRowProps {
  * @param props - Component props.
  * @param props.label - The setting's display name.
  * @param props.value - The configured value, if any.
+ * @param props.fallback - Computed default shown when nothing is stored.
  * @returns The label/value pair.
  */
 function ConfigRow(props: ConfigRowProps): JSX.Element {
+  const saved = props.value !== undefined && props.value !== '';
   return (
-    <Box style={{ minWidth: 0 }}>
-      <Text style={MICRO_LABEL}>{props.label.toUpperCase()}</Text>
-      <Text size="sm" c={props.value ? 'gray.8' : 'gray.4'} style={{ wordBreak: 'break-all' }}>
-        {props.value ?? 'Not set'}
+    <Box>
+      <Text style={MICRO_LABEL}>{props.label}</Text>
+      <Text size="sm" c={saved ? 'gray.8' : 'gray.5'} style={{ wordBreak: 'break-all' }}>
+        {saved ? props.value : (props.fallback ?? 'Not set')}
       </Text>
+      {/* A value the page computed but has never persisted is not the same as a
+          configured one — the bot reads only what is stored, so Connect fails
+          until it is saved. Saying "Not set" beside a filled-in modal field read
+          as a bug; this says which state it is actually in. */}
+      {!saved && props.fallback && (
+        <Text fz={11} c="orange.7">
+          default — not saved yet
+        </Text>
+      )}
     </Box>
   );
 }
@@ -316,7 +329,12 @@ function IntegrationCard(props: IntegrationCardProps): JSX.Element {
               React — which is exactly what password managers and browser autofill
               do. Reading `.value` off it then crashes the whole page. */}
               {definition.configFields.map((field) => (
-                <ConfigRow key={field.key} label={field.label} value={status.config[field.key]} />
+                <ConfigRow
+                  key={field.key}
+                  label={field.label}
+                  value={status.config[field.key]}
+                  fallback={field.defaultValue?.()}
+                />
               ))}
             </SimpleGrid>
 
