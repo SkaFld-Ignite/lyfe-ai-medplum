@@ -48,6 +48,7 @@ export function PatientSearchPage(): JSX.Element {
     <Paper shadow="xs" m="md" p="xs">
       <SearchControl
         checkboxesEnabled={true}
+        hideFilters
         search={search}
         onClick={(e) =>
           navigate(`/Patient/${patient.id}/${e.resource.resourceType}/${e.resource.id}`)?.catch(console.error)

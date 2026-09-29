@@ -118,8 +118,8 @@ export const EncounterHeader = (props: EncounterHeaderProps): JSX.Element => {
   return (
     <>
       <Paper shadow="sm" p={0}>
-        <Flex justify="space-between" align="center" gap="lg" p="lg">
-          <Stack gap={0} flex={1} miw={0} maw="40rem">
+        <Flex justify="space-between" align="center" gap="sm" columnGap="lg" p="lg" wrap="wrap">
+          <Stack gap={0} flex="1 1 16rem" miw={0} maw="40rem">
             <Text fw={800} size="lg">
               {encounter.type?.[0]?.text || 'Visit'}
             </Text>
@@ -127,7 +127,7 @@ export const EncounterHeader = (props: EncounterHeaderProps): JSX.Element => {
               {encounterDetail}
             </Text>
           </Stack>
-          <Group wrap="nowrap" flex="0 0 auto">
+          <Group gap="sm" wrap="wrap">
             <Button
               variant="light"
               color="blue"

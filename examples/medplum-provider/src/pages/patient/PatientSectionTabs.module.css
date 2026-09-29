@@ -2,7 +2,7 @@
 .bar {
   display: flex;
   align-items: center;
-  gap: var(--mantine-spacing-sm);
+  gap: 6px;
   padding: 8px var(--mantine-spacing-sm);
   background-color: var(--mantine-color-body);
   border-bottom: 1px solid var(--app-shell-border-color);
@@ -22,6 +22,19 @@
 .scroll {
   flex: 1;
   min-width: 0;
+}
+
+/* Fade the edge that has more tabs beyond it. */
+.scroll[data-fade-start] {
+  mask-image: linear-gradient(to right, transparent, #000 28px);
+}
+
+.scroll[data-fade-end] {
+  mask-image: linear-gradient(to left, transparent, #000 28px);
+}
+
+.scroll[data-fade-start][data-fade-end] {
+  mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
 }
 
 .list {

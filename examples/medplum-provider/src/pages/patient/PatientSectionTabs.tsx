@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Anchor, ScrollArea, Tabs, Text } from '@mantine/core';
+import { ActionIcon, Anchor, ScrollArea, Tabs, Text } from '@mantine/core';
 import type { Icon } from '@tabler/icons-react';
 import {
   IconChecklist,
+  IconChevronLeft,
+  IconChevronRight,
   IconDeviceWatch,
   IconDownload,
   IconFileText,
@@ -18,6 +20,7 @@ import {
   IconUserEdit,
 } from '@tabler/icons-react';
 import type { JSX, MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import classes from './PatientSectionTabs.module.css';
 
@@ -51,6 +54,9 @@ const TAB_ICONS: Record<string, Icon> = {
   export: IconDownload,
 };
 
+/** Share of the visible width scrolled by the arrow buttons. */
+const SCROLL_STEP = 0.7;
+
 function tabPath(value: string): string {
   return value.split(/[?#]/)[0].toLowerCase();
 }
@@ -70,6 +76,40 @@ export function PatientSectionTabs(props: PatientSectionTabsProps): JSX.Element 
   const segment = pathname.slice(baseUrl.length).split('/').find(Boolean)?.toLowerCase();
   const active = tabs.find((t) => segment !== undefined && tabPath(t.value) === segment) ?? tabs[0];
 
+  // Which edges have more tabs beyond them; drives the edge fades and arrow buttons.
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState({ start: false, end: false });
+  const measure = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) {
+      return;
+    }
+    const start = el.scrollLeft > 1;
+    const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setOverflow((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+  }, []);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measure]);
+
+  // Keep the selected tab fully visible, e.g. after opening Messages from a link.
+  const activeValue = active?.value;
+  useEffect(() => {
+    viewportRef.current?.querySelector('[data-active]')?.scrollIntoView?.({ block: 'nearest', inline: 'center' });
+  }, [activeValue]);
+
+  function scrollBy(direction: 1 | -1): void {
+    const el = viewportRef.current;
+    el?.scrollBy({ left: direction * el.clientWidth * SCROLL_STEP, behavior: 'smooth' });
+  }
+
   function onChange(value: string | null): void {
     navigate(`${baseUrl}/${value || tabs[0].value}`)?.catch(console.error);
   }
@@ -86,8 +126,20 @@ export function PatientSectionTabs(props: PatientSectionTabsProps): JSX.Element 
       <Text className={classes.heading} aria-hidden>
         Patient Details
       </Text>
-      <ScrollArea type="scroll" scrollbarSize={4} className={classes.scroll}>
-        <Tabs value={active?.value} onChange={onChange} variant="unstyled">
+      {overflow.start && (
+        <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Scroll tabs left" onClick={() => scrollBy(-1)}>
+          <IconChevronLeft size={16} />
+        </ActionIcon>
+      )}
+      <ScrollArea
+        type="never"
+        viewportRef={viewportRef}
+        onScrollPositionChange={measure}
+        className={classes.scroll}
+        data-fade-start={overflow.start || undefined}
+        data-fade-end={overflow.end || undefined}
+      >
+        <Tabs value={activeValue} onChange={onChange} variant="unstyled">
           <Tabs.List className={classes.list} aria-label="Patient details">
             {tabs.map((t) => {
               const TabIcon = TAB_ICONS[t.id] ?? IconLayoutList;
@@ -107,6 +159,11 @@ export function PatientSectionTabs(props: PatientSectionTabsProps): JSX.Element 
           </Tabs.List>
         </Tabs>
       </ScrollArea>
+      {overflow.end && (
+        <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Scroll tabs right" onClick={() => scrollBy(1)}>
+          <IconChevronRight size={16} />
+        </ActionIcon>
+      )}
     </div>
   );
 }

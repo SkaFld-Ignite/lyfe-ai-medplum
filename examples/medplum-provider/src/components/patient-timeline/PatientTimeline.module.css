@@ -215,8 +215,10 @@
   letter-spacing: 0.1em;
 }
 
-.cardFooter {
-  border-top: 1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-5));
+.visitWhen {
+  flex-shrink: 0;
+  padding-top: 1px;
+  white-space: nowrap;
 }
 
 .expanded {

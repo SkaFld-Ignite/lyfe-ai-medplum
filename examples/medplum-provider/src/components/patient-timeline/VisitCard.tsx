@@ -93,18 +93,15 @@ export function VisitCard(props: VisitCardProps): JSX.Element {
             </Group>
           )}
         </Stack>
-      </UnstyledButton>
-
-      <Group justify="flex-end" px="md" py={6} className={classes.cardFooter}>
-        <Stack gap={0} align="flex-end">
+        <Stack gap={0} align="flex-end" className={classes.visitWhen}>
           <Text size="xs" fw={600} className={classes.tabular}>
-            {formatMediumDate(visit.date)}
-          </Text>
-          <Text size="xs" c="dimmed" className={classes.tabular}>
             {formatShortTime(visit.date)}
           </Text>
+          <Text size="xs" c="dimmed" className={classes.tabular}>
+            {formatMediumDate(visit.date)}
+          </Text>
         </Stack>
-      </Group>
+      </UnstyledButton>
 
       {expanded && (
         <Stack gap="sm" px="md" pb="md" pt="sm" className={classes.expanded}>
