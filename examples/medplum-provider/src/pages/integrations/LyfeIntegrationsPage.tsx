@@ -51,7 +51,7 @@ import {
   testIntegration,
 } from '../../services/integrations';
 import { showErrorNotification, showSuccessNotification } from '../../utils/notifications';
-import { DrChronoScopePicker } from './DrChronoScopePicker';
+import { DEFAULT_DRCHRONO_SCOPES, DrChronoScopePicker } from './DrChronoScopePicker';
 
 /** Uppercase micro-label, matching the Lyfe roster's filter labels. */
 const MICRO_LABEL = {
@@ -170,6 +170,32 @@ function StatusBadge(props: StatusBadgeProps): JSX.Element {
       {display.label}
     </Badge>
   );
+}
+
+/**
+ * Whether the clinic's chosen DrChrono scopes differ from the ones its current
+ * token was actually granted.
+ *
+ * Compared as sets: a save reorders nothing, but hand-editing or a future
+ * default change could, and order carries no meaning to DrChrono.
+ *
+ * Derived from STORED values, never from the modal's edit state, so the warning
+ * survives a reload and stays until the grant is actually refreshed — which is
+ * the whole point. A banner that vanishes on close would let someone change
+ * permissions, see nothing happen, and assume it took effect.
+ * @param status - The integration row from the backend.
+ * @returns True when a Reconnect is needed for the selection to take effect.
+ */
+function needsReconnectForScopes(status: IntegrationStatus): boolean {
+  const granted = (status.config.grantedScopes ?? '').split(/[\s,]+/).filter(Boolean);
+  if (granted.length === 0) {
+    return false; // never connected, or connected before scopes were tracked
+  }
+  const selected = (status.config.scopes ?? '').split(/[\s,]+/).filter(Boolean);
+  const effective = selected.length > 0 ? selected : DEFAULT_DRCHRONO_SCOPES;
+  const a = new Set(effective);
+  const b = new Set(granted);
+  return a.size !== b.size || [...a].some((scope) => !b.has(scope));
 }
 
 interface ConfigRowProps {
@@ -343,6 +369,18 @@ function IntegrationCard(props: IntegrationCardProps): JSX.Element {
             </Stack>
           </Stack>
         </Box>
+
+        {needsReconnectForScopes(status) && (
+          <Alert variant="light" color="yellow" radius="md" icon={<IconAlertTriangle size={16} />}>
+            <Text size="sm" fw={500}>
+              Permissions changed — reconnect required
+            </Text>
+            <Text size="xs" c="gray.6" style={{ lineHeight: 1.5 }}>
+              The saved permissions no longer match what this connection was granted. The existing credentials keep
+              working with the old permissions until you reconnect.
+            </Text>
+          </Alert>
+        )}
 
         {props.result && (
           <Alert
