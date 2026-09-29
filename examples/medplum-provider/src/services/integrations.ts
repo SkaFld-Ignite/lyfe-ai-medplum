@@ -258,3 +258,73 @@ export async function testIntegration(medplum: MedplumClient, id: IntegrationId)
     status: record ? parseStatus(id, record) : undefined,
   };
 }
+
+/**
+ * The path this app serves as DrChrono's OAuth redirect URI.
+ *
+ * Exported so the settings screen can show the operator the exact value to
+ * register with DrChrono. A redirect URI that differs by so much as a trailing
+ * slash is rejected at the token exchange with an error that reads like a bad
+ * authorization code, so guessing it is expensive.
+ */
+export const DRCHRONO_CALLBACK_PATH = '/integrations/drchrono/callback';
+
+/**
+ * Build the absolute redirect URI for this deployment.
+ * @returns The URL to register with DrChrono and store as `redirectUri`.
+ */
+export function getDrChronoRedirectUri(): string {
+  return `${window.location.origin}${DRCHRONO_CALLBACK_PATH}`;
+}
+
+/**
+ * Ask the backend to start a DrChrono authorization.
+ *
+ * The URL is built server-side because only the bot can read the clinic's
+ * client id, and because the `state` nonce it embeds has to be recorded against
+ * the clinic to be worth checking on the way back.
+ * @param medplum - The Medplum client.
+ * @returns The absolute DrChrono consent URL to navigate to.
+ * @throws IntegrationsBackendUnavailableError When the bot is not deployed or did not answer.
+ */
+export async function startDrChronoAuthorization(medplum: MedplumClient): Promise<string> {
+  const body = await executeIntegrationsBot(medplum, { action: 'authorizeUrl', integration: 'drchrono' });
+  const url = body.authorizeUrl;
+  if (body.ok === false || typeof url !== 'string' || url === '') {
+    throw new Error(typeof body.message === 'string' ? body.message : 'Could not start the DrChrono connection.');
+  }
+  return url;
+}
+
+/**
+ * Hand the authorization code back to the backend to be exchanged for tokens.
+ *
+ * The `code` is deliberately never inspected here: it is a credential, and the
+ * browser's only job is to carry it from the redirect to the bot.
+ * @param medplum - The Medplum client.
+ * @param input - The query parameters DrChrono put on the redirect.
+ * @param input.code - The authorization code.
+ * @param input.state - The state nonce to be verified server-side.
+ * @returns Whether the exchange succeeded, with the backend's message and refreshed status.
+ * @throws IntegrationsBackendUnavailableError When the bot is not deployed or did not answer.
+ */
+export async function completeDrChronoAuthorization(
+  medplum: MedplumClient,
+  input: { readonly code: string; readonly state: string }
+): Promise<IntegrationActionResult> {
+  const body = await executeIntegrationsBot(medplum, {
+    action: 'exchangeCode',
+    integration: 'drchrono',
+    code: input.code,
+    state: input.state,
+  });
+
+  const record = pickStatusRecord('drchrono', body);
+  const ok = body.ok !== false;
+  const fallbackMessage = ok ? 'DrChrono connected.' : 'Could not connect to DrChrono.';
+  return {
+    ok,
+    message: typeof body.message === 'string' ? body.message : fallbackMessage,
+    status: record ? parseStatus('drchrono', record) : undefined,
+  };
+}

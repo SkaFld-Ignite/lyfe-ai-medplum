@@ -35,6 +35,7 @@ import { FaxPage } from './pages/fax/FaxPage';
 import { GetStartedPage } from './pages/getstarted/GetStartedPage';
 import { DoseSpotFavoritesPage } from './pages/integrations/DoseSpotFavoritesPage';
 import { DoseSpotNotificationsPage } from './pages/integrations/DoseSpotNotificationsPage';
+import { DrChronoCallbackPage } from './pages/integrations/DrChronoCallbackPage';
 import { LyfeIntegrationsPage } from './pages/integrations/LyfeIntegrationsPage';
 import { ScriptSurePage } from './pages/integrations/ScriptSurePage';
 import { MessagesPage } from './pages/messages/MessagesPage';
@@ -316,6 +317,9 @@ export function App(): JSX.Element | null {
               {/* The Lyfe per-clinic integrations settings page replaces the stock
                   marketing-style directory. `IntegrationsPage` is left in place, unrouted. */}
               <Route path="/integrations" element={<LyfeIntegrationsPage />} />
+              {/* DrChrono's OAuth redirect target. A Medplum bot cannot serve one,
+                  so the SPA lands the grant and hands the code to the bot. */}
+              <Route path="/integrations/drchrono/callback" element={<DrChronoCallbackPage />} />
               {/* Must precede the /:resourceType catch-alls below */}
               {hasBilling && <Route path="/Settings/Billing/*" element={<BillingSetupPage />} />}
               <Route path="/smart-health-link" element={<SmartHealthLinkImportPage />} />

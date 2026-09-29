@@ -331,6 +331,7 @@ function assertKnownField(props: { integration: IntegrationKey; name: string; ki
  * @param props.secrets - Secret fields to encrypt and merge in.
  * @param props.state - Bot-written state to merge in.
  * @param props.clear - Field names to remove outright, config or secret.
+ * @param props.clearState - State field names to remove outright.
  * @param props.key - The 32-byte AES key.
  * @returns The saved record.
  */
@@ -342,6 +343,7 @@ export async function writeCredentialRecord(props: {
   secrets?: Record<string, string>;
   state?: Record<string, string>;
   clear?: string[];
+  clearState?: string[];
   key: Buffer;
 }): Promise<Basic> {
   const existing = await readCredentialRecord({
@@ -395,6 +397,14 @@ export async function writeCredentialRecord(props: {
   for (const name of props.clear ?? []) {
     merged.delete(`${CONFIG_PREFIX}${name}`);
     merged.delete(`${SECRET_PREFIX}${name}`);
+  }
+
+  // Separate from `clear` on purpose. State is bot-written bookkeeping, not
+  // something a caller names, and the OAuth nonce has to be consumable in the
+  // same write that stores the tokens — a single-use value that survives its
+  // own redemption is not single-use.
+  for (const name of props.clearState ?? []) {
+    merged.delete(`${STATE_PREFIX}${name}`);
   }
 
   const extension: Extension[] = [...merged.entries()]

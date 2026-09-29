@@ -23,6 +23,7 @@ import {
   IconAlertTriangle,
   IconCircleCheck,
   IconCircleOff,
+  IconLink,
   IconLock,
   IconNetwork,
   IconPlugConnected,
@@ -41,9 +42,12 @@ import type {
   IntegrationsSnapshot,
 } from '../../services/integrations';
 import {
+  DRCHRONO_CALLBACK_PATH,
   IntegrationsBackendUnavailableError,
+  getDrChronoRedirectUri,
   getIntegrationStatus,
   saveIntegrationCredentials,
+  startDrChronoAuthorization,
   testIntegration,
 } from '../../services/integrations';
 import { showErrorNotification, showSuccessNotification } from '../../utils/notifications';
@@ -61,6 +65,8 @@ interface FieldDefinition {
   readonly label: string;
   readonly placeholder?: string;
   readonly description?: string;
+  /** Computed fallback used when the stored value is empty. */
+  readonly defaultValue?: () => string;
 }
 
 interface IntegrationDefinition {
@@ -73,6 +79,11 @@ interface IntegrationDefinition {
   readonly configFields: readonly FieldDefinition[];
   /** Write-only credentials — never rendered back, only ever "configured" or not. */
   readonly secretFields: readonly FieldDefinition[];
+  /**
+   * True when tokens are obtained by sending the user to the vendor rather than
+   * by typing them in. ZUS is `client_credentials`, so there is nobody to send.
+   */
+  readonly oauth?: boolean;
 }
 
 /**
@@ -87,11 +98,31 @@ const CATALOG: readonly IntegrationDefinition[] = [
     description:
       'Sync patients, appointments and clinical notes from the clinic’s DrChrono practice. Requires an OAuth application registered in the DrChrono developer portal.',
     icon: <IconStethoscope size={20} />,
-    configFields: [{ key: 'apiUrl', label: 'API URL', placeholder: 'https://drchrono.com/api' }],
+    oauth: true,
+    configFields: [
+      { key: 'apiUrl', label: 'API URL', placeholder: 'https://app.drchrono.com/api' },
+      {
+        key: 'redirectUri',
+        label: 'Redirect URI',
+        placeholder: DRCHRONO_CALLBACK_PATH,
+        // Prefilled from the running origin rather than left blank. This is the
+        // likeliest misconfiguration in the whole flow, and DrChrono reports a
+        // mismatch with an error that reads like a bad authorization code, so a
+        // hand-typed value sends you looking in the wrong place entirely.
+        defaultValue: getDrChronoRedirectUri,
+        description:
+          'Must match the redirect URI registered on the DrChrono application byte for byte — ' +
+          'a mismatch fails the token exchange with an error that reads like a bad code.',
+      },
+    ],
     secretFields: [
       { key: 'clientId', label: 'Client ID', description: 'From the DrChrono API management page.' },
       { key: 'clientSecret', label: 'Client secret' },
-      { key: 'refreshToken', label: 'Refresh token', description: 'Issued by the OAuth authorization step.' },
+      {
+        key: 'refreshToken',
+        label: 'Refresh token',
+        description: 'Filled in by Connect. Enter one by hand only to migrate an existing grant.',
+      },
     ],
   },
   {
@@ -200,6 +231,10 @@ interface IntegrationCardProps {
   readonly result?: IntegrationActionResult;
   readonly onConfigure: (id: IntegrationId) => void;
   readonly onTest: (id: IntegrationId) => void;
+  /** Called with the integration id to begin its OAuth grant. */
+  readonly onConnect: (id: IntegrationId) => void;
+  /** Whether an authorization is currently being started. */
+  readonly connecting: boolean;
 }
 
 /**
@@ -214,6 +249,8 @@ interface IntegrationCardProps {
  * @param props.result - The most recent test result to display inline.
  * @param props.onConfigure - Called with the integration id to open its form.
  * @param props.onTest - Called with the integration id to run a connection test.
+ * @param props.onConnect - Called with the integration id to begin its OAuth grant.
+ * @param props.connecting - Whether an authorization is currently being started.
  * @returns The integration card.
  */
 function IntegrationCard(props: IntegrationCardProps): JSX.Element {
@@ -305,8 +342,23 @@ function IntegrationCard(props: IntegrationCardProps): JSX.Element {
         )}
 
         <Group gap="xs" mt="auto">
+          {definition.oauth && (
+            <Tooltip label={props.disabledReason} disabled={!props.disabled} withArrow>
+              <Button
+                radius="md"
+                leftSection={<IconLink size={16} />}
+                loading={props.connecting}
+                data-disabled={props.disabled || undefined}
+                disabled={props.disabled}
+                onClick={() => props.onConnect(definition.id)}
+              >
+                {status.configuredSecrets.includes('refreshToken') ? 'Reconnect' : 'Connect'}
+              </Button>
+            </Tooltip>
+          )}
           <Tooltip label={props.disabledReason} disabled={!props.disabled} withArrow>
             <Button
+              variant="default"
               radius="md"
               leftSection={<IconSettings size={16} />}
               data-disabled={props.disabled || undefined}
@@ -358,7 +410,9 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
   const { definition, status } = props;
 
   const [config, setConfig] = useState<Record<string, string>>(() =>
-    Object.fromEntries(definition.configFields.map((field) => [field.key, status.config[field.key] ?? '']))
+    Object.fromEntries(
+      definition.configFields.map((field) => [field.key, status.config[field.key] || field.defaultValue?.() || ''])
+    )
   );
   const [secrets, setSecrets] = useState<Record<string, string>>(() =>
     Object.fromEntries(definition.secretFields.map((field) => [field.key, '']))
@@ -466,6 +520,7 @@ export function LyfeIntegrationsPage(): JSX.Element {
   const [configuring, setConfiguring] = useState<IntegrationId>();
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<IntegrationId>();
+  const [connecting, setConnecting] = useState<IntegrationId>();
   const [results, setResults] = useState<Partial<Record<IntegrationId, IntegrationActionResult>>>({});
 
   // `loading` is raised by whoever asks for a reload rather than here, so the
@@ -512,6 +567,35 @@ export function LyfeIntegrationsPage(): JSX.Element {
         : current
     );
   }, []);
+
+  /**
+   * Begin an OAuth grant by asking the backend for a consent URL, then leaving.
+   *
+   * `connecting` is deliberately never cleared on the success path: the tab is
+   * navigating to DrChrono, and resetting the button first would flash it back
+   * to "Connect" as the page tears down.
+   */
+  const handleConnect = useCallback(
+    (id: IntegrationId): void => {
+      setConnecting(id);
+      setResults((r) => ({ ...r, [id]: undefined }));
+      startDrChronoAuthorization(medplum)
+        .then((url) => {
+          // A full navigation, not a router push — the destination is DrChrono.
+          window.location.assign(url);
+        })
+        .catch((err: unknown) => {
+          if (err instanceof IntegrationsBackendUnavailableError) {
+            setSnapshot((current) =>
+              current ? { ...current, backendAvailable: false, backendMessage: err.message } : current
+            );
+          }
+          showErrorNotification(err);
+          setConnecting(undefined);
+        });
+    },
+    [medplum]
+  );
 
   const handleTest = useCallback(
     (id: IntegrationId): void => {
@@ -640,6 +724,8 @@ export function LyfeIntegrationsPage(): JSX.Element {
               result={results[definition.id]}
               onConfigure={setConfiguring}
               onTest={handleTest}
+              onConnect={handleConnect}
+              connecting={connecting === definition.id}
             />
           ))}
         </SimpleGrid>
