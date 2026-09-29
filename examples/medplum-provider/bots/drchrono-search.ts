@@ -79,6 +79,24 @@ const DAY_MS = 86400000;
  * @returns Matching patients, shaped for the onboarding UI.
  */
 export async function handler(medplum: MedplumClient, event: BotEvent<Input>): Promise<unknown> {
+  // Errors are returned, not thrown. An uncaught throw surfaces to the caller as
+  // a bare 500 "Internal Server Error", which hides the one thing worth knowing —
+  // most failures here are configuration ("not scoped to an organization",
+  // "DrChrono is not configured"), and a 500 sends people debugging the server.
+  try {
+    return await run(medplum, event);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * The actual work, wrapped by `handler` so failures come back as messages.
+ * @param medplum - Bot-scoped Medplum client.
+ * @param event - Carries the action, its arguments and project secrets.
+ * @returns Matching patients, shaped for the onboarding UI.
+ */
+async function run(medplum: MedplumClient, event: BotEvent<Input>): Promise<unknown> {
   const material = event.secrets[ENCRYPTION_KEY_SECRET_NAME]?.valueString;
   if (!material) {
     throw new Error(`${ENCRYPTION_KEY_SECRET_NAME} is not set in project secrets`);

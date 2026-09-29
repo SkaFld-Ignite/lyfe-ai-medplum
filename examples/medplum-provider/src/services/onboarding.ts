@@ -4,16 +4,16 @@
 /**
  * The onboarding flow's data access, kept in one place deliberately.
  *
- * DrChrono cannot be called from the browser — the token would ship in client JS
- * and DrChrono sends no CORS headers for a localhost origin. Today these calls
- * go to a dev-only Vite middleware (`dev/lyfe-onboarding-dev-api.ts`).
+ * DrChrono cannot be called from the browser: the token would ship in client JS
+ * and DrChrono sends no CORS headers for a browser origin. These calls go to the
+ * `lyfe-drchrono-search` bot, which runs server-side and reads the calling
+ * clinic's own credentials — so a clinic searches its own DrChrono practice, not
+ * a shared one.
  *
- * The production implementation is a Medplum Bot invoked with
- * `medplum.executeBot(botId, { action, ... })`. That is blocked until
- * `Project.features` on the self-hosted server includes `bots`, which needs
- * super-admin. When it lands, only the two fetch calls below change — the UI
- * already speaks in these types and knows nothing about the transport.
+ * This previously posted to a dev-only Vite middleware, which existed only under
+ * `vite dev` and would have 404'd in any production build.
  */
+import type { MedplumClient } from '@medplum/core';
 
 export interface DrChronoPatientSummary {
   readonly id: number;
@@ -26,22 +26,63 @@ export interface DrChronoPatientSummary {
   readonly cellPhone?: string;
 }
 
-const DEV_API = '/__lyfe/drchrono';
+/** Identifier of the bot that performs the read-only DrChrono lookups. */
+const SEARCH_BOT_IDENTIFIER = 'https://lyfe.health/bots|lyfe-drchrono-search';
+
+/**
+ * Thrown when the search bot is absent or refuses the call, so the UI can say
+ * which of the two it was instead of rendering a bare failure.
+ */
+export class OnboardingBackendUnavailableError extends Error {}
+
+/**
+ * Invoke the search bot, normalising both failure modes into one error type.
+ * @param medplum - Authenticated Medplum client.
+ * @param input - The action and its arguments.
+ * @returns The bot's parsed response.
+ */
+async function executeSearchBot<T>(medplum: MedplumClient, input: Record<string, unknown>): Promise<T> {
+  let bot;
+  try {
+    bot = await medplum.searchOne('Bot', { identifier: SEARCH_BOT_IDENTIFIER });
+  } catch (err) {
+    throw new OnboardingBackendUnavailableError(
+      `Could not look up the DrChrono search bot: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (!bot?.id) {
+    throw new OnboardingBackendUnavailableError(
+      `No Bot found with identifier ${SEARCH_BOT_IDENTIFIER}. Run "npm run deploy:bots".`
+    );
+  }
+  const body = (await medplum.executeBot(bot.id, input, 'application/json')) as T & {
+    ok?: boolean;
+    error?: string;
+  };
+  // The bot reports configuration failures in-band rather than throwing, so a
+  // useful message survives instead of becoming a generic 500.
+  if (body?.ok === false && body.error) {
+    throw new OnboardingBackendUnavailableError(body.error);
+  }
+  return body;
+}
 
 /**
  * Search DrChrono for candidates to import. DrChrono has no free-text patient
  * endpoint, so the server fans the term out across last name, first name and
  * chart id and merges the results.
+ * @param medplum - Authenticated Medplum client.
  * @param query - The text typed by the user; fewer than two characters returns nothing.
- * @param signal - Abort signal so a superseded keystroke cancels its in-flight request.
  * @returns The matching DrChrono patients.
  */
-export async function searchDrChronoPatients(query: string, signal?: AbortSignal): Promise<DrChronoPatientSummary[]> {
-  const res = await fetch(`${DEV_API}/search?q=${encodeURIComponent(query)}`, { signal });
-  const body = (await res.json()) as { results?: DrChronoPatientSummary[]; error?: string };
-  if (!res.ok) {
-    throw new Error(body.error ?? `Search failed (${res.status})`);
+export async function searchDrChronoPatients(medplum: MedplumClient, query: string): Promise<DrChronoPatientSummary[]> {
+  if (query.trim().length < 2) {
+    return [];
   }
+  const body = await executeSearchBot<{ results?: DrChronoPatientSummary[] }>(medplum, {
+    action: 'search',
+    query,
+  });
   return body.results ?? [];
 }
 
@@ -72,29 +113,20 @@ export interface BulkImportPreview {
  * This is the "import everyone on Tuesday's schedule" flow. Cancelled,
  * rescheduled and no-show appointments are excluded server-side, since those
  * never produced a visit worth pulling a chart for.
+ * @param medplum - Authenticated Medplum client.
  * @param start - First appointment date, as YYYY-MM-DD.
  * @param end - Last appointment date; defaults to `start` when omitted.
- * @param signal - Abort signal so a superseded preview cancels its request.
  * @returns The candidates and how many appointments were scanned.
  */
 export async function previewBulkImport(
+  medplum: MedplumClient,
   start: string,
-  end: string | undefined,
-  signal?: AbortSignal
+  end: string | undefined
 ): Promise<BulkImportPreview> {
-  const params = new URLSearchParams({ start });
-  if (end) {
-    params.set('end', end);
-  }
-  const res = await fetch(`${DEV_API}/appointments?${params.toString()}`, { signal });
-  const body = (await res.json()) as {
+  const body = await executeSearchBot<{
     scannedAppointments?: number;
     results?: BulkImportCandidate[];
-    error?: string;
-  };
-  if (!res.ok) {
-    throw new Error(body.error ?? `Preview failed (${res.status})`);
-  }
+  }>(medplum, { action: 'preview', start, ...(end ? { end } : {}) });
   return {
     scannedAppointments: body.scannedAppointments ?? 0,
     candidates: body.results ?? [],

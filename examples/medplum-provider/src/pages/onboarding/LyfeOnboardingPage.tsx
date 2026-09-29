@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { Alert, Badge, Button, Loader, Paper, Stack, Table, Tabs, Text, TextInput } from '@mantine/core';
+import { useMedplum } from '@medplum/react';
 import { IconAlertCircle, IconSearch, IconUserPlus } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useEffect, useRef, useState } from 'react';
@@ -21,6 +22,7 @@ const DEBOUNCE_MS = 350;
  * @returns The onboarding search page.
  */
 export function LyfeOnboardingPage(): JSX.Element {
+  const medplum = useMedplum();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DrChronoPatientSummary[]>();
   const [loading, setLoading] = useState(false);
@@ -44,7 +46,7 @@ export function LyfeOnboardingPage(): JSX.Element {
     setLoading(true);
 
     const timer = setTimeout(() => {
-      searchDrChronoPatients(trimmed, controller.signal)
+      searchDrChronoPatients(medplum, trimmed)
         .then((found) => {
           setResults(found);
           setError(undefined);
@@ -66,7 +68,7 @@ export function LyfeOnboardingPage(): JSX.Element {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [medplum, query]);
 
   return (
     <Stack gap="md" m="xs">

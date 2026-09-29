@@ -38,7 +38,7 @@ export function BulkImportPanel(): JSX.Element {
     setError(undefined);
     setPreview(undefined);
 
-    previewBulkImport(start, end || undefined)
+    previewBulkImport(medplum, start, end || undefined)
       .then(async (result) => {
         // One search rather than N: FHIR treats comma-separated values as OR, so
         // the whole day's roster is checked for existing charts in a single call.
