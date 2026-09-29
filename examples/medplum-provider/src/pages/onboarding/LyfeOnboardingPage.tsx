@@ -102,7 +102,7 @@ export function LyfeOnboardingPage(): JSX.Element {
                 leftSection={<IconSearch size={16} />}
                 rightSection={loading ? <Loader size="xs" /> : undefined}
                 value={query}
-                onChange={(e) => setQuery(e.currentTarget.value)}
+                onChange={(e) => setQuery(e.target.value)}
                 aria-label="Search DrChrono patients"
               />
 

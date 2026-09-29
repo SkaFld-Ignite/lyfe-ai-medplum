@@ -311,6 +311,10 @@ function IntegrationCard(props: IntegrationCardProps): JSX.Element {
         >
           <Stack gap="sm">
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm" verticalSpacing="sm">
+              {/* `e.target`, not `e.currentTarget`. React only populates currentTarget
+              during its own dispatch, so it is null for events fired from outside
+              React — which is exactly what password managers and browser autofill
+              do. Reading `.value` off it then crashes the whole page. */}
               {definition.configFields.map((field) => (
                 <ConfigRow key={field.key} label={field.label} value={status.config[field.key]} />
               ))}
@@ -461,7 +465,7 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
               placeholder={field.placeholder}
               radius="md"
               value={config[field.key] ?? ''}
-              onChange={(e) => setConfig((c) => ({ ...c, [field.key]: e.currentTarget.value }))}
+              onChange={(e) => setConfig((c) => ({ ...c, [field.key]: e.target.value }))}
             />
           ))}
         </Stack>
@@ -483,7 +487,7 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
                   : 'Not configured'
               }
               value={secrets[field.key] ?? ''}
-              onChange={(e) => setSecrets((s) => ({ ...s, [field.key]: e.currentTarget.value }))}
+              onChange={(e) => setSecrets((s) => ({ ...s, [field.key]: e.target.value }))}
             />
           ))}
         </Stack>

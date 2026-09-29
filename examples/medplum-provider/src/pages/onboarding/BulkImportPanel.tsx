@@ -85,13 +85,8 @@ export function BulkImportPanel(): JSX.Element {
           Appointment Date Range
         </Text>
         <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
-          <TextInput label="Start Date" type="date" value={start} onChange={(e) => setStart(e.currentTarget.value)} />
-          <TextInput
-            label="End Date (Optional)"
-            type="date"
-            value={end}
-            onChange={(e) => setEnd(e.currentTarget.value)}
-          />
+          <TextInput label="Start Date" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+          <TextInput label="End Date (Optional)" type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
           <Box style={{ display: 'flex', alignItems: 'flex-end' }}>
             <Button
               fullWidth
