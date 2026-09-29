@@ -7,6 +7,8 @@
  *   getStatus        connection state for every integration, never a secret
  *   saveCredentials  store DrChrono/ZUS credentials for the caller's own clinic
  *   testConnection   prove the stored credentials actually authenticate upstream
+ *   authorizeUrl     begin the DrChrono OAuth grant: mint a state, return the consent URL
+ *   exchangeCode     finish it: verify the state, trade the code for the first token pair
  *
  * Every action answers with the same envelope:
  *   { ok, message?, integrations: [{ id, status, message?, lastCheckedAt?,
@@ -53,6 +55,14 @@ import {
   readCredentialRecord,
   writeCredentialRecord,
 } from './shared/credentials';
+import {
+  OAUTH_STATE_CREATED_FIELD,
+  OAUTH_STATE_FIELD,
+  assertOAuthState,
+  buildAuthorizeUrl,
+  createOAuthState,
+  exchangeAuthorizationCode,
+} from './shared/drchrono-oauth.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
 /** Fallback DrChrono API base, matching lyfe-provider-ui's DRCHRONO_API. */
@@ -88,6 +98,8 @@ interface BotResponse {
   message?: string;
   /** One row per integration, always all of them. */
   integrations: IntegrationView[];
+  /** Set only by `authorizeUrl`: where to send the user to grant access. */
+  authorizeUrl?: string;
 }
 
 interface Input {
@@ -96,6 +108,10 @@ interface Input {
   config?: Record<string, string>;
   secrets?: Record<string, string>;
   clear?: string[];
+  /** `authorization_code` from the OAuth redirect, for `exchangeCode`. */
+  code?: string;
+  /** The `state` echoed by the OAuth redirect, for `exchangeCode`. */
+  state?: string;
 }
 
 /** The per-call tenant context, resolved once in `dispatch`. */
@@ -174,9 +190,31 @@ async function dispatch(medplum: MedplumClient, event: BotEvent<Input>): Promise
       return { ok: result.ok, message: result.detail, integrations: await viewAll(context) };
     }
 
+    case 'authorizeUrl':
+    case 'authorize': {
+      const integration = parseIntegrationKey({ value: input.integration ?? 'drchrono' });
+      assertOAuthCapable({ integration });
+      const url = await startDrChronoAuthorization({ context });
+      return {
+        ok: true,
+        message: 'Open this URL to grant DrChrono access to this clinic.',
+        authorizeUrl: url,
+        integrations: await viewAll(context),
+      };
+    }
+
+    case 'exchangeCode':
+    case 'exchange': {
+      const integration = parseIntegrationKey({ value: input.integration ?? 'drchrono' });
+      assertOAuthCapable({ integration });
+      const message = await completeDrChronoAuthorization({ context, code: input.code, state: input.state });
+      return { ok: true, message, integrations: await viewAll(context) };
+    }
+
     default:
       throw new Error(
-        `Unknown action ${JSON.stringify(input.action)}. Expected getStatus, saveCredentials or testConnection.`
+        `Unknown action ${JSON.stringify(input.action)}. ` +
+          'Expected getStatus, saveCredentials, testConnection, authorizeUrl or exchangeCode.'
       );
   }
 }
@@ -431,4 +469,174 @@ async function testZus(props: {
     return { ok: false, reason: 'no-token', detail: 'ZUS token endpoint returned 200 with no access_token' };
   }
   return { ok: true, reason: 'ok', detail: `ZUS issued a token valid for ${body.expires_in ?? 'unknown'}s` };
+}
+
+// ── DrChrono authorization-code grant ────────────────────────────────────────
+
+/**
+ * Refuse an OAuth action for an integration that has no authorization-code flow.
+ *
+ * ZUS authenticates with `client_credentials`: there is no user to send
+ * anywhere and no code to exchange. Saying so beats building a consent URL
+ * against an endpoint that does not exist.
+ * @param props - The integration being acted on.
+ * @param props.integration - The parsed integration key.
+ * @throws Error When the integration has no authorization-code grant.
+ */
+function assertOAuthCapable(props: { integration: IntegrationKey }): void {
+  if (props.integration !== 'drchrono') {
+    throw new Error(
+      `${props.integration} does not use an authorization-code grant. ` +
+        'Save its client id and secret instead, then run testConnection.'
+    );
+  }
+}
+
+/**
+ * Read DrChrono's OAuth settings for the caller's clinic.
+ *
+ * Every missing piece gets its own message. "Not configured" covering four
+ * different causes is what turns a two-minute fix into a support thread.
+ * @param props - The lookup inputs.
+ * @param props.context - The tenant context.
+ * @returns The client credentials, redirect URI, endpoint overrides and stored state.
+ */
+async function readDrChronoOAuthSettings(props: { context: TenantContext }): Promise<{
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  authUrl?: string;
+  tokenUrl?: string;
+  state: Record<string, string>;
+}> {
+  const record = await readCredentialRecord({
+    medplum: props.context.medplum,
+    organization: props.context.organization,
+    integration: 'drchrono',
+  });
+  const values = getCredentialValues({ record, key: props.context.key });
+
+  if (values.unreadableSecrets.length > 0) {
+    throw new Error(
+      `Stored DrChrono secret(s) ${values.unreadableSecrets.join(', ')} cannot be decrypted. ` +
+        'The encryption key has changed — re-enter the client id and secret before connecting.'
+    );
+  }
+
+  const clientId = values.secrets.clientId;
+  const clientSecret = values.secrets.clientSecret;
+  const redirectUri = values.config.redirectUri;
+
+  if (!clientId || !clientSecret) {
+    throw new Error('Save the DrChrono client id and secret before connecting.');
+  }
+  if (!redirectUri) {
+    throw new Error(
+      'Set the DrChrono redirect URI before connecting. It must match the one registered on the ' +
+        'DrChrono application exactly, e.g. https://<your-app-host>/integrations/drchrono/callback'
+    );
+  }
+
+  return {
+    clientId,
+    clientSecret,
+    redirectUri,
+    authUrl: values.config.authUrl || undefined,
+    tokenUrl: values.config.tokenUrl || undefined,
+    state: values.state,
+  };
+}
+
+/**
+ * Begin the grant: mint a state nonce, store it, and build the consent URL.
+ *
+ * The nonce is stored against the clinic rather than handed to the browser to
+ * give back, because a value the client both supplies and validates proves
+ * nothing. Minting a new one supersedes any previous pending authorization,
+ * which is the behaviour you want when someone abandons the flow and retries.
+ * @param props - The call inputs.
+ * @param props.context - The tenant context.
+ * @returns The absolute DrChrono URL to send the user to.
+ */
+async function startDrChronoAuthorization(props: { context: TenantContext }): Promise<string> {
+  const settings = await readDrChronoOAuthSettings({ context: props.context });
+  const state = createOAuthState();
+
+  await writeCredentialRecord({
+    medplum: props.context.medplum,
+    organization: props.context.organization,
+    integration: 'drchrono',
+    state: { [OAUTH_STATE_FIELD]: state, [OAUTH_STATE_CREATED_FIELD]: new Date().toISOString() },
+    key: props.context.key,
+  });
+
+  return buildAuthorizeUrl({
+    clientId: settings.clientId,
+    redirectUri: settings.redirectUri,
+    state,
+    authorizeUrl: settings.authUrl,
+  });
+}
+
+/**
+ * Finish the grant: verify the state, spend the code, store the token pair.
+ *
+ * The nonce is consumed in its own write BEFORE the code is exchanged. Doing it
+ * afterwards leaves a window in which two callbacks — a double-clicked link, a
+ * replayed URL — both pass validation, and the second one's write would land on
+ * top of the first with a code DrChrono has already invalidated. The cost is
+ * that a failed exchange requires restarting from Connect, which is the right
+ * trade for a credential-granting endpoint.
+ * @param props - The call inputs.
+ * @param props.context - The tenant context.
+ * @param props.code - The `code` query parameter from the redirect.
+ * @param props.state - The `state` query parameter from the redirect.
+ * @returns A message describing what was stored.
+ */
+async function completeDrChronoAuthorization(props: {
+  context: TenantContext;
+  code: string | undefined;
+  state: string | undefined;
+}): Promise<string> {
+  const code = typeof props.code === 'string' ? props.code.trim() : '';
+  if (!code) {
+    throw new Error('The DrChrono redirect carried no authorization code.');
+  }
+
+  const settings = await readDrChronoOAuthSettings({ context: props.context });
+  assertOAuthState({
+    supplied: props.state,
+    expected: settings.state[OAUTH_STATE_FIELD],
+    createdAt: settings.state[OAUTH_STATE_CREATED_FIELD],
+  });
+
+  await writeCredentialRecord({
+    medplum: props.context.medplum,
+    organization: props.context.organization,
+    integration: 'drchrono',
+    clearState: [OAUTH_STATE_FIELD, OAUTH_STATE_CREATED_FIELD],
+    key: props.context.key,
+  });
+
+  const pair = await exchangeAuthorizationCode({
+    code,
+    clientId: settings.clientId,
+    clientSecret: settings.clientSecret,
+    redirectUri: settings.redirectUri,
+    tokenUrl: settings.tokenUrl,
+  });
+
+  await writeCredentialRecord({
+    medplum: props.context.medplum,
+    organization: props.context.organization,
+    integration: 'drchrono',
+    secrets: { accessToken: pair.accessToken, refreshToken: pair.refreshToken },
+    state: {
+      lastAuthorizedAt: new Date().toISOString(),
+      ...(pair.expiresIn ? { accessTokenExpiresAt: new Date(Date.now() + pair.expiresIn * 1000).toISOString() } : {}),
+    },
+    key: props.context.key,
+  });
+
+  return 'DrChrono connected. Access and refresh tokens are stored for this clinic.';
 }
