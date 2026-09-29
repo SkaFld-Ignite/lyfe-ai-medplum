@@ -43,6 +43,42 @@ export const DRCHRONO_TOKEN_URL = 'https://drchrono.com/o/token/';
  * Anything outside this list fails the whole authorize request, so it is worth
  * checking against before the user is redirected rather than after.
  */
+/**
+ * The seven base scopes DrChrono defines, with what each one actually unlocks.
+ *
+ * Straight from DrChrono's docs: "Scopes are of the form BASE_SCOPE:[read|write]
+ * where BASE_SCOPE is any of user, calendar, patients, patients:summary,
+ * billing, clinical and labs." Each may be requested :read and/or :write, so the
+ * full space is fourteen tokens.
+ *
+ * The descriptions exist so an operator choosing scopes can tell what they are
+ * switching off. `calendar` is called out because its absence is silent: without
+ * it DrChrono returns an EMPTY appointment list rather than an authorization
+ * error, so a sync appears to work and imports nothing.
+ */
+export const DRCHRONO_SCOPE_CATALOGUE: readonly { base: string; label: string; description: string }[] = [
+  { base: 'user', label: 'User', description: 'Who the connected DrChrono account is. Needed to verify a connection.' },
+  {
+    base: 'calendar',
+    label: 'Calendar',
+    description:
+      'Appointments. Without this DrChrono returns an empty list rather than an error, so imports silently contain no visits.',
+  },
+  { base: 'patients', label: 'Patients', description: 'Full demographics and the patient chart.' },
+  {
+    base: 'patients:summary',
+    label: 'Patients (summary)',
+    description: 'Name, date of birth and contact details only — no clinical content.',
+  },
+  { base: 'billing', label: 'Billing', description: 'Insurance, line items, payments and transactions.' },
+  {
+    base: 'clinical',
+    label: 'Clinical',
+    description: 'Allergies, medications, problems, procedures, vitals, clinical notes and documents.',
+  },
+  { base: 'labs', label: 'Labs', description: 'Lab orders, results and lab documents.' },
+];
+
 export const VALID_DRCHRONO_BASE_SCOPES: readonly string[] = [
   'user',
   'calendar',
@@ -285,4 +321,23 @@ export async function exchangeAuthorizationCode(props: {
     );
   }
   return { accessToken: body.access_token, refreshToken: body.refresh_token, expiresIn: body.expires_in };
+}
+
+/**
+ * Decide which scopes to request for a clinic.
+ *
+ * A clinic may narrow the grant from the Integrations page; anything it has not
+ * chosen falls back to the default set. The result is validated either way, so a
+ * stored value cannot smuggle an unrecognised token into the authorize URL —
+ * DrChrono rejects the WHOLE request when any one token is unknown, and its
+ * error does not say which.
+ * @param props - Resolution inputs.
+ * @param props.stored - The clinic's saved selection, space or comma separated.
+ * @returns The scopes to request, in a stable order.
+ */
+export function resolveDrChronoScopes(props: { stored?: string }): string[] {
+  const raw = (props.stored ?? '').split(/[\s,]+/).filter(Boolean);
+  const scopes = raw.length > 0 ? raw : [...DRCHRONO_SCOPES];
+  assertValidDrChronoScopes({ scopes });
+  return scopes;
 }

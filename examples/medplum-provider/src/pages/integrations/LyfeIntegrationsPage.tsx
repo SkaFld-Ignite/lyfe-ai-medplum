@@ -51,6 +51,7 @@ import {
   testIntegration,
 } from '../../services/integrations';
 import { showErrorNotification, showSuccessNotification } from '../../utils/notifications';
+import { DrChronoScopePicker } from './DrChronoScopePicker';
 
 /** Uppercase micro-label, matching the Lyfe roster's filter labels. */
 const MICRO_LABEL = {
@@ -423,9 +424,12 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
   const { definition, status } = props;
 
   const [config, setConfig] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      definition.configFields.map((field) => [field.key, status.config[field.key] || field.defaultValue?.() || ''])
-    )
+    Object.fromEntries([
+      ...definition.configFields.map((field) => [field.key, status.config[field.key] || field.defaultValue?.() || '']),
+      // Not a text field, so it has no configFields entry — but it must round
+      // trip through the same state or saving would wipe the clinic's selection.
+      ...(definition.oauth ? [['scopes', status.config.scopes ?? '']] : []),
+    ])
   );
   const [secrets, setSecrets] = useState<Record<string, string>>(() =>
     Object.fromEntries(definition.secretFields.map((field) => [field.key, '']))
@@ -478,6 +482,16 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
             />
           ))}
         </Stack>
+
+        {definition.oauth && (
+          <>
+            <Divider color="var(--mantine-color-gray-2)" />
+            <DrChronoScopePicker
+              value={config.scopes ?? ''}
+              onChange={(next) => setConfig((c) => ({ ...c, scopes: next }))}
+            />
+          </>
+        )}
 
         <Divider color="var(--mantine-color-gray-2)" />
 
