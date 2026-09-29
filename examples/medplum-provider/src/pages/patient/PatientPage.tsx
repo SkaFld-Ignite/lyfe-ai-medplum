@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Loader, Modal, Paper, ScrollArea } from '@mantine/core';
+import { Loader, Modal, ScrollArea } from '@mantine/core';
 import { getReferenceString, isOk } from '@medplum/core';
 import type { OperationOutcome } from '@medplum/fhirtypes';
 import {
   createPharmaciesSection,
   Document,
   getDefaultSections,
-  LinkTabs,
   OperationOutcomeAlert,
   PatientSummary,
   useMedplum,
@@ -21,6 +20,7 @@ import { usePatient } from '../../hooks/usePatient';
 import { OrderLabsPage } from '../labs/OrderLabsPage';
 import classes from './PatientPage.module.css';
 import { getPatientPageTabs, patientPathPrefix } from './PatientPage.utils';
+import { PatientSectionTabs } from './PatientSectionTabs';
 
 export function PatientPage(): JSX.Element {
   const navigate = useNavigate();
@@ -35,6 +35,7 @@ export function PatientPage(): JSX.Element {
   const resolvedTabs = useMemo(
     () =>
       tabs.map((t) => ({
+        id: t.id,
         label: t.label,
         value: (t.url ? t.url.replace('%patient.id', patient?.id ?? '') : t.id) || t.id,
       })),
@@ -86,17 +87,7 @@ export function PatientPage(): JSX.Element {
         </div>
 
         <div className={classes.content}>
-          <Paper w="100%" radius={0} style={{ borderBottom: '1px solid var(--app-shell-border-color)' }}>
-            <ScrollArea>
-              <LinkTabs
-                baseUrl={patientPathPrefix(patientId)}
-                tabs={resolvedTabs}
-                variant="unstyled"
-                className="pill-tabs"
-                p="sm"
-              />
-            </ScrollArea>
-          </Paper>
+          <PatientSectionTabs baseUrl={patientPathPrefix(patientId)} tabs={resolvedTabs} />
           <div className={classes.contentBody}>
             <Outlet />
           </div>
