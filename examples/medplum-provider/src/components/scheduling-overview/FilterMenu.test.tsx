@@ -62,7 +62,8 @@ describe('FilterMenu', () => {
     expect(onChange).toHaveBeenLastCalledWith([]);
   });
 
-  test('is disabled when there is nothing to filter', () => {
+  test('explains when there is nothing to filter', async () => {
+    const user = userEvent.setup();
     render(
       <FilterMenu
         label="Location"
@@ -73,6 +74,7 @@ describe('FilterMenu', () => {
         onChange={vi.fn()}
       />
     );
-    expect(screen.getByRole('button', { name: 'Filter by location' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Filter by location' }));
+    expect(await screen.findByText('No locations in this view.')).toBeInTheDocument();
   });
 });

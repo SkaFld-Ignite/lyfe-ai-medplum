@@ -9,6 +9,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { beforeEach, describe, expect, test } from 'vitest';
+import { LYFE_SOURCE_TAG_SYSTEM } from '../../utils/data-source';
 import { toLocalIsoDate } from '../../utils/scheduling-overview';
 import { SchedulingOverviewPage } from './SchedulingOverviewPage';
 
@@ -31,6 +32,7 @@ function makeAppointment(
   return {
     resourceType: 'Appointment',
     id,
+    meta: { tag: [{ system: LYFE_SOURCE_TAG_SYSTEM, code: 'drchrono' }] },
     status,
     start: start.toISOString(),
     end: new Date(start.getTime() + 30 * 60_000).toISOString(),
@@ -194,10 +196,27 @@ describe('SchedulingOverviewPage', () => {
     // Stats count active appointments only.
     expect(screen.getByLabelText('In View: 2')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('switch', { name: 'Show cancelled' }));
+    await user.click(screen.getByRole('button', { name: 'Hide cancelled' }));
 
     await waitFor(() => expect(screen.getAllByRole('button', { name: / at / })).toHaveLength(2));
     expect(screen.queryByLabelText('Cancelled')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show cancelled' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('renders its own calendar toolbar and switches views', async () => {
+    const user = userEvent.setup();
+    setup();
+    await waitForDayPanel();
+
+    // The page drives the calendar itself, so the calendar's built-in toolbar is hidden.
+    expect(within(screen.getByTestId('calendar')).queryByRole('button', { name: 'Today' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous period' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next period' })).toBeInTheDocument();
+
+    // Opens in month view, like the Lyfe schedule.
+    expect(screen.getByRole('radio', { name: 'Month' })).toBeChecked();
+    await user.click(screen.getByText('Week'));
+    expect(screen.getByRole('radio', { name: 'Week' })).toBeChecked();
   });
 
   test('links to the booking calendar', async () => {

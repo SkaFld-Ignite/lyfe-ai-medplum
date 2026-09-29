@@ -7,11 +7,9 @@ import {
   Button,
   Drawer,
   Group,
-  LoadingOverlay,
   Paper,
   SimpleGrid,
   Stack,
-  Switch,
   Text,
   ThemeIcon,
   Title,
@@ -23,13 +21,14 @@ import { getReferenceString } from '@medplum/core';
 import type { Appointment } from '@medplum/fhirtypes';
 import { useMedplumProfile } from '@medplum/react';
 import type { DateTimeRange, MultiCalendarSource } from '@medplum/react-scheduling';
-import { MultiCalendar } from '@medplum/react-scheduling';
+import { MultiCalendar, useCalendarController } from '@medplum/react-scheduling';
 import {
   IconAlertTriangle,
   IconBuildingHospital,
   IconCalendarEvent,
   IconCalendarPlus,
   IconCalendarStats,
+  IconCalendarX,
   IconClock,
   IconLayoutSidebarRightCollapse,
   IconLayoutSidebarRightExpand,
@@ -44,6 +43,8 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { AppointmentDetailDrawer } from '../../components/scheduling-overview/AppointmentDetailDrawer';
 import { DayAppointmentsPanel } from '../../components/scheduling-overview/DayAppointmentsPanel';
 import { FilterMenu } from '../../components/scheduling-overview/FilterMenu';
+import overviewClasses from '../../components/scheduling-overview/SchedulingOverview.module.css';
+import { SchedulingToolbar } from '../../components/scheduling-overview/SchedulingToolbar';
 import { StatCard } from '../../components/scheduling-overview/StatCard';
 import { usePersistentState } from '../../hooks/usePersistentState';
 import { useAppointmentCounts, useSchedulingOverview } from '../../hooks/useSchedulingOverview';
@@ -78,6 +79,7 @@ export function SchedulingOverviewPage(): JSX.Element {
   // Mantine's `lg` breakpoint: below it the day panel becomes a drawer instead of a rail.
   const isCompact = useMediaQuery('(max-width: 74.99em)') ?? false;
 
+  const calendarController = useCalendarController();
   const [range, setRange] = useState<DateTimeRange>();
   const { appointments, loading, error, truncated, reload } = useSchedulingOverview(range);
   const [countsKey, setCountsKey] = useState(0);
@@ -265,72 +267,49 @@ export function SchedulingOverviewPage(): JSX.Element {
             />
           </SimpleGrid>
 
-          <Group justify="space-between" gap="sm">
-            <Group gap="sm">
-              <FilterMenu
-                label="Location"
-                pluralLabel="Locations"
-                icon={<IconBuildingHospital size={14} />}
-                options={locationOptions}
-                selected={locationFilter}
-                onChange={setLocationFilter}
-              />
-              <FilterMenu
-                label="Provider"
-                pluralLabel="Providers"
-                icon={<IconStethoscope size={14} />}
-                options={providerOptions}
-                selected={providerFilter}
-                onChange={setProviderFilter}
-                getColor={getColorForKey}
-              />
-              {hasFilters && (
-                <Button
-                  variant="subtle"
-                  color="gray"
-                  size="xs"
-                  leftSection={<IconX size={12} />}
-                  onClick={() => {
-                    setProviderFilter([]);
-                    setLocationFilter([]);
-                  }}
-                >
-                  Clear all
-                </Button>
-              )}
-              <Switch
-                size="sm"
-                label="Show cancelled"
-                checked={showCancelled}
-                onChange={(e) => setShowCancelled(e.currentTarget.checked)}
-              />
-            </Group>
-            <Group gap="xs">
+          <Group gap="sm">
+            <FilterMenu
+              label="Location"
+              pluralLabel="Locations"
+              icon={<IconBuildingHospital size={14} />}
+              options={locationOptions}
+              selected={locationFilter}
+              onChange={setLocationFilter}
+            />
+            <FilterMenu
+              label="Provider"
+              pluralLabel="Providers"
+              icon={<IconStethoscope size={14} />}
+              options={providerOptions}
+              selected={providerFilter}
+              onChange={setProviderFilter}
+              getColor={getColorForKey}
+            />
+            {hasFilters && (
               <Button
-                variant="default"
+                variant="subtle"
+                color="gray"
                 size="xs"
-                leftSection={<IconCalendarPlus size={14} />}
-                onClick={() => navigate('/Calendar/Schedule')?.catch(console.error)}
+                leftSection={<IconX size={12} />}
+                onClick={() => {
+                  setProviderFilter([]);
+                  setLocationFilter([]);
+                }}
               >
-                Book appointments
+                Clear all
               </Button>
-              <Tooltip label="Refresh" withArrow>
-                <ActionIcon variant="default" aria-label="Refresh appointments" onClick={handleRefresh}>
-                  <IconRefresh size={16} />
-                </ActionIcon>
-              </Tooltip>
-              <Button
-                variant={panelOpen ? 'light' : 'default'}
-                size="xs"
-                aria-pressed={panelOpen}
-                leftSection={
-                  panelOpen ? <IconLayoutSidebarRightCollapse size={14} /> : <IconLayoutSidebarRightExpand size={14} />
-                }
-                onClick={() => setPanelOpen((open) => !open)}
-              >
-                {panelOpen ? 'Hide schedule' : 'Show schedule'}
-              </Button>
-            </Group>
+            )}
+            <Button
+              variant={showCancelled ? 'light' : 'default'}
+              color="red"
+              className={overviewClasses.filterButton}
+              data-active={showCancelled || undefined}
+              aria-pressed={showCancelled}
+              leftSection={<IconCalendarX size={14} />}
+              onClick={() => setShowCancelled((show) => !show)}
+            >
+              {showCancelled ? 'Hide cancelled' : 'Show cancelled'}
+            </Button>
           </Group>
 
           {error && (
@@ -344,10 +323,51 @@ export function SchedulingOverviewPage(): JSX.Element {
             </Alert>
           )}
 
-          <Paper withBorder radius="md" p="sm" pos="relative" className={classes.calendarCard}>
-            <LoadingOverlay visible={loading} zIndex={2} overlayProps={{ blur: 1 }} />
+          <SchedulingToolbar
+            controller={calendarController}
+            loading={loading}
+            actions={
+              <>
+                <Button
+                  variant="default"
+                  size="xs"
+                  h={32}
+                  leftSection={<IconCalendarPlus size={14} />}
+                  onClick={() => navigate('/Calendar/Schedule')?.catch(console.error)}
+                >
+                  Book appointments
+                </Button>
+                <Tooltip label="Refresh" withArrow>
+                  <ActionIcon variant="default" size={32} aria-label="Refresh appointments" onClick={handleRefresh}>
+                    <IconRefresh size={16} />
+                  </ActionIcon>
+                </Tooltip>
+                <Button
+                  variant={panelOpen ? 'light' : 'default'}
+                  size="xs"
+                  h={32}
+                  aria-pressed={panelOpen}
+                  leftSection={
+                    panelOpen ? (
+                      <IconLayoutSidebarRightCollapse size={14} />
+                    ) : (
+                      <IconLayoutSidebarRightExpand size={14} />
+                    )
+                  }
+                  onClick={() => setPanelOpen((open) => !open)}
+                >
+                  {panelOpen ? 'Hide schedule' : 'Show schedule'}
+                </Button>
+              </>
+            }
+          />
+
+          <Paper withBorder radius="md" p="sm" className={classes.calendarCard}>
             <MultiCalendar
               sources={calendarSources}
+              controller={calendarController}
+              hideToolbar
+              initialView="dayGridMonth"
               onRangeChange={setRange}
               onSelectAppointment={handleSelectAppointment}
               onSelectInterval={(interval) => openDay(interval.start)}

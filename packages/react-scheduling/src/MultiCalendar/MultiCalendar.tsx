@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
+import type { CalendarController } from '@fullcalendar/react';
 import type { MantineThemeColors } from '@mantine/core';
 import { useMantineTheme } from '@mantine/core';
 import type { WithId } from '@medplum/core';
@@ -31,6 +32,12 @@ export interface MultiCalendarProps {
   className?: string;
   availableTime?: HealthcareServiceAvailableTime[];
   loading?: boolean;
+  /** An external controller from `useCalendarController()`; see `hideToolbar`. */
+  controller?: CalendarController;
+  /** Hides the built-in toolbar so the host can render its own navigation via `controller`. */
+  hideToolbar?: boolean;
+  /** The view shown on first render. Defaults to `timeGridWeek`. */
+  initialView?: 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay';
 }
 
 /**

@@ -5,6 +5,7 @@ import { Button, Checkbox, ColorSwatch, Divider, Group, Popover, ScrollArea, Sta
 import { IconChevronDown } from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
 import type { FilterOption } from '../../utils/scheduling-overview';
+import classes from './SchedulingOverview.module.css';
 
 export interface FilterMenuProps {
   /** Button label when nothing is selected, e.g. "Provider". */
@@ -40,16 +41,21 @@ export function FilterMenu(props: FilterMenuProps): JSX.Element {
       <Popover.Target>
         <Button
           variant={selected.length > 0 ? 'light' : 'default'}
-          size="xs"
+          className={classes.filterButton}
+          data-active={selected.length > 0 || undefined}
           leftSection={icon}
           rightSection={<IconChevronDown size={14} />}
           aria-label={`Filter by ${label.toLowerCase()}`}
-          disabled={options.length === 0}
         >
           {buttonLabel}
         </Button>
       </Popover.Target>
       <Popover.Dropdown p="xs">
+        {options.length === 0 && (
+          <Text size="sm" c="dimmed" p={4}>
+            No {pluralLabel.toLowerCase()} in this view.
+          </Text>
+        )}
         <ScrollArea.Autosize mah={300}>
           <Checkbox.Group value={selected} onChange={onChange}>
             <Stack gap={6} p={4}>
