@@ -69,7 +69,7 @@ import { ConditionCard, DayRecordsCard } from './EventCards';
 import { OngoingCareCard } from './OngoingCareCard';
 import classes from './PatientTimeline.module.css';
 import { DAYS_PER_PAGE, formatMediumDate, KIND_CONFIG, KIND_ORDER, SOURCE_FILTER_LABELS } from './timeline-config';
-import { RailItem } from './TimelineBits';
+import { RailItem, TimelineSkeleton } from './TimelineBits';
 import { TimelineRecordDrawer } from './TimelineRecordDrawer';
 import { VisitCard } from './VisitCard';
 
@@ -183,15 +183,15 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
     );
   };
 
-  let body: JSX.Element;
-  if (!timeline && loading) {
-    body = (
-      <Stack gap="sm" aria-busy="true" aria-label="Loading timeline">
-        {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} h={96} radius="md" />
-        ))}
-      </Stack>
-    );
+  // Only the first load shows placeholders; a refresh keeps the current timeline on screen.
+  const initialLoading = !timeline && loading;
+
+  let body: JSX.Element | null;
+  if (initialLoading) {
+    body = <TimelineSkeleton />;
+  } else if (!timeline) {
+    // Failed to load: the error alert above says why.
+    body = null;
   } else if (filtered.length === 0) {
     body = (
       <Stack align="center" gap={6} py={48} className={classes.empty}>
@@ -271,7 +271,7 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
   }
 
   return (
-    <Stack gap="md" data-testid="patient-timeline">
+    <Stack gap="md" p="md" data-testid="patient-timeline">
       {timeline && timeline.ongoing.length > 0 && <OngoingCareCard items={timeline.ongoing} onOpen={openOngoing} />}
 
       <Paper withBorder radius="md" className={classes.main}>
@@ -296,18 +296,26 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
                 <Text size="xs" fw={600} c="dimmed" tt="uppercase" className={classes.eyebrow}>
                   Total events
                 </Text>
-                <Text fw={700} className={classes.tabular} aria-label={`Total events: ${total}`}>
-                  {total}
-                </Text>
+                {initialLoading ? (
+                  <Skeleton h={18} w={32} ml="auto" mt={3} radius="sm" />
+                ) : (
+                  <Text fw={700} className={classes.tabular} aria-label={`Total events: ${total}`}>
+                    {total}
+                  </Text>
+                )}
               </Box>
               <Divider orientation="vertical" />
               <Box ta="right">
                 <Text size="xs" fw={600} c="dimmed" tt="uppercase" className={classes.eyebrow}>
                   Visible
                 </Text>
-                <Text fw={700} c="blue.7" className={classes.tabular}>
-                  {visiblePercent}%
-                </Text>
+                {initialLoading ? (
+                  <Skeleton h={18} w={40} ml="auto" mt={3} radius="sm" />
+                ) : (
+                  <Text fw={700} c="blue.7" className={classes.tabular}>
+                    {visiblePercent}%
+                  </Text>
+                )}
               </Box>
             </Group>
             <Tooltip label="Refresh" withArrow>
@@ -395,9 +403,14 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
                 { value: 'condition', label: 'Condition' },
               ]}
             />
-            <Text size="xs" c="dimmed" className={classes.countPill}>
-              Showing <b>{filtered.length}</b> of <b>{total}</b> · <b className={classes.percent}>{visiblePercent}%</b>
-            </Text>
+            {initialLoading ? (
+              <Skeleton h={26} w={130} radius="md" />
+            ) : (
+              <Text size="xs" c="dimmed" className={classes.countPill}>
+                Showing <b>{filtered.length}</b> of <b>{total}</b> ·{' '}
+                <b className={classes.percent}>{visiblePercent}%</b>
+              </Text>
+            )}
             {active && (
               <Button
                 variant="subtle"

@@ -62,6 +62,7 @@ export async function fetchTimelineSources(
 
 export interface PatientTimelineData {
   timeline?: PatientTimeline;
+  /** True while a request is in flight; a previously loaded timeline may still be returned meanwhile. */
   loading: boolean;
   error?: string;
   /** Resource types with more records than were loaded. */
@@ -69,8 +70,39 @@ export interface PatientTimelineData {
   reload: () => void;
 }
 
+interface CachedTimeline {
+  timeline: PatientTimeline;
+  truncatedTypes: ResourceType[];
+}
+
+/** Patients whose last timeline is kept in memory, so returning to the tab renders instantly. */
+export const TIMELINE_CACHE_SIZE = 10;
+
+// Keyed by client so a sign-out (new client) or a test's fresh MockClient never sees old data.
+const timelineCaches = new WeakMap<MedplumClient, Map<string, CachedTimeline>>();
+
+function getCache(medplum: MedplumClient): Map<string, CachedTimeline> {
+  let cache = timelineCaches.get(medplum);
+  if (!cache) {
+    cache = new Map();
+    timelineCaches.set(medplum, cache);
+  }
+  return cache;
+}
+
+function remember(medplum: MedplumClient, patientId: string, entry: CachedTimeline): void {
+  const cache = getCache(medplum);
+  cache.delete(patientId);
+  cache.set(patientId, entry);
+  if (cache.size > TIMELINE_CACHE_SIZE) {
+    const oldest = cache.keys().next().value as string;
+    cache.delete(oldest);
+  }
+}
+
 /**
  * Loads and builds the timeline for a patient. Stale responses from a previous patient are ignored.
+ * The last timeline loaded for a patient is shown straight away while a fresh copy loads.
  * @param patientId - The patient id, or undefined while the patient is loading.
  * @returns The timeline plus loading/error state and a reload callback.
  */
@@ -94,13 +126,21 @@ export function usePatientTimelineData(patientId: string | undefined): PatientTi
     const key = `${patientId}:${reloadKey}`;
     fetchTimelineSources(medplum, patientId)
       .then(({ sources, truncatedTypes }) => {
+        const timeline = buildPatientTimeline(sources);
+        remember(medplum, patientId, { timeline, truncatedTypes });
         if (active) {
-          setSettled({ requestKey: key, timeline: buildPatientTimeline(sources), truncatedTypes });
+          setSettled({ requestKey: key, timeline, truncatedTypes });
         }
       })
       .catch((err: unknown) => {
         if (active) {
-          setSettled({ requestKey: key, truncatedTypes: [], error: normalizeErrorString(err) });
+          const cached = getCache(medplum).get(patientId);
+          setSettled({
+            requestKey: key,
+            timeline: cached?.timeline,
+            truncatedTypes: cached?.truncatedTypes ?? [],
+            error: normalizeErrorString(err),
+          });
         }
       });
     return () => {
@@ -110,12 +150,13 @@ export function usePatientTimelineData(patientId: string | undefined): PatientTi
 
   const reload = useCallback(() => setReloadKey((key) => key + 1), []);
   const current = settled.requestKey === requestKey;
+  const cached = !current && patientId ? getCache(medplum).get(patientId) : undefined;
 
   return {
-    timeline: current ? settled.timeline : undefined,
+    timeline: current ? settled.timeline : cached?.timeline,
     loading: requestKey !== '' && !current,
     error: current ? settled.error : undefined,
-    truncatedTypes: current ? settled.truncatedTypes : [],
+    truncatedTypes: current ? settled.truncatedTypes : (cached?.truncatedTypes ?? []),
     reload,
   };
 }

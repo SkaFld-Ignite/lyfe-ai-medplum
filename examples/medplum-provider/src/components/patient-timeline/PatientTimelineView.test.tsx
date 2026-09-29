@@ -134,6 +134,9 @@ describe('PatientTimelineView', () => {
   test('renders the header, stats and day sections', async () => {
     setup();
     expect(screen.getByRole('heading', { name: 'Patient Timeline' })).toBeInTheDocument();
+    // While loading: a placeholder timeline, not a misleading "0 events".
+    expect(screen.getByLabelText('Loading timeline')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Total events: 0')).not.toBeInTheDocument();
     await waitForTimeline();
 
     // Office visit, emergency visit, GERD condition, and one day of unlinked labs.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Loader, Modal, ScrollArea } from '@mantine/core';
-import { getReferenceString, isOk } from '@medplum/core';
+import { Modal, ScrollArea } from '@mantine/core';
+import { isOk } from '@medplum/core';
 import type { OperationOutcome } from '@medplum/fhirtypes';
 import {
   createPharmaciesSection,
@@ -13,18 +13,21 @@ import {
 } from '@medplum/react';
 import type { JSX } from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import { Outlet, useNavigate } from 'react-router';
+import { Outlet, useNavigate, useParams } from 'react-router';
 import { usePharmacyDialog } from '../../components/pharmacy/usePharmacyDialog';
 import { useDoseSpotAccess } from '../../hooks/useDoseSpotAccess';
 import { usePatient } from '../../hooks/usePatient';
 import { OrderLabsPage } from '../labs/OrderLabsPage';
 import classes from './PatientPage.module.css';
 import { getPatientPageTabs, patientPathPrefix } from './PatientPage.utils';
+import { PatientSummarySkeleton, PatientTabContentSkeleton } from './PatientPageSkeleton';
 import { PatientSectionTabs } from './PatientSectionTabs';
 
 export function PatientPage(): JSX.Element {
   const navigate = useNavigate();
   const medplum = useMedplum();
+  // The route id is known before the patient loads, so the layout and tabs can render straight away.
+  const { patientId = '' } = useParams();
   const membership = medplum.getProjectMembership();
   const [outcome, setOutcome] = useState<OperationOutcome>();
   const patient = usePatient({ setOutcome });
@@ -37,9 +40,9 @@ export function PatientPage(): JSX.Element {
       tabs.map((t) => ({
         id: t.id,
         label: t.label,
-        value: (t.url ? t.url.replace('%patient.id', patient?.id ?? '') : t.id) || t.id,
+        value: (t.url ? t.url.replace('%patient.id', patientId) : t.id) || t.id,
       })),
-    [patient?.id, tabs]
+    [patientId, tabs]
   );
 
   const handleCloseLabsModal = useCallback(() => {
@@ -62,35 +65,30 @@ export function PatientPage(): JSX.Element {
     );
   }
 
-  const patientId = patient?.id;
-  if (!patientId) {
-    return (
-      <Document>
-        <Loader />
-      </Document>
-    );
-  }
+  const loaded = patient?.id ? patient : undefined;
 
   return (
     <>
-      <div key={getReferenceString(patient)} className={classes.container}>
+      <div key={patientId} className={classes.container} aria-busy={!loaded}>
         <div className={classes.sidebar}>
           <ScrollArea className={classes.scrollArea}>
-            <PatientSummary
-              patient={patient}
-              onClickResource={(resource) =>
-                navigate(`/Patient/${patientId}/${resource.resourceType}/${resource.id}`)?.catch(console.error)
-              }
-              sections={sections}
-            />
+            {loaded ? (
+              <PatientSummary
+                patient={loaded}
+                onClickResource={(resource) =>
+                  navigate(`/Patient/${patientId}/${resource.resourceType}/${resource.id}`)?.catch(console.error)
+                }
+                sections={sections}
+              />
+            ) : (
+              <PatientSummarySkeleton />
+            )}
           </ScrollArea>
         </div>
 
         <div className={classes.content}>
           <PatientSectionTabs baseUrl={patientPathPrefix(patientId)} tabs={resolvedTabs} />
-          <div className={classes.contentBody}>
-            <Outlet />
-          </div>
+          <div className={classes.contentBody}>{loaded ? <Outlet /> : <PatientTabContentSkeleton />}</div>
         </div>
       </div>
       <Modal opened={isLabsModalOpen} onClose={handleCloseLabsModal} size="xl" centered title="Order Labs">

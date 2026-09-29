@@ -1,6 +1,18 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Badge, Box, Collapse, Group, Stack, Text, ThemeIcon, UnstyledButton } from '@mantine/core';
+import {
+  Badge,
+  Box,
+  Collapse,
+  Divider,
+  Group,
+  Paper,
+  Skeleton,
+  Stack,
+  Text,
+  ThemeIcon,
+  UnstyledButton,
+} from '@mantine/core';
 import { IconChevronDown, IconChevronRight, IconEye } from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
 import { useState } from 'react';
@@ -177,5 +189,45 @@ function RecordGroup({
         </Stack>
       </Collapse>
     </Box>
+  );
+}
+
+// Two placeholder days, shaped like the real day sections so nothing jumps when data arrives.
+const SKELETON_DAYS = [3, 2];
+
+/**
+ * Loading placeholder shaped like the timeline: day headers and cards on the rail.
+ * @returns The skeleton.
+ */
+export function TimelineSkeleton(): JSX.Element {
+  return (
+    <Stack gap="xl" aria-busy="true" aria-label="Loading timeline">
+      {SKELETON_DAYS.map((cards, day) => (
+        <Box key={day}>
+          <Group gap="sm" wrap="nowrap" className={classes.dayHeader}>
+            <Skeleton h={30} w={132} radius="md" />
+            <Divider flex={1} />
+            <Skeleton h={10} w={48} radius="xl" />
+          </Group>
+          <Box className={classes.rail}>
+            {Array.from({ length: cards }, (_, i) => (
+              <Box key={i} className={classes.railItem}>
+                <Skeleton circle h={28} w={28} className={classes.railDot} />
+                <Paper withBorder radius="md" p="md">
+                  <Stack gap={8}>
+                    <Skeleton h={12} w={`${45 - i * 8}%`} radius="xl" />
+                    <Skeleton h={10} w="28%" radius="xl" />
+                    <Group gap={6}>
+                      <Skeleton h={16} w={64} radius="xl" />
+                      <Skeleton h={16} w={72} radius="xl" />
+                    </Group>
+                  </Stack>
+                </Paper>
+              </Box>
+            ))}
+          </Box>
+        </Box>
+      ))}
+    </Stack>
   );
 }

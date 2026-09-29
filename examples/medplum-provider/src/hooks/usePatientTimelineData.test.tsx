@@ -79,6 +79,45 @@ describe('usePatientTimelineData', () => {
   });
 });
 
+describe('usePatientTimelineData cache', () => {
+  test('shows the last timeline straight away while a fresh copy loads', async () => {
+    const medplum = new MockClient();
+    const first = renderHook(() => usePatientTimelineData(HomerSimpson.id), { wrapper: wrapperFor(medplum) });
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    const loaded = first.result.current.timeline;
+    expect(loaded).toBeDefined();
+    first.unmount();
+
+    // Coming back to the tab: the cached timeline renders immediately, flagged as refreshing.
+    const second = renderHook(() => usePatientTimelineData(HomerSimpson.id), { wrapper: wrapperFor(medplum) });
+    expect(second.result.current.loading).toBe(true);
+    expect(second.result.current.timeline).toBe(loaded);
+    await waitFor(() => expect(second.result.current.loading).toBe(false));
+  });
+
+  test('keeps the cached timeline when a refresh fails', async () => {
+    const medplum = new MockClient();
+    const first = renderHook(() => usePatientTimelineData(HomerSimpson.id), { wrapper: wrapperFor(medplum) });
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    first.unmount();
+
+    vi.spyOn(medplum, 'search').mockRejectedValue(new Error('Offline'));
+    const second = renderHook(() => usePatientTimelineData(HomerSimpson.id), { wrapper: wrapperFor(medplum) });
+    await waitFor(() => expect(second.result.current.error).toBe('Offline'));
+    expect(second.result.current.timeline).toBeDefined();
+  });
+
+  test('does not share cached timelines between clients', async () => {
+    const medplum = new MockClient();
+    const first = renderHook(() => usePatientTimelineData(HomerSimpson.id), { wrapper: wrapperFor(medplum) });
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    first.unmount();
+
+    const other = renderHook(() => usePatientTimelineData(HomerSimpson.id), { wrapper: wrapperFor(new MockClient()) });
+    expect(other.result.current.timeline).toBeUndefined();
+  });
+});
+
 describe('fetchTimelineSources', () => {
   test('searches every type by patient and DrChrono tag, and reports types with more pages', async () => {
     const medplum = new MockClient();
