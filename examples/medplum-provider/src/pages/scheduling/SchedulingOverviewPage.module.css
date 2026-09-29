@@ -1,0 +1,59 @@
+.page {
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-8));
+  min-height: 100vh;
+}
+
+.eyebrow {
+  letter-spacing: 0.06em;
+}
+
+.layout {
+  display: flex;
+  gap: var(--mantine-spacing-md);
+  align-items: stretch;
+  min-height: 0;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+}
+
+.calendarCard {
+  height: calc(100vh - 260px);
+  min-height: 560px;
+  overflow-x: auto;
+}
+
+/* Cancelled / no-show appointments stay visible but read as inactive. */
+.calendar :global(.appointment.cancelled),
+.calendar :global(.appointment.noshow) {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.rail {
+  position: relative;
+  width: 400px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* Fill the rail so the panel matches the calendar's height and scrolls internally. */
+.railInner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The compact day drawer reuses the panel's own header, so float the close button over it. */
+.drawerHeader {
+  position: absolute;
+  top: var(--mantine-spacing-xs);
+  right: var(--mantine-spacing-xs);
+  padding: 0;
+  min-height: 0;
+  background: transparent;
+  z-index: 1;
+}

@@ -65,6 +65,7 @@ import { ResourceSchedulingPage } from './pages/resource/ResourceSchedulingPage'
 import { SchedulePage } from './pages/schedule/SchedulePage';
 import { ScheduleSettingsPage } from './pages/schedule/ScheduleSettingsPage';
 import { InternalSchedulingWorkspacePage } from './pages/scheduling/InternalSchedulingWorkspacePage';
+import { SchedulingOverviewPage } from './pages/scheduling/SchedulingOverviewPage';
 import { SearchPage } from './pages/SearchPage';
 import { BillingSetupPage } from './pages/settings/BillingSetupPage';
 import { SignInPage } from './pages/SignInPage';
@@ -157,7 +158,7 @@ export function App(): JSX.Element | null {
                     label: 'Patients',
                     href: '/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated',
                   },
-                  { icon: <IconCalendarEvent />, label: 'Schedule', href: `/Calendar/Schedule` },
+                  { icon: <IconCalendarEvent />, label: 'Scheduling', href: '/scheduling' },
                   {
                     icon: <IconMail />,
                     label: 'Messages',
@@ -308,6 +309,7 @@ export function App(): JSX.Element | null {
               <Route path="/Calendar/Schedule" element={<SchedulePage />} />
               <Route path="/Calendar/Schedule/:id" element={<SchedulePage />} />
               <Route path="/Calendar/Schedule/:id/settings" element={<ScheduleSettingsPage />} />
+              <Route path="/scheduling" element={<SchedulingOverviewPage />} />
               {/* Internal-only test harness for `SchedulingWorkspace` — intentionally not in `menus` above */}
               <Route path="/internal-scheduling-workspace" element={<InternalSchedulingWorkspacePage />} />
               <Route path="/signin" element={<SignInPage />} />
