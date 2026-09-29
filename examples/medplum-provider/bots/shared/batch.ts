@@ -1,5 +1,14 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
+// Medplum's vmcontext sandbox is built by hand and provides ONLY: console,
+// fetch, require, process, ContentType, Hl7Message, MedplumClient, TextDecoder,
+// TextEncoder, URL, URLSearchParams and event. There is no global setTimeout, so
+// a bare `setTimeout` here throws — and it throws at exactly the worst moment,
+// on the first 429 backoff, i.e. only under load and only after writes have
+// already begun. Importing from node:timers compiles to `require`, which the
+// sandbox does provide. Kept here rather than in each bot so no future bot has
+// to remember it.
+import { setTimeout as nodeSetTimeout } from 'node:timers';
 /**
  * Rate-limit-aware batched writes against a Medplum server.
  *
@@ -100,7 +109,7 @@ export interface BatchOptions {
  */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    nodeSetTimeout(resolve, ms);
   });
 }
 

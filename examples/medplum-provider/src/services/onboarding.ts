@@ -14,6 +14,7 @@
  * `vite dev` and would have 404'd in any production build.
  */
 import type { MedplumClient } from '@medplum/core';
+import type { OperationOutcome } from '@medplum/fhirtypes';
 
 export interface DrChronoPatientSummary {
   readonly id: number;
@@ -135,3 +136,75 @@ export async function previewBulkImport(
 
 /** Identifier system DrChrono patients are stamped with when imported. */
 export const DRCHRONO_IDENTIFIER_SYSTEM = 'https://drchrono.com/patients';
+
+/** Identifier of the bot that imports one DrChrono chart into Medplum. */
+const IMPORT_BOT_IDENTIFIER = 'https://lyfe.health/bots|lyfe-drchrono-import';
+
+export interface ImportResult {
+  readonly ok: boolean;
+  readonly medplumPatientId?: string;
+  readonly counts?: Record<string, number>;
+  readonly taskId?: string;
+  readonly durationMs?: number;
+  readonly error?: string;
+}
+
+/**
+ * Import one DrChrono patient's chart into Medplum.
+ *
+ * The bot does the work server-side against the calling clinic's own DrChrono
+ * credentials, and records a FHIR Task so a long import stays inspectable after
+ * the browser has moved on.
+ * @param medplum - Authenticated Medplum client.
+ * @param drchronoPatientId - The DrChrono patient id to import.
+ * @param onProgress - Called with a human-readable status while the job runs.
+ * @returns The bot's result, including per-resource-type counts on success.
+ */
+export async function importDrChronoPatient(
+  medplum: MedplumClient,
+  drchronoPatientId: number | string,
+  onProgress?: (status: string) => void
+): Promise<ImportResult> {
+  const bot = await medplum.searchOne('Bot', { identifier: IMPORT_BOT_IDENTIFIER });
+  if (!bot?.id) {
+    throw new OnboardingBackendUnavailableError(
+      `No Bot found with identifier ${IMPORT_BOT_IDENTIFIER}. Run "npm run deploy:bots".`
+    );
+  }
+
+  // Deliberately async, not a plain executeBot.
+  //
+  // Railway caps any single request at 300s. A synchronous $execute of a real
+  // chart import is killed at that ceiling with a 502 — and MedplumClient
+  // RETRIES it, which starts a SECOND concurrent import of the same patient
+  // while the first is still running server-side. The async pattern returns
+  // immediately with a job to poll, and has no such ceiling.
+  const accepted = await medplum.startAsyncRequest<OperationOutcome>(`fhir/R4/Bot/${bot.id}/$execute`, {
+    body: JSON.stringify({ action: 'import', drchronoPatientId: String(drchronoPatientId) }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const statusUrl = accepted.issue?.[0]?.diagnostics ?? '';
+  const jobId = /\/job\/([0-9a-f-]+)\/status/.exec(statusUrl)?.[1];
+  if (!jobId) {
+    throw new Error(`Import did not start: ${statusUrl || 'no job id in response'}`);
+  }
+
+  const POLL_MS = 5000;
+  const MAX_POLLS = 240; // 20 minutes; a Zus-sized chart took 19
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((resolve) => {
+      setTimeout(resolve, POLL_MS);
+    });
+    const job = await medplum.readResource('AsyncJob', jobId);
+    if (job.status === 'completed') {
+      const raw = job.output?.parameter?.find((p) => p.name === 'responseBody')?.valueString;
+      return raw ? (JSON.parse(raw) as ImportResult) : { ok: true };
+    }
+    if (job.status === 'error') {
+      return { ok: false, error: 'Import failed — see the Task for details.' };
+    }
+    onProgress?.(`importing… ${Math.round(((i + 1) * POLL_MS) / 1000)}s`);
+  }
+  return { ok: false, error: 'Import is still running after 20 minutes; check the Task.' };
+}

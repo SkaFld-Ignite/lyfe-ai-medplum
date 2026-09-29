@@ -76,6 +76,11 @@ const PROJECT_SCOPED_READONLY = [
   'ValueSet',
   'CodeSystem',
   'UserConfiguration',
+  // Long imports must run with `Prefer: respond-async`: Railway caps any single
+  // request at 300s, so a synchronous $execute is killed mid-import — and the
+  // Medplum client RETRIES that failure, starting a second concurrent import.
+  // Polling the resulting job needs read access to AsyncJob.
+  'AsyncJob',
 ];
 
 /** Scheduling is clinic-level and must be writable to book anything. */

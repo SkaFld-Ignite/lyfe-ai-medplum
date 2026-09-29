@@ -35,6 +35,20 @@ interface BotDefinition {
 
 const BOTS: BotDefinition[] = [
   {
+    name: 'lyfe-drchrono-import',
+    description: "Import one DrChrono patient's chart into Medplum as FHIR, scoped to the calling clinic.",
+    source: 'drchrono-import.ts',
+    // Importing a chart is thousands of writes even batched. The 10s default
+    // would abort mid-import, leaving a half-written chart behind.
+    timeout: 900,
+  },
+  {
+    name: 'lyfe-zus-import',
+    description: "Enrol a patient in Zus and pull their longitudinal record into Medplum.",
+    source: 'zus-import.ts',
+    timeout: 900,
+  },
+  {
     name: 'lyfe-drchrono-search',
     description: 'Read-only DrChrono patient search and bulk-import preview for the onboarding flow.',
     source: 'drchrono-search.ts',

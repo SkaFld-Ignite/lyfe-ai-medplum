@@ -4,10 +4,10 @@ import { Alert, Badge, Button, Loader, Paper, Stack, Table, Tabs, Text, TextInpu
 import { useMedplum } from '@medplum/react';
 import { IconAlertCircle, IconSearch, IconUserPlus } from '@tabler/icons-react';
 import type { JSX } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LyfePageHeader } from '../../components/brand/LyfePageHeader';
 import type { DrChronoPatientSummary } from '../../services/onboarding';
-import { formatDrChronoName, searchDrChronoPatients } from '../../services/onboarding';
+import { formatDrChronoName, importDrChronoPatient, searchDrChronoPatients } from '../../services/onboarding';
 import { BulkImportPanel } from './BulkImportPanel';
 
 const MIN_QUERY_LENGTH = 2;
@@ -29,6 +29,29 @@ export function LyfeOnboardingPage(): JSX.Element {
   const [error, setError] = useState<string>();
   const abortRef = useRef<AbortController | undefined>(undefined);
   const [tab, setTab] = useState<string | null>('search');
+
+  // Keyed by DrChrono patient id so each row reports its own progress; a single
+  // shared flag would blank every other row's outcome the moment one is clicked.
+  const [importing, setImporting] = useState<Record<string, boolean>>({});
+  const [imported, setImported] = useState<Record<string, { ok: boolean; detail: string }>>({});
+
+  const runImport = useCallback(
+    (patient: DrChronoPatientSummary): void => {
+      const id = String(patient.id);
+      setImporting((m) => ({ ...m, [id]: true }));
+      importDrChronoPatient(medplum, id)
+        .then((r) => {
+          const total = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
+          setImported((m) => ({
+            ...m,
+            [id]: r.ok ? { ok: true, detail: `${total} resources` } : { ok: false, detail: r.error ?? 'Import failed' },
+          }));
+        })
+        .catch((err: Error) => setImported((m) => ({ ...m, [id]: { ok: false, detail: err.message } })))
+        .finally(() => setImporting((m) => ({ ...m, [id]: false })));
+    },
+    [medplum]
+  );
 
   useEffect(() => {
     const trimmed = query.trim();
@@ -159,9 +182,21 @@ export function LyfeOnboardingPage(): JSX.Element {
                           )}
                         </Table.Td>
                         <Table.Td ta="right">
-                          <Button size="xs" radius="md" disabled title="Import runs as a Medplum Bot — not yet enabled">
-                            Import
-                          </Button>
+                          {imported[String(patient.id)] ? (
+                            <Text size="xs" c={imported[String(patient.id)].ok ? 'teal.7' : 'red.7'}>
+                              {imported[String(patient.id)].ok ? 'Imported — ' : ''}
+                              {imported[String(patient.id)].detail}
+                            </Text>
+                          ) : (
+                            <Button
+                              size="xs"
+                              radius="md"
+                              loading={importing[String(patient.id)]}
+                              onClick={() => runImport(patient)}
+                            >
+                              Import
+                            </Button>
+                          )}
                         </Table.Td>
                       </Table.Tr>
                     ))}

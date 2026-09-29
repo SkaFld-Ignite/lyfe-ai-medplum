@@ -174,7 +174,7 @@ function StatusBadge(props: StatusBadgeProps): JSX.Element {
 interface ConfigRowProps {
   readonly label: string;
   readonly value?: string;
-  /** Shown, marked as unsaved, when nothing is stored for this setting. */
+  /** Computed default, shown when nothing is stored for this setting. */
   readonly fallback?: string;
 }
 
@@ -195,15 +195,6 @@ function ConfigRow(props: ConfigRowProps): JSX.Element {
       <Text size="sm" c={saved ? 'gray.8' : 'gray.5'} style={{ wordBreak: 'break-all' }}>
         {saved ? props.value : (props.fallback ?? 'Not set')}
       </Text>
-      {/* A value the page computed but has never persisted is not the same as a
-          configured one — the bot reads only what is stored, so Connect fails
-          until it is saved. Saying "Not set" beside a filled-in modal field read
-          as a bug; this says which state it is actually in. */}
-      {!saved && props.fallback && (
-        <Text fz={11} c="orange.7">
-          default — not saved yet
-        </Text>
-      )}
     </Box>
   );
 }
