@@ -3,7 +3,7 @@
 import { Paper, Stack } from '@mantine/core';
 import type { Filter, SearchRequest, SortRule } from '@medplum/core';
 import { DEFAULT_SEARCH_COUNT, formatSearchQuery, isReference, parseSearchRequest } from '@medplum/core';
-import type { Patient, Reference, Resource, ResourceType, UserConfiguration } from '@medplum/fhirtypes';
+import type { Patient, Reference, Resource, UserConfiguration } from '@medplum/fhirtypes';
 import { Loading, SearchControl, useMedplum } from '@medplum/react';
 import { IconClipboardCheck, IconFileText, IconMail, IconUsers } from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
@@ -46,7 +46,7 @@ export function SearchPage(): JSX.Element {
   useEffect(() => {
     const resourceType = search?.resourceType;
     if (!resourceType) {
-      return;
+      return undefined;
     }
     let cancelled = false;
     setTotal(undefined);
