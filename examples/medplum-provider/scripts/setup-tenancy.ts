@@ -21,7 +21,12 @@ const ORG_IDENTIFIER_SYSTEM = 'https://lyfe.health/organization';
 const POLICY_NAME = 'Lyfe Clinic Access Policy';
 
 /**
- * Resources a clinic user may touch, each confined to their own compartment.
+ * Patient data a clinic user may touch, each confined to their own compartment.
+ *
+ * `Basic` is deliberately absent from every list below: it holds the encrypted
+ * integration credentials, and because Medplum access policies are allow-lists,
+ * leaving it out is what makes those records unreadable to clinic users. Adding
+ * it here would silently expose every tenant's credential record.
  * Anything absent is denied: Medplum access policies are allow-lists, which is
  * what keeps integration credentials unreadable by ordinary users.
  */
@@ -41,7 +46,40 @@ const COMPARTMENT_SCOPED = [
   'Immunization',
   'Procedure',
   'Coverage',
+  'ServiceRequest',
+  'ClinicalImpression',
+  'ChargeItem',
+  'Provenance',
 ];
+
+/**
+ * Types the app needs that are not patient data and so carry no compartment.
+ *
+ * Directories (Practitioner, Organization), catalogue content (Questionnaire,
+ * PlanDefinition, Medication) and scheduling surfaces belong to the project
+ * rather than to one chart, so compartment criteria would deny them outright.
+ * `Binary` matters more than it looks: without it every document attachment and
+ * lab PDF fails to load with a 403 that points nowhere useful.
+ */
+const PROJECT_SCOPED_READONLY = [
+  'Organization',
+  'Practitioner',
+  'PractitionerRole',
+  'Bot',
+  'Questionnaire',
+  'PlanDefinition',
+  'ActivityDefinition',
+  'MedicationKnowledge',
+  'ChargeItemDefinition',
+  'Medication',
+  'Binary',
+  'ValueSet',
+  'CodeSystem',
+  'UserConfiguration',
+];
+
+/** Scheduling is clinic-level and must be writable to book anything. */
+const PROJECT_SCOPED_WRITABLE = ['Schedule', 'Slot'];
 
 /**
  * Sleep out a Medplum 429 and retry.
@@ -132,15 +170,8 @@ async function main(): Promise<void> {
     name: POLICY_NAME,
     compartment: { reference: '%organization' },
     resource: [
-      { resourceType: 'Organization', readonly: true },
-      { resourceType: 'Practitioner', readonly: true },
-      { resourceType: 'PractitionerRole', readonly: true },
-      // `Bot/$execute` first reads the Bot **as the caller**, so a policy that
-      // omits Bot makes every bot in the app answer 403 for clinic users — with
-      // no hint that the access policy, not the bot, is what refused. Read-only
-      // is enough: executing does not require write access, and the bot's own
-      // membership supplies whatever the bot itself needs.
-      { resourceType: 'Bot', readonly: true },
+      ...PROJECT_SCOPED_READONLY.map((resourceType) => ({ resourceType, readonly: true })),
+      ...PROJECT_SCOPED_WRITABLE.map((resourceType) => ({ resourceType })),
       ...COMPARTMENT_SCOPED.map((resourceType) => ({
         resourceType,
         criteria: `${resourceType}?_compartment=%organization`,
