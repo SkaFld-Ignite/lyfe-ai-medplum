@@ -42,14 +42,13 @@ describe('PatientPage', () => {
     );
   };
 
-  test('shows loader when patient is loading', async () => {
-    // Use a non-existent patient ID to simulate loading
-    setup('/Patient/non-existent-patient');
+  test('shows the page layout with placeholders while the patient is loading', async () => {
+    // A patient read that never resolves keeps the page in its loading state.
+    vi.spyOn(medplum, 'readReference').mockReturnValue(new Promise(() => {}) as never);
+    setup(`/Patient/${HomerSimpson.id}`);
 
-    await waitFor(() => {
-      const loader = document.querySelector('.mantine-Loader-root');
-      expect(loader).toBeInTheDocument();
-    });
+    expect(document.querySelector('[aria-busy="true"]')).toBeInTheDocument();
+    expect(document.querySelectorAll('.mantine-Skeleton-root').length).toBeGreaterThan(0);
   });
 
   test('renders patient page when patient is loaded', async () => {
@@ -102,15 +101,22 @@ describe('PatientPage', () => {
     });
   });
 
-  test('does not show tabs when patient is loading', async () => {
-    setup('/Patient/non-existent-patient');
+  test('shows the tabs but not the tab content while the patient is loading', async () => {
+    // A patient read that never resolves keeps the page in its loading state.
+    vi.spyOn(medplum, 'readReference').mockReturnValue(new Promise(() => {}) as never);
+    setup(`/Patient/${HomerSimpson.id}`);
+
+    expect(document.querySelector('[aria-busy="true"]')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Timeline' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByTestId('patient-timeline')).not.toBeInTheDocument();
+  });
+
+  test('clears the placeholders once the patient has loaded', async () => {
+    setup(`/Patient/${HomerSimpson.id}`);
 
     await waitFor(() => {
-      const loader = document.querySelector('.mantine-Loader-root');
-      expect(loader).toBeInTheDocument();
+      expect(document.querySelector('[aria-busy="false"]')).toBeInTheDocument();
     });
-
-    expect(screen.queryByText('Timeline')).not.toBeInTheDocument();
   });
 
   test('defaults to timeline tab when URL does not match any tab', async () => {

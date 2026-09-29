@@ -118,3 +118,5 @@ AGENTS.md
 
 # Temp files
 temp/
+old-code/
+.old-code/*
