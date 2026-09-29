@@ -41,7 +41,7 @@
  * `Basic`, so no clinic user can read a credential record by any route.
  */
 import type { BotEvent, MedplumClient } from '@medplum/core';
-import type { Basic, Organization, ProjectMembership, Reference } from '@medplum/fhirtypes';
+import type { Basic, Organization, Reference } from '@medplum/fhirtypes';
 import type { Buffer } from 'node:buffer';
 import type { IntegrationKey } from './shared/credentials';
 import {
@@ -53,9 +53,7 @@ import {
   readCredentialRecord,
   writeCredentialRecord,
 } from './shared/credentials';
-
-/** Access parameter name on the clinic access policy. */
-const ORGANIZATION_PARAMETER = 'organization';
+import { resolveCallerOrganization } from './shared/tenant.ts';
 
 /** Fallback DrChrono API base, matching lyfe-provider-ui's DRCHRONO_API. */
 const DRCHRONO_API_URL = 'https://app.drchrono.com/api';
@@ -181,58 +179,6 @@ async function dispatch(medplum: MedplumClient, event: BotEvent<Input>): Promise
         `Unknown action ${JSON.stringify(input.action)}. Expected getStatus, saveCredentials or testConnection.`
       );
   }
-}
-
-/**
- * Resolve the caller's clinic from their own ProjectMembership.
- *
- * Reads every membership for the profile and every `organization` access
- * parameter on each, then insists the result is exactly one organization.
- * @param props - The lookup inputs.
- * @param props.medplum - Bot-scoped Medplum client.
- * @param props.requester - `event.requester`, set by the server from the caller's membership.
- * @returns A reference to the caller's organization.
- */
-async function resolveCallerOrganization(props: {
-  medplum: MedplumClient;
-  requester: BotEvent['requester'];
-}): Promise<Reference<Organization>> {
-  const profile = props.requester?.reference;
-  if (!profile) {
-    throw new Error('No requester on this execution: the caller could not be identified');
-  }
-
-  const memberships = (await props.medplum.searchResources(
-    'ProjectMembership',
-    `profile=${encodeURIComponent(profile)}&_count=50`
-  )) as ProjectMembership[];
-
-  const references = new Set<string>();
-  for (const membership of memberships) {
-    for (const access of membership.access ?? []) {
-      for (const parameter of access.parameter ?? []) {
-        const reference = parameter.valueReference?.reference;
-        if (parameter.name === ORGANIZATION_PARAMETER && reference?.startsWith('Organization/')) {
-          references.add(reference);
-        }
-      }
-    }
-  }
-
-  if (references.size === 0) {
-    throw new Error(
-      `${profile} is not scoped to an organization. ` +
-        'Assign the clinic access policy with an "organization" parameter on their ProjectMembership.'
-    );
-  }
-  if (references.size > 1) {
-    throw new Error(
-      `${profile} is scoped to ${references.size} organizations (${[...references].join(', ')}). ` +
-        'Refusing to guess which clinic this call is for.'
-    );
-  }
-
-  return { reference: [...references][0] };
 }
 
 /**

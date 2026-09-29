@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import type { BotEvent, MedplumClient } from '@medplum/core';
+import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/credentials.ts';
+import { createDrChronoClient } from './shared/drchrono.ts';
+import { resolveCallerOrganization } from './shared/tenant.ts';
 
 /**
  * Read-only DrChrono lookups for the Lyfe onboarding flow.
@@ -10,8 +13,15 @@ import type { BotEvent, MedplumClient } from '@medplum/core';
  * reads: nothing here writes to Medplum or to DrChrono, so it is safe to call
  * on every keystroke.
  *
- * Credentials come from Medplum project secrets, not environment variables —
- * bots have no process env of their own.
+ * Credentials are per clinic, read from that Organization's credential record
+ * rather than from a project-wide secret. A project secret would be one set of
+ * DrChrono credentials for every tenant on the server, which is exactly the
+ * single-tenancy this rewrite exists to remove. The only project secret used
+ * here is the key that decrypts them.
+ *
+ * Token refresh is handled by the client: DrChrono access tokens last about
+ * 48 hours and the refresh token rotates on every use, so the rotated pair is
+ * persisted back to the clinic's record. See shared/drchrono.ts.
  */
 
 interface SearchInput {
@@ -69,16 +79,18 @@ const DAY_MS = 86400000;
  * @returns Matching patients, shaped for the onboarding UI.
  */
 export async function handler(medplum: MedplumClient, event: BotEvent<Input>): Promise<unknown> {
-  const token = event.secrets['DRCHRONO_ACCESS_TOKEN']?.valueString;
-  const apiUrl = event.secrets['DRCHRONO_API_URL']?.valueString ?? 'https://app.drchrono.com/api';
-  if (!token) {
-    throw new Error('DRCHRONO_ACCESS_TOKEN is not set in project secrets');
+  const material = event.secrets[ENCRYPTION_KEY_SECRET_NAME]?.valueString;
+  if (!material) {
+    throw new Error(`${ENCRYPTION_KEY_SECRET_NAME} is not set in project secrets`);
   }
 
-  const get = async (path: string): Promise<Response> =>
-    fetch(path.startsWith('http') ? path : `${apiUrl}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+  const organization = await resolveCallerOrganization({ medplum, requester: event.requester });
+  const client = await createDrChronoClient({
+    medplum,
+    organization,
+    key: deriveEncryptionKey({ material }),
+  });
+  const get = client.fetch;
 
   const input = event.input;
 
