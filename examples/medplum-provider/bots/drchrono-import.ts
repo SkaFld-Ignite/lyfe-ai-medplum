@@ -471,6 +471,8 @@ interface DrDoctor {
   cell_phone?: string;
   /** DrChrono's own retirement flag for a provider. */
   is_account_suspended?: boolean;
+  /** IANA zone the provider's naive timestamps are wall-clock in. */
+  timezone?: string;
 }
 
 interface DrOffice {
@@ -851,17 +853,111 @@ async function drchronoOptional<T>(
  * and occasionally junk. FHIR `instant` accepts only a full ISO 8601 timestamp
  * with a zone, so an un-normalised value 400s the whole batch entry it sits in.
  * @param value - The raw DrChrono value.
+ * @param timeZone - The zone a naive value is wall-clock in. Defaults to the
+ *   practice zone; ignored when the value already carries an offset.
  * @returns A full ISO 8601 instant, or undefined when the value is unusable.
  */
-function toInstant(value: string | undefined | null): string | undefined {
+function toInstant(value: string | undefined | null, timeZone?: string): string | undefined {
   if (!value) {
     return undefined;
   }
   const withT = value.includes('T') ? value : value.replace(' ', 'T');
   const dated = withT.includes('T') ? withT : `${withT}T00:00:00`;
-  const zoned = /[Zz]|[+-]\d\d:?\d\d$/.test(dated) ? dated : `${dated}Z`;
-  const parsed = new Date(zoned);
+
+  // Already carries an offset: trust it.
+  if (/[Zz]|[+-]\d\d:?\d\d$/.test(dated)) {
+    const parsed = new Date(dated);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
+
+  // Naive, which is everything DrChrono sends. `scheduled_time` is the
+  // practice's WALL CLOCK — "2026-09-14T09:15:00" means quarter past nine in
+  // the clinic — and carries no offset at all.
+  //
+  // This used to append `Z`, which declares that wall clock to be UTC. Every
+  // appointment, encounter, vital and document was therefore stored seven or
+  // eight hours from when it happened, and a 9:15am visit rendered as 2:15pm
+  // for a reader in another zone. Nothing errored; the times were simply
+  // wrong, consistently, everywhere.
+  const parsedLocal = zonedWallClockToInstant(dated, timeZone ?? DEFAULT_PRACTICE_TIME_ZONE);
+  return parsedLocal ?? fallbackAsUtc(dated);
+}
+
+/**
+ * Parse a naive timestamp as UTC, which is what this did before time zones
+ * were handled. Reached only when the runtime cannot resolve a zone.
+ * @param dated - A naive ISO timestamp.
+ * @returns The instant, or undefined when unparseable.
+ */
+function fallbackAsUtc(dated: string): string | undefined {
+  const parsed = new Date(`${dated}Z`);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+/**
+ * How far ahead of UTC a zone is at a given instant, in milliseconds.
+ * @param instant - The moment to measure at, since the offset moves with DST.
+ * @param timeZone - An IANA zone name.
+ * @returns The offset, or undefined when the runtime cannot resolve the zone.
+ */
+function zoneOffsetMs(instant: Date, timeZone: string): number | undefined {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+      .formatToParts(instant)
+      .reduce<Record<string, string>>((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+      }, {});
+    const asUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour) % 24,
+      Number(parts.minute),
+      Number(parts.second)
+    );
+    return asUtc - instant.getTime();
+  } catch {
+    // A runtime built without full ICU rejects the zone name outright.
+    return undefined;
+  }
+}
+
+/**
+ * Read a naive timestamp as wall-clock time in a zone, and return the instant.
+ *
+ * Two passes, because the offset depends on the instant we are trying to find.
+ * The first pass guesses with the offset in force at the naive time read as
+ * UTC; the second re-reads the offset at that candidate and corrects it. That
+ * matters only within an hour of a DST change, which is exactly when a silent
+ * one-hour error would be hardest to notice.
+ * @param dated - A naive ISO timestamp, no offset.
+ * @param timeZone - The zone the timestamp is wall-clock in.
+ * @returns The UTC instant, or undefined when the zone cannot be resolved.
+ */
+function zonedWallClockToInstant(dated: string, timeZone: string): string | undefined {
+  const guess = new Date(`${dated}Z`);
+  if (Number.isNaN(guess.getTime())) {
+    return undefined;
+  }
+  const firstOffset = zoneOffsetMs(guess, timeZone);
+  if (firstOffset === undefined) {
+    return undefined;
+  }
+  const candidate = new Date(guess.getTime() - firstOffset);
+  const secondOffset = zoneOffsetMs(candidate, timeZone);
+  const corrected =
+    secondOffset === undefined || secondOffset === firstOffset ? candidate : new Date(guess.getTime() - secondOffset);
+  return corrected.toISOString();
 }
 
 /**
@@ -1819,6 +1915,49 @@ function warnOnUnmappedStatuses(appointments: DrAppointment[]): void {
   }
 }
 
+/**
+ * The zone DrChrono's naive timestamps are wall-clock in, when the record
+ * itself does not say.
+ *
+ * DrChrono reports a `timezone` per doctor — this practice has 11 on
+ * `US/Pacific` and 2 on `US/Eastern` — so an appointment with a known doctor
+ * uses theirs. This is the fallback for the rest, and for a practice whose
+ * doctors report nothing.
+ */
+const DEFAULT_PRACTICE_TIME_ZONE = 'US/Pacific';
+
+/**
+ * The zone DrChrono's naive timestamps are wall-clock in for this practice.
+ *
+ * Deliberately a practice-wide value rather than the individual provider's.
+ * DrChrono reports a `timezone` per doctor, and using it looked more precise
+ * until it was tested: this practice has two doctors set to `US/Eastern`, and
+ * their clinics are in Anaheim. A 9:30am visit at Anaheim Main Office came out
+ * as 6:30am Pacific, because the provider's account setting is where *they*
+ * are, not where the visit is. `scheduled_time` is the clinic's wall clock.
+ *
+ * Offices carry no zone of their own, so the practice zone is taken as the
+ * most common one across its providers — the eleven Californian doctors
+ * outvote the two remote ones — falling back to Pacific when nothing is set.
+ * @param zones - Doctor id to IANA zone, collected from the directory.
+ * @returns The zone to read every naive timestamp in.
+ */
+function practiceZone(zones: Map<string, string>): string {
+  const tally = new Map<string, number>();
+  for (const zone of zones.values()) {
+    tally.set(zone, (tally.get(zone) ?? 0) + 1);
+  }
+  let best = DEFAULT_PRACTICE_TIME_ZONE;
+  let bestCount = 0;
+  for (const [zone, count] of tally) {
+    if (count > bestCount) {
+      best = zone;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 /** DrChrono's default visit length, used when the appointment carries none. */
 const DEFAULT_VISIT_MINUTES = 30;
 
@@ -1830,6 +1969,7 @@ const DEFAULT_VISIT_MINUTES = 30;
  * @param practitioners - DrChrono doctor id to Practitioner reference.
  * @param locations - DrChrono office id to Location reference.
  * @param appointmentRef - The scheduling Appointment, when it was written.
+ * @param timeZone - The zone the appointment's naive times are wall-clock in.
  * @returns The Encounter resource.
  */
 function mapEncounter(
@@ -1838,9 +1978,10 @@ function mapEncounter(
   organization: Reference<Organization>,
   practitioners: Map<string, Reference<Practitioner>>,
   locations: Map<string, Reference<Location>>,
-  appointmentRef: Reference<Appointment> | undefined
+  appointmentRef: Reference<Appointment> | undefined,
+  timeZone: string
 ): Encounter {
-  const start = toInstant(a.scheduled_time);
+  const start = toInstant(a.scheduled_time, timeZone);
   const minutes = a.duration ?? DEFAULT_VISIT_MINUTES;
   const practitioner = a.doctor ? lookup(practitioners, a.doctor) : undefined;
   const location = a.office ? lookup(locations, a.office) : undefined;
@@ -2857,6 +2998,8 @@ interface ImportContext {
   counts: ImportCounts;
   /** DrChrono doctor id to Practitioner reference. */
   practitioners: Map<string, Reference<Practitioner>>;
+  /** DrChrono doctor id to their IANA time zone, for reading naive timestamps. */
+  doctorTimeZones: Map<string, string>;
   /** DrChrono office id to Location reference. */
   locations: Map<string, Reference<Location>>;
   /** DrChrono office ids the clinic has switched off. */
@@ -2953,6 +3096,10 @@ async function importPractice(ctx: ImportContext): Promise<void> {
   ctx.counts.locations = result.locationWrote;
   trackRefs(ctx, 'Location', result.locationIds);
 
+  for (const [drId, zone] of result.doctorTimeZones) {
+    ctx.doctorTimeZones.set(drId, zone);
+  }
+
   ctx.disabledOffices = result.disabledOfficeIds;
   ctx.disabledDoctors = result.disabledDoctorIds;
 }
@@ -2963,6 +3110,8 @@ interface DirectorySyncResult {
   locationWrote: number;
   practitionerIds: (string | null)[];
   locationIds: (string | null)[];
+  /** DrChrono doctor id to IANA time zone. */
+  doctorTimeZones: Map<string, string>;
   practitionerRefs: Map<string, Reference<Practitioner>>;
   locationRefs: Map<string, Reference<Location>>;
   /** How many of each are switched off, for the caller to report. */
@@ -3020,6 +3169,12 @@ async function syncDirectoryResources(
   );
 
   const practitionerRefs = new Map<string, Reference<Practitioner>>();
+  const doctorTimeZones = new Map<string, string>();
+  for (const d of doctors) {
+    if (d.timezone) {
+      doctorTimeZones.set(String(d.id), d.timezone);
+    }
+  }
   for (let i = 0; i < doctors.length; i++) {
     const id = doctorResult.ids[i];
     if (id) {
@@ -3067,6 +3222,7 @@ async function syncDirectoryResources(
     locationIds: officeResult.ids,
     practitionerRefs,
     locationRefs,
+    doctorTimeZones,
     disabledPractitioners: doctorEnabled.filter((e) => !e).length,
     disabledLocations: officeEnabled.filter((e) => !e).length,
     disabledOfficeIds: new Set(offices.filter((_, i) => !officeEnabled[i]).map((o) => o.id)),
@@ -3286,7 +3442,9 @@ async function importAppointments(
 
   // Only a scheduled appointment can occupy a Slot; the rest still become
   // Encounters, which is what carries the clinical content.
-  const scheduled = appointments.filter((a) => Boolean(toInstant(a.scheduled_time)));
+  // One zone for the whole practice: see practiceZone() for why not per-doctor.
+  const zone = practiceZone(ctx.doctorTimeZones);
+  const scheduled = appointments.filter((a) => Boolean(toInstant(a.scheduled_time, zone)));
   const schedule = scheduled.length > 0 ? await getOrCreateSchedule(ctx) : undefined;
 
   const slotRefs = new Map<string, Reference<Slot>>();
@@ -3295,7 +3453,7 @@ async function importAppointments(
       ctx.medplum,
       scheduled.map((a) => ({
         resourceType: 'Slot',
-        resource: mapSlot(a, toInstant(a.scheduled_time) as string, schedule, ctx.organization),
+        resource: mapSlot(a, toInstant(a.scheduled_time, zone) as string, schedule, ctx.organization),
         system: IDENTIFIER_SYSTEMS.slot,
         value: String(a.id),
       })),
@@ -3319,7 +3477,7 @@ async function importAppointments(
       resourceType: 'Appointment',
       resource: mapAppointment(
         a,
-        toInstant(a.scheduled_time) as string,
+        toInstant(a.scheduled_time, zone) as string,
         lookup(slotRefs, a.id) as Reference<Slot>,
         patient,
         a.doctor ? lookup(ctx.practitioners, a.doctor) : undefined,
@@ -3350,7 +3508,8 @@ async function importAppointments(
         ctx.organization,
         ctx.practitioners,
         ctx.locations,
-        lookup(appointmentRefs, a.id)
+        lookup(appointmentRefs, a.id),
+        zone
       ),
       system: IDENTIFIER_SYSTEMS.encounter,
       value: String(a.id),
@@ -3368,7 +3527,7 @@ async function importAppointments(
 
   const vitalEntries: UpsertEntry[] = [];
   for (const appt of appointments) {
-    const effective = toInstant(appt.scheduled_time);
+    const effective = toInstant(appt.scheduled_time, zone);
     if (!appt.vitals || !effective) {
       continue;
     }
@@ -3953,6 +4112,7 @@ async function importChart(
     drchronoPatientId,
     counts,
     practitioners: new Map(),
+    doctorTimeZones: new Map(),
     locations: new Map(),
     disabledOffices: new Set(),
     disabledDoctors: new Set(),
