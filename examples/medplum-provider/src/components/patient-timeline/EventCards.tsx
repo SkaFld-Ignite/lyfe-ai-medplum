@@ -4,6 +4,7 @@ import { Box, Group, Paper, Stack, Text, UnstyledButton } from '@mantine/core';
 import { StatusBadge } from '@medplum/react';
 import { IconClock, IconEye } from '@tabler/icons-react';
 import type { JSX } from 'react';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 import type { ConditionEvent, DayRecordsEvent, TimelineRecord } from '../../utils/patient-timeline';
 import classes from './PatientTimeline.module.css';
 import { formatMediumDate, KIND_CONFIG, summarizeRecords } from './timeline-config';
@@ -17,6 +18,7 @@ import { KindBadge, RecordGroups, SourceBadges } from './TimelineBits';
  * @returns The condition card.
  */
 export function ConditionCard({ event, onOpen }: { event: ConditionEvent; onOpen: () => void }): JSX.Element {
+  const timeZone = useClinicTimeZone();
   return (
     <Paper withBorder radius="md" className={classes.card} data-accent={KIND_CONFIG.condition.color}>
       <Box className={classes.accent} aria-hidden />
@@ -34,7 +36,7 @@ export function ConditionCard({ event, onOpen }: { event: ConditionEvent; onOpen
           <Group gap={4} c="dimmed">
             <IconClock size={12} />
             <Text size="xs" className={classes.tabular}>
-              Onset {formatMediumDate(event.date)}
+              Onset {formatMediumDate(event.date, timeZone)}
             </Text>
           </Group>
           {event.clinicalStatus && <StatusBadge status={event.clinicalStatus} size="xs" variant="light" />}

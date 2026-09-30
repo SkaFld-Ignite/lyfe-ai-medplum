@@ -4,11 +4,9 @@ import type { Appointment, Bundle, Location, Patient, Practitioner } from '@medp
 import { describe, expect, test } from 'vitest';
 import type { OverviewAppointment } from './scheduling-overview';
 import {
-  addDays,
   buildOverviewAppointments,
   countPatients,
   filterOverviewAppointments,
-  fromLocalIsoDate,
   getAppointmentsForDay,
   getColorForKey,
   getInitials,
@@ -17,10 +15,10 @@ import {
   getStatusDisplay,
   groupByProvider,
   isInactiveStatus,
+  parseDayKey,
   PROVIDER_COLORS,
   searchAppointments,
-  startOfDay,
-  toLocalIsoDate,
+  toDayKey,
   UNASSIGNED_PROVIDER_KEY,
 } from './scheduling-overview';
 
@@ -263,22 +261,22 @@ describe('colors and initials', () => {
   });
 });
 
-describe('local dates', () => {
-  test('round-trips local ISO dates', () => {
-    const date = new Date(2026, 0, 5, 23, 59);
-    expect(toLocalIsoDate(date)).toBe('2026-01-05');
-    expect(fromLocalIsoDate('2026-01-05')).toEqual(new Date(2026, 0, 5));
+describe('clinic dates', () => {
+  test("a day key is the clinic's calendar day, not the viewer's", () => {
+    // 16:30 on the 14th at a Pacific clinic is already 05:30 on the 15th in
+    // Karachi. Reading the day off the viewer's clock is what filed an
+    // afternoon clinic under the following date.
+    const afternoonAtTheClinic = new Date('2026-09-14T23:30:00Z');
+    expect(toDayKey(afternoonAtTheClinic, 'US/Pacific')).toBe('2026-09-14');
+    expect(toDayKey(afternoonAtTheClinic, 'Asia/Karachi')).toBe('2026-09-15');
   });
 
-  test('rejects malformed or impossible dates', () => {
-    expect(fromLocalIsoDate(undefined)).toBeUndefined();
-    expect(fromLocalIsoDate('2026-1-5')).toBeUndefined();
-    expect(fromLocalIsoDate('2026-02-30')).toBeUndefined();
-  });
-
-  test('adds days and finds the start of day', () => {
-    expect(addDays(new Date(2026, 11, 31), 1)).toEqual(new Date(2027, 0, 1));
-    expect(startOfDay(new Date(2026, 5, 1, 14, 30))).toEqual(new Date(2026, 5, 1));
+  test('rejects malformed or impossible day keys', () => {
+    expect(parseDayKey('2026-01-05')).toBe('2026-01-05');
+    expect(parseDayKey(null)).toBeUndefined();
+    expect(parseDayKey(undefined)).toBeUndefined();
+    expect(parseDayKey('2026-1-5')).toBeUndefined();
+    expect(parseDayKey('2026-02-30')).toBeUndefined();
   });
 });
 
@@ -298,7 +296,10 @@ describe('filtering and grouping', () => {
       locationKey: 'Location/loc2',
       locationName: 'Annex',
       patient: { reference: 'Patient/p2', id: 'p2', name: 'Marge Simpson' },
-      start: new Date(2026, 8, 30, 10, 0),
+      // 17:00 at a Pacific clinic on 30 September, written as the instant it
+      // actually is. Late afternoon on purpose: that is the range that crossed
+      // midnight for viewers east of the clinic and moved to the wrong day.
+      start: new Date('2026-10-01T00:00:00Z'),
     }),
     row({
       id: 'a3',
@@ -346,8 +347,17 @@ describe('filtering and grouping', () => {
     ).toEqual(['a1']);
   });
 
-  test('picks out a single local day', () => {
-    expect(getAppointmentsForDay(rows, new Date(2026, 8, 30)).map((r) => r.appointment.id)).toEqual(['a2']);
+  test('picks out a single clinic day', () => {
+    expect(getAppointmentsForDay(rows, '2026-09-30', 'US/Pacific').map((r) => r.appointment.id)).toEqual(['a2']);
+  });
+
+  test('a late-afternoon appointment stays on the clinic day it belongs to', () => {
+    // The guarantee this change exists for. 17:00 on the 30th at the clinic is
+    // already 05:00 on 1 October in Karachi, so reading the day off the
+    // viewer's clock moved the whole late clinic to the next date.
+    expect(getAppointmentsForDay(rows, '2026-09-30', 'US/Pacific').map((r) => r.appointment.id)).toEqual(['a2']);
+    expect(getAppointmentsForDay(rows, '2026-09-30', 'Asia/Karachi')).toEqual([]);
+    expect(getAppointmentsForDay(rows, '2026-10-01', 'Asia/Karachi').map((r) => r.appointment.id)).toEqual(['a2']);
   });
 
   test('searches name, MRN, reason and type case-insensitively', () => {

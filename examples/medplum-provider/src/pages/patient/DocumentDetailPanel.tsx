@@ -1,14 +1,31 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { ActionIcon, Box, Divider, Flex, Group, Paper, Stack, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Box, Button, Divider, Flex, Group, Loader, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import type { WithId } from '@medplum/core';
 import { formatDate, getDisplayString, getReferenceString } from '@medplum/core';
 import type { Attachment, DocumentReference, Patient, Reference } from '@medplum/fhirtypes';
-import { useCachedBinaryUrl } from '@medplum/react-hooks';
-import { IconBrowserShare, IconEditCircle, IconPrinter } from '@tabler/icons-react';
+import { useCachedBinaryUrl, useMedplum } from '@medplum/react-hooks';
+import { IconBrowserShare, IconEditCircle, IconExternalLink, IconPrinter } from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
 import { useState } from 'react';
+import { XmlDocumentPreview } from '../../components/cda/XmlDocumentPreview';
 import { SendFaxModal } from '../../components/fax/SendFaxModal';
+import {
+  CsvPreview,
+  DocxPreview,
+  DownloadOnlyPreview,
+  SpreadsheetPreview,
+  TextPreview,
+  TiffPreview,
+} from '../../components/patient-documents/RichFilePreview';
+import { useAttachmentBlob } from '../../hooks/useAttachmentBlob';
+import { useAttachmentPreviewUrl } from '../../hooks/useAttachmentPreviewUrl';
+import { isXmlContentType } from '../../utils/cda';
+import { getAttachmentContentType } from '../../utils/document-file-type';
+import { showErrorNotification } from '../../utils/notifications';
+import { FILE_NOT_COPIED_MESSAGE, openAttachment } from '../../utils/open-attachment';
+import type { PreviewKind } from '../../utils/preview-kind';
+import { getPreviewKind } from '../../utils/preview-kind';
 import { getDocumentTypeDisplay } from './DocumentReference.utils';
 import { EditDocumentDetailsModal } from './EditDocumentDetailsModal';
 
@@ -33,14 +50,28 @@ export function DocumentDetailPanel({
   const [faxModalOpened, setFaxModalOpened] = useState(false);
   const [editModalOpened, setEditModalOpened] = useState(false);
 
-  const attachment = getAttachment(item);
+  const storedAttachment = getAttachment(item);
+  // Older imports stored files without a content type; infer it from the name so they still preview.
+  const attachment = storedAttachment && {
+    ...storedAttachment,
+    contentType: getAttachmentContentType(item, storedAttachment),
+  };
   const attachmentUrl = useCachedBinaryUrl(attachment?.url);
+  const framed = isPdfLike(attachment);
+  // PDFs and text render in an iframe, which Medplum-hosted URLs cannot be loaded into directly.
+  const {
+    previewUrl: framedUrl,
+    loading: framedLoading,
+    error: framedError,
+  } = useAttachmentPreviewUrl(framed ? attachmentUrl : undefined, attachment?.contentType);
   const name = getDisplayString(item);
   const referenceString = getReferenceString(item);
 
+  const medplum = useMedplum();
+  const fileUrl = attachmentUrl ?? attachment?.url;
   const handleOpenInBrowser = (): void => {
-    if (attachment?.url) {
-      window.open(attachment.url, '_blank');
+    if (fileUrl) {
+      openAttachment(medplum, fileUrl, { contentType: attachment?.contentType }).catch(showErrorNotification);
     }
   };
 
@@ -99,10 +130,25 @@ export function DocumentDetailPanel({
 
             <Divider />
 
-            {isPdfLike(attachment) ? (
+            {framed ? (
               <>
                 <Box p="md" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                  {attachmentUrl && (
+                  {framedError && (
+                    <NoPreview
+                      onOpen={framedError === 'invalid' ? handleOpenInBrowser : undefined}
+                      message={
+                        framedError === 'invalid'
+                          ? "This file is damaged or isn't a real PDF, so it can't be previewed."
+                          : "This file hasn't been copied into Lyfe yet. Re-import the patient to fetch it."
+                      }
+                    />
+                  )}
+                  {framedLoading && (
+                    <Flex flex={1} justify="center" align="center">
+                      <Loader size="sm" />
+                    </Flex>
+                  )}
+                  {framedUrl && (
                     <Box
                       style={{
                         flex: 1,
@@ -115,7 +161,7 @@ export function DocumentDetailPanel({
                         title="Attachment"
                         width="100%"
                         height="100%"
-                        src={attachmentUrl + '#navpanes=0'}
+                        src={framedUrl + '#navpanes=0'}
                         allowFullScreen={true}
                         style={{ display: 'block', border: 0 }}
                       />
@@ -128,14 +174,14 @@ export function DocumentDetailPanel({
                 </Box>
 
                 <Box p="md">
-                  <DocumentMetadata item={item} contentType={attachment?.contentType} />
+                  <DocumentMetadata item={item} contentType={storedAttachment?.contentType} />
                 </Box>
               </>
             ) : (
               <Box style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                 <Box p="md">
                   {attachment ? (
-                    <AttachmentPreview attachment={attachment} url={attachmentUrl} />
+                    <AttachmentPreview attachment={attachment} url={attachmentUrl} onOpen={handleOpenInBrowser} />
                   ) : (
                     <Flex justify="center" align="center" h={300}>
                       <Text c="dimmed">No preview available for this document</Text>
@@ -148,7 +194,7 @@ export function DocumentDetailPanel({
                 </Box>
 
                 <Box p="md">
-                  <DocumentMetadata item={item} contentType={attachment?.contentType} />
+                  <DocumentMetadata item={item} contentType={storedAttachment?.contentType} />
                 </Box>
               </Box>
             )}
@@ -178,12 +224,70 @@ function getAttachment(doc: DocumentReference): Attachment | undefined {
   return doc.content?.[0]?.attachment;
 }
 
-function isPdfLike(attachment: Attachment | undefined): boolean {
-  const ct = attachment?.contentType;
-  if (!ct) {
-    return false;
+/**
+ * Preview for a file whose bytes have to be decoded in the page.
+ *
+ * Downloading is deliberately a step of its own: the decoders are loaded only
+ * once a file that needs them is opened, and a download that fails still leaves
+ * the file reachable rather than showing an empty frame.
+ * @param props - The preview inputs.
+ * @param props.kind - Which decoder to use.
+ * @param props.url - The attachment URL.
+ * @param props.contentType - The file's content type.
+ * @param props.onOpen - Opens or saves the original file.
+ * @returns The rendered preview.
+ */
+function DecodedPreview(props: {
+  kind: PreviewKind;
+  url: string;
+  contentType: string | undefined;
+  onOpen: () => void;
+}): JSX.Element {
+  // A file we will not render needs no download at all.
+  const needsBytes = props.kind !== 'download';
+  const { blob, loading, error } = useAttachmentBlob(needsBytes ? props.url : undefined);
+
+  if (props.kind === 'download') {
+    return <DownloadOnlyPreview contentType={props.contentType} onDownload={props.onOpen} />;
   }
-  return ct === 'application/pdf' || ct === 'application/json' || ct.startsWith('text/');
+  if (loading) {
+    return (
+      <Flex justify="center" align="center" h={300}>
+        <Loader size="sm" />
+      </Flex>
+    );
+  }
+  if (error || !blob) {
+    return <NoPreview onOpen={props.onOpen} message={FILE_NOT_COPIED_MESSAGE} />;
+  }
+  if (props.kind === 'docx') {
+    return <DocxPreview blob={blob} onDownload={props.onOpen} />;
+  }
+  if (props.kind === 'spreadsheet') {
+    return <SpreadsheetPreview blob={blob} onDownload={props.onOpen} />;
+  }
+  if (props.kind === 'text') {
+    return <TextPreview blob={blob} onDownload={props.onOpen} />;
+  }
+  if (props.kind === 'csv') {
+    return <CsvPreview blob={blob} onDownload={props.onOpen} />;
+  }
+  return <TiffPreview blob={blob} onDownload={props.onOpen} />;
+}
+
+/**
+ * Whether this file goes in the big framed viewer at the top of the panel.
+ *
+ * Only PDF. Text, JSON and CSV used to be framed too, and rendered as an empty
+ * panel: Chrome *downloads* a `text/*` iframe rather than displaying it, so
+ * there was nothing to see and no error to explain it. They are drawn as text
+ * and as tables instead — see `getPreviewKind`, which this defers to so the two
+ * cannot disagree about what a file is.
+ * @param attachment - The attachment.
+ * @returns True for files the framed viewer can actually show.
+ */
+function isPdfLike(attachment: Attachment | undefined): boolean {
+  return getPreviewKind(attachment?.contentType) === 'framed';
 }
 
 function getAuthor(doc: DocumentReference): string | undefined {
@@ -263,12 +367,18 @@ function MetadataRow({ label, value }: { label: string; value: ReactNode }): JSX
 interface AttachmentPreviewProps {
   attachment: Attachment;
   url: string | undefined;
+  onOpen: () => void;
 }
 
-function AttachmentPreview({ attachment, url }: AttachmentPreviewProps): JSX.Element {
+function AttachmentPreview({ attachment, url, onOpen }: AttachmentPreviewProps): JSX.Element {
   const contentType = attachment.contentType;
 
-  if (!url || !contentType) {
+  // XML can also arrive inline as `data`, so it is handled before the url check.
+  if (isXmlContentType(contentType)) {
+    return <XmlDocumentPreview attachment={attachment} url={url} onOpen={onOpen} />;
+  }
+
+  if (!url) {
     return (
       <Flex justify="center" align="center" h={300}>
         <Text c="dimmed">No preview available for this document</Text>
@@ -276,7 +386,22 @@ function AttachmentPreview({ attachment, url }: AttachmentPreviewProps): JSX.Ele
     );
   }
 
-  if (contentType.startsWith('image/')) {
+  const kind = getPreviewKind(contentType);
+
+  // Word, Excel and TIFF are decoded in the page, so they need the bytes rather
+  // than a URL. Everything else below renders straight from the URL.
+  if (
+    kind === 'docx' ||
+    kind === 'spreadsheet' ||
+    kind === 'tiff' ||
+    kind === 'text' ||
+    kind === 'csv' ||
+    kind === 'download'
+  ) {
+    return <DecodedPreview kind={kind} url={url} contentType={contentType} onOpen={onOpen} />;
+  }
+
+  if (contentType?.startsWith('image/')) {
     return (
       <Box
         style={{ display: 'block', maxWidth: 'fit-content', position: 'relative', borderRadius: 4, overflow: 'hidden' }}
@@ -300,7 +425,7 @@ function AttachmentPreview({ attachment, url }: AttachmentPreviewProps): JSX.Ele
     );
   }
 
-  if (contentType.startsWith('video/')) {
+  if (kind === 'video' || kind === 'audio') {
     return (
       <Box style={{ width: '100%', maxWidth: '100%', position: 'relative', borderRadius: 4, overflow: 'hidden' }}>
         <video style={{ width: '100%', maxWidth: '100%', height: 'auto', display: 'block' }} controls={true}>
@@ -320,9 +445,20 @@ function AttachmentPreview({ attachment, url }: AttachmentPreviewProps): JSX.Ele
     );
   }
 
+  return <NoPreview onOpen={onOpen} message="No preview available for this file type" />;
+}
+
+function NoPreview({ onOpen, message }: { onOpen?: () => void; message: string }): JSX.Element {
   return (
-    <Flex justify="center" align="center" h={300}>
-      <Text c="dimmed">No preview available for this file type</Text>
-    </Flex>
+    <Stack justify="center" align="center" gap="sm" h={300}>
+      <Text c="dimmed" ta="center" maw={420}>
+        {message}
+      </Text>
+      {onOpen && (
+        <Button variant="default" size="xs" leftSection={<IconExternalLink size={14} />} onClick={onOpen}>
+          Open file
+        </Button>
+      )}
+    </Stack>
   );
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { formatHumanName } from '@medplum/core';
 import type { Patient } from '@medplum/fhirtypes';
+import { clinicToday } from '../../utils/clinic-time';
 
 /** Identifier systems the roster knows how to label as an MRN. */
 const MRN_SYSTEMS: { system: string; label: string }[] = [
@@ -53,21 +54,31 @@ export function formatDob(birthDate: string | undefined): string {
 
 /**
  * Whole years elapsed, accounting for whether this year's birthday has passed.
- * @param birthDate - An ISO date string, if the patient has one.
+ *
+ * A birth date is a **calendar date**, not an instant, and it is never parsed
+ * into a `Date` here. `new Date('1987-01-01')` is midnight **UTC**, while
+ * `getFullYear()` reads it back in **local** time, so west of UTC that date
+ * becomes 31 December 1986 and everyone born on 1 January reads a year too
+ * old — all year round, not just on their birthday. This is the same class of
+ * bug as the "04/01 labs displayed as Mar 31" report on the old platform.
+ *
+ * The comparison runs on the parts of the string, so it gives the same answer
+ * in every timezone.
+ * @param birthDate - A `YYYY-MM-DD` date, if the patient has one.
+ * @param timeZone - The clinic's IANA zone, which decides what "today" is.
  * @returns Whole years as a string, or an em dash.
  */
-export function getAge(birthDate: string | undefined): string {
-  if (!birthDate) {
+export function getAge(birthDate: string | undefined, timeZone: string): string {
+  const born = birthDate ? /^(\d{4})-(\d{2})-(\d{2})/.exec(birthDate) : null;
+  if (!born) {
     return '—';
   }
-  const dob = new Date(birthDate);
-  if (Number.isNaN(dob.getTime())) {
-    return '—';
-  }
-  const now = new Date();
-  let age = now.getFullYear() - dob.getFullYear();
-  const monthDelta = now.getMonth() - dob.getMonth();
-  if (monthDelta < 0 || (monthDelta === 0 && now.getDate() < dob.getDate())) {
+  const today = clinicToday(timeZone).split('-').map(Number);
+  const [bornYear, bornMonth, bornDay] = [Number(born[1]), Number(born[2]), Number(born[3])];
+  const [year, month, day] = today;
+
+  let age = year - bornYear;
+  if (month < bornMonth || (month === bornMonth && day < bornDay)) {
     age--;
   }
   return age >= 0 ? String(age) : '—';

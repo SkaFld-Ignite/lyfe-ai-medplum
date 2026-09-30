@@ -6,9 +6,11 @@ import type { Bundle, BundleEntry } from '@medplum/fhirtypes';
 import { useMedplum } from '@medplum/react';
 import type { DateTimeRange } from '@medplum/react-scheduling';
 import { useCallback, useEffect, useState } from 'react';
+import { addClinicDays, clinicDayStart, clinicToday } from '../utils/clinic-time';
 import { DRCHRONO_SOURCE_TAG } from '../utils/data-source';
 import type { OverviewAppointment } from '../utils/scheduling-overview';
-import { addDays, buildOverviewAppointments, startOfDay } from '../utils/scheduling-overview';
+import { buildOverviewAppointments } from '../utils/scheduling-overview';
+import { useClinicTimeZone } from './useClinicTimeZone';
 
 /** Appointments requested per page. */
 export const OVERVIEW_PAGE_SIZE = 500;
@@ -153,14 +155,25 @@ async function countActiveAppointments(medplum: MedplumClient, start: Date, end:
  */
 export function useAppointmentCounts(refreshKey: number): AppointmentCounts {
   const medplum = useMedplum();
+  const timeZone = useClinicTimeZone();
   const [counts, setCounts] = useState<AppointmentCounts>({});
 
   useEffect(() => {
     let active = true;
-    const today = startOfDay(new Date());
+    // "Today" is the clinic's today. For a viewer twelve hours ahead of the
+    // clinic, the browser's today is the clinic's tomorrow for half the day,
+    // and the count on the header would disagree with the calendar under it.
+    const todayKey = clinicToday(timeZone);
+    const dayStart = clinicDayStart(todayKey, timeZone);
+    const boundary = (days: number): Date | undefined => clinicDayStart(addClinicDays(todayKey, days), timeZone);
+    const tomorrow = boundary(1);
+    const nextWeek = boundary(7);
+    if (!dayStart || !tomorrow || !nextWeek) {
+      return undefined;
+    }
     Promise.allSettled([
-      countActiveAppointments(medplum, today, addDays(today, 1)),
-      countActiveAppointments(medplum, today, addDays(today, 7)),
+      countActiveAppointments(medplum, dayStart, tomorrow),
+      countActiveAppointments(medplum, dayStart, nextWeek),
     ])
       .then(([todayResult, weekResult]) => {
         if (active) {
@@ -174,7 +187,7 @@ export function useAppointmentCounts(refreshKey: number): AppointmentCounts {
     return () => {
       active = false;
     };
-  }, [medplum, refreshKey]);
+  }, [medplum, refreshKey, timeZone]);
 
   return counts;
 }

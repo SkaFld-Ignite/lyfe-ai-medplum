@@ -42,6 +42,7 @@ import {
 import type { JSX } from 'react';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 import { usePatientTimelineData } from '../../hooks/usePatientTimelineData';
 import type {
   DataSource,
@@ -133,8 +134,9 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
     label: `${KIND_CONFIG[kind].plural} (${kindCounts[kind]})`,
   }));
 
+  const timeZone = useClinicTimeZone();
   const now = new Date();
-  const todayKey = toDayKey(now);
+  const todayKey = toDayKey(now, timeZone);
   const total = events.length;
   const visiblePercent = total > 0 ? Math.round((filtered.length / total) * 100) : 0;
   const active = hasActiveFilters(filters);
@@ -229,7 +231,7 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
           const isToday = day.dayKey === todayKey;
           const isFuture = day.dayKey > todayKey;
           return (
-            <Box component="section" key={day.dayKey} aria-label={formatMediumDate(date)}>
+            <Box component="section" key={day.dayKey} aria-label={formatMediumDate(date, timeZone)}>
               <Group gap="sm" wrap="nowrap" className={classes.dayHeader}>
                 <Badge
                   variant={isToday ? 'light' : 'default'}
@@ -240,7 +242,7 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
                   tt="none"
                   className={classes.dayChip}
                 >
-                  {formatMediumDate(date)}
+                  {formatMediumDate(date, timeZone)}
                 </Badge>
                 {relative && (
                   <Badge

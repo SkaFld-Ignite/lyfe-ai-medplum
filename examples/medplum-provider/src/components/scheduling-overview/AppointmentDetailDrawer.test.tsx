@@ -11,7 +11,9 @@ import { AppointmentDetailDrawer } from './AppointmentDetailDrawer';
 
 const baseRow: OverviewAppointment = {
   appointment: { resourceType: 'Appointment', id: 'appt-1', status: 'booked', participant: [] },
-  start: new Date(2026, 8, 29, 9, 0),
+  // An explicit UTC instant, read back in a UTC clinic zone, so the rendered
+  // date and time do not depend on the machine running the test.
+  start: new Date(Date.UTC(2026, 8, 29, 9, 0)),
   end: new Date(2026, 8, 29, 9, 45),
   durationMinutes: 45,
   patient: {
@@ -43,7 +45,16 @@ function setup(ui: ReactNode): void {
 
 describe('AppointmentDetailDrawer', () => {
   test('shows appointment details and patient contact', async () => {
-    setup(<AppointmentDetailDrawer opened row={baseRow} loading={false} onClose={vi.fn()} onViewPatient={vi.fn()} />);
+    setup(
+      <AppointmentDetailDrawer
+        timeZone="UTC"
+        opened
+        row={baseRow}
+        loading={false}
+        onClose={vi.fn()}
+        onViewPatient={vi.fn()}
+      />
+    );
 
     expect(await screen.findByText('Homer Simpson')).toBeInTheDocument();
     expect(screen.getByText('MRN: MRN-001')).toBeInTheDocument();
@@ -69,7 +80,14 @@ describe('AppointmentDetailDrawer', () => {
     const onClose = vi.fn();
     const onViewPatient = vi.fn();
     setup(
-      <AppointmentDetailDrawer opened row={baseRow} loading={false} onClose={onClose} onViewPatient={onViewPatient} />
+      <AppointmentDetailDrawer
+        timeZone="UTC"
+        opened
+        row={baseRow}
+        loading={false}
+        onClose={onClose}
+        onViewPatient={onViewPatient}
+      />
     );
 
     await user.click(await screen.findByRole('button', { name: 'View Patient' }));
@@ -83,6 +101,7 @@ describe('AppointmentDetailDrawer', () => {
   test('handles a patient with no contact information', async () => {
     setup(
       <AppointmentDetailDrawer
+        timeZone="UTC"
         opened
         row={{ ...baseRow, patient: { reference: 'Patient/p2', id: 'p2', name: 'Marge Simpson' } }}
         loading={false}
@@ -97,6 +116,7 @@ describe('AppointmentDetailDrawer', () => {
   test('disables View Patient when the appointment has no patient', async () => {
     setup(
       <AppointmentDetailDrawer
+        timeZone="UTC"
         opened
         row={{ ...baseRow, patient: undefined }}
         loading={false}
@@ -109,12 +129,30 @@ describe('AppointmentDetailDrawer', () => {
   });
 
   test('shows a loading state while the appointment resolves', async () => {
-    setup(<AppointmentDetailDrawer opened row={undefined} loading onClose={vi.fn()} onViewPatient={vi.fn()} />);
+    setup(
+      <AppointmentDetailDrawer
+        timeZone="UTC"
+        opened
+        row={undefined}
+        loading
+        onClose={vi.fn()}
+        onViewPatient={vi.fn()}
+      />
+    );
     expect(await screen.findByLabelText('Loading appointment')).toBeInTheDocument();
   });
 
   test('explains when the appointment is not in view', async () => {
-    setup(<AppointmentDetailDrawer opened row={undefined} loading={false} onClose={vi.fn()} onViewPatient={vi.fn()} />);
+    setup(
+      <AppointmentDetailDrawer
+        timeZone="UTC"
+        opened
+        row={undefined}
+        loading={false}
+        onClose={vi.fn()}
+        onViewPatient={vi.fn()}
+      />
+    );
     expect(await screen.findByText(/not in the current calendar view/)).toBeInTheDocument();
   });
 });

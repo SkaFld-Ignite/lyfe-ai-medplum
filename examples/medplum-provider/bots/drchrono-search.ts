@@ -71,6 +71,9 @@ interface DrChronoAppointment {
   doctor?: number;
 }
 
+/** A calendar date, as both DrChrono and the UI exchange them. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 /** Appointments that never happened should not pull a chart in. */
 const SKIP_STATUSES = new Set(['Cancelled', 'Rescheduled', 'No Show']);
 
@@ -103,6 +106,13 @@ export async function handler(medplum: MedplumClient, event: BotEvent<Input>): P
  * @returns Matching patients, shaped for the onboarding UI.
  */
 async function run(medplum: MedplumClient, event: BotEvent<Input>): Promise<unknown> {
+  // Validate the request before doing any work on it. Everything below this
+  // reads the clinic's encrypted credentials and builds a DrChrono client, and
+  // none of that should happen for a request that was never answerable.
+  if (event.input?.action === 'preview') {
+    validatePreviewRange(event.input);
+  }
+
   const material = event.secrets[ENCRYPTION_KEY_SECRET_NAME]?.valueString;
   if (!material) {
     throw new Error(`${ENCRYPTION_KEY_SECRET_NAME} is not set in project secrets`);
@@ -123,15 +133,43 @@ async function run(medplum: MedplumClient, event: BotEvent<Input>): Promise<unkn
   }
 
   if (input.action === 'preview') {
+    const { start, end } = validatePreviewRange(input);
+
     // Offices and providers the clinic has switched off contribute nothing:
     // not a greyed-out row, not a count, nothing. That is the whole point of
     // the toggle, so the filter belongs here at the pull rather than in the UI
     // where a later caller could skip it.
     const disabled = await readDisabledDirectoryIds(medplum, organization);
-    return previewAppointments(get, input.start, input.end ?? input.start, disabled);
+    return previewAppointments(get, start, end, disabled);
   }
 
   throw new Error(`Unknown action: ${JSON.stringify((input as { action?: string }).action)}`);
+}
+
+/**
+ * Check a preview request's dates, and normalise a missing end to the start.
+ *
+ * An end date before the start is not an empty result, it is an impossible
+ * question. The chunk loop runs `from = start; from <= end`, so an inverted
+ * range never iterates and the caller gets a confident "0 appointments"
+ * indistinguishable from a genuinely empty day. A wrong answer delivered
+ * calmly is worse than an error.
+ *
+ * The UI blocks this too, but the UI is not the only way in here, and a guard
+ * that only exists in the client is not a guard.
+ * @param input - The preview request.
+ * @returns The validated start and end dates.
+ */
+function validatePreviewRange(input: PreviewInput): { start: string; end: string } {
+  const start = (input.start ?? '').trim();
+  const end = (input.end ?? '').trim() || start;
+  if (!ISO_DATE.test(start) || !ISO_DATE.test(end)) {
+    throw new Error(`Dates must be YYYY-MM-DD; received start="${start}" end="${end}"`);
+  }
+  if (end < start) {
+    throw new Error(`End date ${end} is before start date ${start}, so no appointment could fall in that range`);
+  }
+  return { start, end };
 }
 
 /**
@@ -176,7 +214,12 @@ async function previewAppointments(
   start: string,
   end: string,
   disabled: { offices: Set<string>; doctors: Set<string> }
-): Promise<{ scannedAppointments: number; results: PatientSummary[]; skippedByDirectory: number }> {
+): Promise<{
+  scannedAppointments: number;
+  results: PatientSummary[];
+  skippedByDirectory: number;
+  excludedByStatus: number;
+}> {
   const iso = (d: Date): string => d.toISOString().slice(0, 10);
   const startDate = new Date(`${start}T00:00:00Z`);
   const endDate = new Date(`${end}T00:00:00Z`);
@@ -184,6 +227,10 @@ async function previewAppointments(
   const counts = new Map<number, number>();
   let scanned = 0;
   let skippedByDirectory = 0;
+  // Counted separately so the caller can explain the gap between appointments
+  // and patients found rather than leaving the reader to guess whether
+  // somebody was booked twice.
+  let excludedByStatus = 0;
 
   for (let from = startDate; from <= endDate; from = new Date(from.getTime() + CHUNK_DAYS * DAY_MS)) {
     const to = new Date(Math.min(from.getTime() + (CHUNK_DAYS - 1) * DAY_MS, endDate.getTime()));
@@ -196,8 +243,17 @@ async function previewAppointments(
       }
       const body = (await res.json()) as { results?: DrChronoAppointment[]; next?: string | null };
       for (const appt of body.results ?? []) {
+        // Blocked time, breaks and admin holds occupy a slot with no patient
+        // on it. They are not appointments and are dropped before anything is
+        // counted: including them made a day look like it held 171
+        // appointments when it held 145, and invited the reader to wonder
+        // which patients had gone missing.
+        if (typeof appt.patient !== 'number') {
+          continue;
+        }
         scanned++;
-        if (SKIP_STATUSES.has(appt.status ?? '') || typeof appt.patient !== 'number') {
+        if (SKIP_STATUSES.has(appt.status ?? '')) {
+          excludedByStatus++;
           continue;
         }
         // An id we have never seen is allowed through: it belongs to an office
@@ -222,7 +278,7 @@ async function previewAppointments(
     })
   );
 
-  return { scannedAppointments: scanned, results, skippedByDirectory };
+  return { scannedAppointments: scanned, results, skippedByDirectory, excludedByStatus };
 }
 
 /**

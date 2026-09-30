@@ -31,6 +31,8 @@ import { StatusBadge, TypeIcon } from './AppointmentDisplay';
 
 export interface AppointmentDetailDrawerProps {
   opened: boolean;
+  /** The clinic's IANA zone, which the date and time are read in. */
+  timeZone: string;
   /** The selected appointment, or undefined while it is being resolved. */
   row: OverviewAppointment | undefined;
   /** True while the appointment list is loading, so a missing row is shown as loading, not missing. */
@@ -45,11 +47,11 @@ export interface AppointmentDetailDrawerProps {
  * @returns The drawer.
  */
 export function AppointmentDetailDrawer(props: AppointmentDetailDrawerProps): JSX.Element {
-  const { opened, row, loading, onClose, onViewPatient } = props;
+  const { opened, timeZone, row, loading, onClose, onViewPatient } = props;
 
   let content: JSX.Element;
   if (row) {
-    content = <AppointmentDetailBody row={row} onClose={onClose} onViewPatient={onViewPatient} />;
+    content = <AppointmentDetailBody row={row} timeZone={timeZone} onClose={onClose} onViewPatient={onViewPatient} />;
   } else if (loading) {
     content = (
       <Stack gap="md" aria-busy="true" aria-label="Loading appointment">
@@ -95,10 +97,12 @@ export function AppointmentDetailDrawer(props: AppointmentDetailDrawerProps): JS
 
 function AppointmentDetailBody({
   row,
+  timeZone,
   onClose,
   onViewPatient,
 }: {
   row: OverviewAppointment;
+  timeZone: string;
   onClose: () => void;
   onViewPatient: (patientId: string) => void;
 }): JSX.Element {
@@ -130,10 +134,10 @@ function AppointmentDetailBody({
       <Paper withBorder radius="md" p="md">
         <SectionTitle icon={<IconCalendarEvent size={14} />} title="Appointment Details" />
         <Stack gap={8} mt="sm">
-          <DetailRow label="Date" value={formatLongDate(row.start)} />
+          <DetailRow label="Date" value={formatLongDate(row.start, timeZone)} />
           <DetailRow
             label="Time"
-            value={`${formatTime(row.start)}${row.durationMinutes > 0 ? ` · ${row.durationMinutes} min` : ''}`}
+            value={`${formatTime(row.start, timeZone)}${row.durationMinutes > 0 ? ` · ${row.durationMinutes} min` : ''}`}
           />
           <DetailRow
             label="Type"

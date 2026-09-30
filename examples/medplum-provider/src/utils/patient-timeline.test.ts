@@ -28,6 +28,16 @@ import {
   UNCATEGORIZED_GROUP,
 } from './patient-timeline';
 
+/**
+ * The clinic zone these fixtures are written in.
+ *
+ * UTC, so the fixture timestamps below read as exactly the day and time they
+ * are written as. Grouping is exercised against a real zone in
+ * `clinic-time.test.ts`; what matters here is that the timeline's own logic is
+ * independent of the machine running the tests.
+ */
+const TZ = 'UTC';
+
 const P = { reference: 'Patient/p1' };
 const tag = (code: string): { tag: { system: string; code: string }[] } => ({
   tag: [{ system: 'https://lyfe.com/source', code }],
@@ -104,7 +114,8 @@ describe('buildPatientTimeline', () => {
             description: 'Fatty liver follow-up',
           },
         ],
-      })
+      }),
+      TZ
     );
 
     expect(events).toHaveLength(1);
@@ -134,7 +145,7 @@ describe('buildPatientTimeline', () => {
         { actor: { reference: 'Location/l', display: 'Main Clinic' }, status: 'accepted' },
       ],
     };
-    const [visit] = buildPatientTimeline(sources({ appointments: [appointment] })).events as VisitEvent[];
+    const [visit] = buildPatientTimeline(sources({ appointments: [appointment] }), TZ).events as VisitEvent[];
     expect(visit.title).toBe('Colonoscopy consult');
     expect(visit.provider).toBe('Dr. Patel');
     expect(visit.location).toBe('Main Clinic');
@@ -143,7 +154,8 @@ describe('buildPatientTimeline', () => {
 
   test('titles visits from the encounter class and flags emergencies', () => {
     const [visit] = buildPatientTimeline(
-      sources({ encounters: [encounter('e1', '2026-08-01T22:00:00Z', { class: { code: 'EMER' } })] })
+      sources({ encounters: [encounter('e1', '2026-08-01T22:00:00Z', { class: { code: 'EMER' } })] }),
+      TZ
     ).events as VisitEvent[];
     expect(visit.title).toBe('Emergency visit');
     expect(visit.isEmergency).toBe(true);
@@ -168,7 +180,8 @@ describe('buildPatientTimeline', () => {
             context: { encounter: [{ reference: 'Encounter/e1' }] },
           } satisfies WithId<DocumentReference>,
         ],
-      })
+      }),
+      TZ
     );
     expect(events).toHaveLength(1);
     const visit = events[0] as VisitEvent;
@@ -182,17 +195,18 @@ describe('buildPatientTimeline', () => {
     const { events } = buildPatientTimeline(
       sources({
         observations: [
-          vital('o1', '2026-09-10T08:00:00'),
-          vital('o2', '2026-09-10T15:00:00', {
+          vital('o1', '2026-09-10T08:00:00Z'),
+          vital('o2', '2026-09-10T15:00:00Z', {
             code: { text: 'Body weight' },
             valueQuantity: { value: 70, unit: 'kg' },
           }),
-          vital('o3', '2026-09-11T08:00:00', {
+          vital('o3', '2026-09-11T08:00:00Z', {
             category: [{ coding: [{ code: 'laboratory' }] }],
             code: { text: 'ALT' },
           }),
         ],
-      })
+      }),
+      TZ
     );
     const days = events as DayRecordsEvent[];
     expect(days.map((d) => [d.type, d.dayKey, d.records.length])).toEqual([
@@ -208,13 +222,14 @@ describe('buildPatientTimeline', () => {
         conditions: [
           condition('c1', 'GERD', {
             meta: tag('drchrono'),
-            onsetDateTime: '2026-08-20T10:00:00',
+            onsetDateTime: '2026-08-20T10:00:00Z',
             code: { text: 'GERD', coding: [{ code: 'K21.9' }] },
             clinicalStatus: { coding: [{ code: 'active' }] },
           }),
-          condition('c2', 'gerd ', { meta: tag('zus'), onsetDateTime: '2026-08-20T18:00:00' }),
+          condition('c2', 'gerd ', { meta: tag('zus'), onsetDateTime: '2026-08-20T18:00:00Z' }),
         ],
-      })
+      }),
+      TZ
     );
     const [event] = events as ConditionEvent[];
     expect(events).toHaveLength(1);
@@ -245,7 +260,8 @@ describe('buildPatientTimeline', () => {
         conditions: [condition('c1', 'Fatty liver'), condition('c2', 'Fatty liver')],
         medicationStatements: [med, { ...med, id: 'm2' }],
         allergies: [allergy],
-      })
+      }),
+      TZ
     );
     expect(events).toEqual([]);
     expect(ongoing.map((i) => [i.kind, i.title, i.detail])).toEqual([
@@ -268,7 +284,8 @@ describe('buildPatientTimeline', () => {
             verificationStatus: { coding: [{ code: 'entered-in-error' }] },
           }),
         ],
-      })
+      }),
+      TZ
     );
     expect(events).toEqual([]);
   });
@@ -277,7 +294,8 @@ describe('buildPatientTimeline', () => {
     const { events } = buildPatientTimeline(
       sources({
         encounters: [encounter('old', '2025-01-01T09:00:00Z'), encounter('new', '2026-01-01T09:00:00Z')],
-      })
+      }),
+      TZ
     );
     expect(events.map((e) => e.id)).toEqual(['visit-new', 'visit-old']);
   });
@@ -287,28 +305,29 @@ describe('filtering and grouping', () => {
   const { events } = buildPatientTimeline(
     sources({
       encounters: [
-        encounter('e1', '2026-09-14T09:30:00', {
+        encounter('e1', '2026-09-14T09:30:00Z', {
           meta: tag('drchrono'),
           type: [{ text: 'Office visit' }],
           participant: [{ individual: { display: 'Dr. Chen' } }],
           diagnosis: [{ condition: { display: 'GERD' } }],
         }),
-        encounter('e2', '2026-09-12T11:00:00', {
+        encounter('e2', '2026-09-12T11:00:00Z', {
           meta: tag('zus'),
           status: 'cancelled',
           participant: [{ individual: { display: 'Dr. Patel' } }],
         }),
       ],
       observations: [
-        vital('o1', '2026-09-14T09:40:00', { encounter: { reference: 'Encounter/e1' }, code: { text: 'Pulse' } }),
-        vital('o2', '2026-09-10T08:00:00', { meta: tag('zus') }),
-        vital('o3', '2026-09-10T08:00:00', {
+        vital('o1', '2026-09-14T09:40:00Z', { encounter: { reference: 'Encounter/e1' }, code: { text: 'Pulse' } }),
+        vital('o2', '2026-09-10T08:00:00Z', { meta: tag('zus') }),
+        vital('o3', '2026-09-10T08:00:00Z', {
           category: [{ coding: [{ code: 'laboratory' }] }],
           code: { text: 'ALT' },
         }),
       ],
-      conditions: [condition('c1', 'GERD', { onsetDateTime: '2026-09-01T10:00:00' })],
-    })
+      conditions: [condition('c1', 'GERD', { onsetDateTime: '2026-09-01T10:00:00Z' })],
+    }),
+    TZ
   );
 
   const ids = (list: TimelineEvent[]): string[] => list.map((e) => e.id);
@@ -390,7 +409,22 @@ describe('helpers', () => {
     expect(chartPath('p1', condition('c1', 'X'))).toBe('/Patient/p1/Condition/c1');
   });
 
-  test('day keys are local', () => {
-    expect(toDayKey(new Date(2026, 0, 5, 23, 59))).toBe('2026-01-05');
+  test("day keys are the clinic's calendar day, not the viewer's", () => {
+    // 16:30 on 14 September at a Pacific clinic. The same instant is already
+    // 05:30 on the 15th in Karachi, so a viewer-local key would file this
+    // record under the wrong day — which is what put a whole afternoon clinic
+    // on the following date.
+    const afternoonAtTheClinic = new Date('2026-09-14T23:30:00Z');
+    expect(toDayKey(afternoonAtTheClinic, 'US/Pacific')).toBe('2026-09-14');
+    expect(toDayKey(afternoonAtTheClinic, 'Asia/Karachi')).toBe('2026-09-15');
+  });
+
+  test('day keys hold across a DST transition', () => {
+    // US DST ends on 1 November 2026: the day is 25 hours long and the offset
+    // changes inside it. Both sides of the change belong to the same day.
+    expect(toDayKey(new Date('2026-11-01T08:30:00Z'), 'US/Pacific')).toBe('2026-11-01');
+    expect(toDayKey(new Date('2026-11-01T09:30:00Z'), 'US/Pacific')).toBe('2026-11-01');
+    expect(toDayKey(new Date('2026-11-02T07:59:00Z'), 'US/Pacific')).toBe('2026-11-01');
+    expect(toDayKey(new Date('2026-11-02T08:00:00Z'), 'US/Pacific')).toBe('2026-11-02');
   });
 });

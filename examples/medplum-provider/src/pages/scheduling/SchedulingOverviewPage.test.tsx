@@ -9,16 +9,28 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { beforeEach, describe, expect, test } from 'vitest';
+import { clinicDayStart, clinicToday, DEFAULT_CLINIC_TIME_ZONE } from '../../utils/clinic-time';
 import { LYFE_SOURCE_TAG_SYSTEM } from '../../utils/data-source';
-import { toLocalIsoDate } from '../../utils/scheduling-overview';
 import { SchedulingOverviewPage } from './SchedulingOverviewPage';
 
 const AUTO_APPLIED_KEY = 'medplum-provider:scheduling-overview:provider-auto-applied';
 
+/**
+ * An instant at `hour` o'clock on **the clinic's** today.
+ *
+ * The page groups appointments by the clinic's calendar day, so a fixture
+ * built from the runner's local clock lands on the wrong day whenever the two
+ * zones disagree — and then the day panel is correctly empty and every
+ * assertion in this file times out waiting for it.
+ * @param hour - Hour of the clinic's day.
+ * @returns The instant.
+ */
 function todayAt(hour: number): Date {
-  const date = new Date();
-  date.setHours(hour, 0, 0, 0);
-  return date;
+  const midnight = clinicDayStart(clinicToday(DEFAULT_CLINIC_TIME_ZONE), DEFAULT_CLINIC_TIME_ZONE);
+  if (!midnight) {
+    throw new Error('could not resolve the clinic day');
+  }
+  return new Date(midnight.getTime() + hour * 3_600_000);
 }
 
 function makeAppointment(
@@ -124,7 +136,7 @@ describe('SchedulingOverviewPage', () => {
     expect(screen.getAllByRole('button', { name: / at / })).toHaveLength(3);
 
     // The selected day is written to the URL so the view is shareable.
-    expect(router.state.location.search).toBe(`?day=${toLocalIsoDate(new Date())}`);
+    expect(router.state.location.search).toBe(`?day=${clinicToday(DEFAULT_CLINIC_TIME_ZONE)}`);
   });
 
   test('shows patient names on the calendar', async () => {
@@ -166,7 +178,7 @@ describe('SchedulingOverviewPage', () => {
   });
 
   test('deep links straight to an appointment', async () => {
-    setup(`/scheduling?day=${toLocalIsoDate(new Date())}&appointment=appt-bart`);
+    setup(`/scheduling?day=${clinicToday(DEFAULT_CLINIC_TIME_ZONE)}&appointment=appt-bart`);
     expect(await screen.findByText('Appointment Details', undefined, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByText('Bob Jones', { selector: 'div' })).toBeInTheDocument();
   });

@@ -43,6 +43,26 @@ const RUN_STATUS_COLOR: Record<RunRow['status'], string> = {
 
 const RUN_BADGE = { textTransform: 'none', fontWeight: 500 } as const;
 
+/**
+ * Explain the gap between appointments scanned and patients found.
+ * @param preview - The preview result.
+ * @returns A clause listing each reason an appointment was excluded.
+ */
+function describeExclusions(preview: PreviewState): string {
+  const parts: string[] = [];
+  if (preview.excludedByStatus > 0) {
+    parts.push(`${preview.excludedByStatus} were cancelled, rescheduled or no-shows`);
+  }
+  if (preview.skippedByDirectory > 0) {
+    parts.push(`${preview.skippedByDirectory} were at a switched-off office or provider`);
+  }
+  const total = preview.scannedAppointments - preview.candidates.length;
+  if (parts.length === 0) {
+    return `${total} were excluded,`;
+  }
+  return `${parts.join(', ')},`;
+}
+
 /** Per-patient outcome while a bulk run is in flight. */
 interface RunRow {
   readonly drchronoId: string;
@@ -56,6 +76,7 @@ interface PreviewState {
   readonly candidates: BulkImportCandidate[];
   /** Appointments dropped because their office or provider is switched off. */
   readonly skippedByDirectory: number;
+  readonly excludedByStatus: number;
   /** DrChrono ids already present in Medplum, so the UI can show what is genuinely new. */
   readonly existing: ReadonlySet<string>;
 }
@@ -107,6 +128,14 @@ export function BulkImportPanel(): JSX.Element {
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, [medplum, start, end]);
+
+  // An end date before the start date is a silent no-op against DrChrono: the
+  // chunk loop simply never runs and the preview reports zero appointments,
+  // which reads as "that day is empty" rather than "those dates are the wrong
+  // way round". Catch it here, and again in the bot, so neither a typo nor a
+  // caller that skips this form can ask for an impossible range.
+  const rangeInverted = Boolean(end) && end < start;
+  const canPreview = Boolean(start) && !rangeInverted;
 
   const newCount = preview ? preview.candidates.filter((c) => !preview.existing.has(String(c.id))).length : 0;
 
@@ -170,13 +199,12 @@ export function BulkImportPanel(): JSX.Element {
           Bulk Patient Import
         </Text>
         <Text size="sm" c="gray.5">
-          Import all patients from a specific appointment date
+          Import every patient with an appointment in a date range
         </Text>
       </Box>
 
       <Alert variant="light" color="gray" icon={<IconDatabase size={16} />}>
-        Select an appointment date to import all patients from that day. Only new patients will be imported (existing
-        patients are skipped).
+        Cancelled, rescheduled and no-show appointments are excluded. Patients already in Medplum are skipped.
       </Alert>
 
       <Box>
@@ -184,23 +212,42 @@ export function BulkImportPanel(): JSX.Element {
           Appointment Date Range
         </Text>
         <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
-          <TextInput label="Start Date" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-          <TextInput label="End Date (Optional)" type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+          <TextInput
+            label="Start Date"
+            type="date"
+            value={start}
+            max={end || undefined}
+            onChange={(e) => setStart(e.target.value)}
+          />
+          <TextInput
+            label="End Date (Optional)"
+            type="date"
+            value={end}
+            min={start || undefined}
+            error={rangeInverted ? 'Must be on or after the start date' : undefined}
+            onChange={(e) => setEnd(e.target.value)}
+          />
           <Box style={{ display: 'flex', alignItems: 'flex-end' }}>
             <Button
               fullWidth
               leftSection={<IconSearch size={16} />}
               loading={loading}
-              disabled={!start}
+              disabled={!canPreview}
               onClick={runPreview}
             >
               Preview
             </Button>
           </Box>
         </SimpleGrid>
-        <Text size="xs" c="gray.5" mt={6}>
-          Fetch appointments from {start}
-          {end && end !== start ? ` to ${end}` : ''} (excluding Cancelled/Rescheduled/No Show)
+        <Text size="xs" c={rangeInverted ? 'red.7' : 'gray.5'} mt={6}>
+          {rangeInverted ? (
+            `${end} is before ${start} — no appointments could fall in that range.`
+          ) : (
+            <>
+              Fetch appointments from {start}
+              {end && end !== start ? ` to ${end}` : ''} (excluding Cancelled/Rescheduled/No Show)
+            </>
+          )}
         </Text>
       </Box>
 
@@ -213,11 +260,20 @@ export function BulkImportPanel(): JSX.Element {
       {preview && (
         <Paper withBorder p="md" radius="md">
           <Group gap="lg" mb="sm">
-            <Stat label="Appointments scanned" value={preview.scannedAppointments} />
+            <Stat label="Appointments" value={preview.scannedAppointments} />
             <Stat label="Patients found" value={preview.candidates.length} />
             <Stat label="New to import" value={newCount} highlight />
             <Stat label="Already in Medplum" value={preview.candidates.length - newCount} />
           </Group>
+
+          {/* "171 scanned, 113 patients" reads like somebody was booked twice.
+              Saying what came out of the 171 removes the question. */}
+          {preview.scannedAppointments > preview.candidates.length && (
+            <Text size="xs" c="gray.6" mb="sm">
+              Of {preview.scannedAppointments} appointments on the schedule, {describeExclusions(preview)} leaving{' '}
+              {preview.candidates.length}.
+            </Text>
+          )}
 
           {preview.skippedByDirectory > 0 && (
             <Text size="sm" c="dimmed" mb="sm">

@@ -14,6 +14,7 @@ import {
   IconStethoscope,
   IconVaccine,
 } from '@tabler/icons-react';
+import { formatClinicShortDate, formatClinicTime } from '../../utils/clinic-time';
 import type { DataSource, RecordKind, TimelineEventKind, TimelineRecord } from '../../utils/patient-timeline';
 
 export interface KindConfig {
@@ -64,21 +65,23 @@ export const SOURCE_FILTER_LABELS: Record<DataSource, string> = {
 };
 
 /**
- * Formats a date like "Sep 14, 2026" in the viewer's locale.
- * @param date - The date.
+ * Formats a date like "Sep 14, 2026", as it reads at the clinic.
+ * @param date - The instant.
+ * @param timeZone - The clinic's IANA zone.
  * @returns The formatted date.
  */
-export function formatMediumDate(date: Date): string {
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+export function formatMediumDate(date: Date, timeZone: string): string {
+  return formatClinicShortDate(date, timeZone);
 }
 
 /**
- * Formats a time like "9:15 AM" in the viewer's locale.
- * @param date - The date.
+ * Formats a time like "9:15 AM", as it reads at the clinic.
+ * @param date - The instant.
+ * @param timeZone - The clinic's IANA zone.
  * @returns The formatted time.
  */
-export function formatShortTime(date: Date): string {
-  return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+export function formatShortTime(date: Date, timeZone: string): string {
+  return formatClinicTime(date, timeZone);
 }
 
 /** Day sections rendered at first, and added by each "Show older" click. */

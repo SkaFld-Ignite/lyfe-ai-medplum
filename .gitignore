@@ -112,6 +112,11 @@ playwright/.cache/
 !.claude/skills/
 CLAUDE.md
 AGENTS.md
+# ...except the fork's own. Upstream Medplum ignores CLAUDE.md so contributors'
+# private notes never land in the repo. Ours is not private notes: it carries
+# the Linear convention and the conventions that cost real debugging time to
+# learn. A rule that lives on one machine is not a rule.
+!/CLAUDE.md
 
 # 0x profiling data
 *.0x

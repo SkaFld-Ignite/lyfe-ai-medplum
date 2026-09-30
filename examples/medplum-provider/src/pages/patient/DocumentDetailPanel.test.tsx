@@ -7,7 +7,7 @@ import { formatDate } from '@medplum/core';
 import type { Attachment, DocumentReference } from '@medplum/fhirtypes';
 import { HomerSimpson, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { DocumentDetailPanel } from './DocumentDetailPanel';
@@ -91,7 +91,37 @@ describe('DocumentDetailPanel', () => {
 
       fireEvent.click(iconButton('browser-share'));
 
-      expect(openSpy).toHaveBeenCalledWith(PDF_URL, '_blank');
+      expect(openSpy).toHaveBeenCalledWith(PDF_URL, '_blank', 'noopener,noreferrer');
+    });
+
+    // A bare `Binary/<id>` used to be handed to window.open, which resolved it against the app route
+    // and opened a blank page.
+    test('Opens a Medplum-hosted file through the client as a blob', async () => {
+      const tab = { location: { href: '' }, close: vi.fn() };
+      const openSpy = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('%PDF-1.7'));
+      const createObjectURL = vi.fn(() => 'blob:file');
+      vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }));
+      setup(withAttachment({ contentType: 'image/png', url: 'Binary/stored' }));
+
+      fireEvent.click(iconButton('browser-share'));
+
+      expect(openSpy).toHaveBeenCalledWith('', '_blank');
+      await waitFor(() => expect(tab.location.href).toBe('blob:file'));
+    });
+
+    test('Explains, instead of opening a blank page, when the file is not in Medplum', async () => {
+      const tab = { location: { href: '' }, close: vi.fn() };
+      vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('{}', { status: 404 }));
+      setup(withAttachment({ contentType: 'image/png', url: 'Binary/zus-only' }));
+
+      fireEvent.click(iconButton('browser-share'));
+
+      expect(
+        await screen.findByText("This file hasn't been copied into Lyfe yet. Re-import the patient to fetch it.")
+      ).toBeInTheDocument();
+      expect(tab.close).toHaveBeenCalled();
     });
 
     test('Hides the open-in-browser action when the attachment has no url', () => {
@@ -132,10 +162,13 @@ describe('DocumentDetailPanel', () => {
       expect(iframe).toHaveAttribute('src', `${PDF_URL}#navpanes=0`);
     });
 
-    test.each(['application/json', 'text/plain'])('Renders %s in the pdf-style iframe', (contentType) => {
+    test.each(['application/json', 'text/plain'])('Draws %s as text rather than framing it', (contentType) => {
+      // Chrome downloads a text/* iframe instead of displaying it, so these
+      // used to render an empty panel with no error at all. They are read as
+      // text now, and must not go back into the frame.
       setup(withAttachment({ contentType, url: PDF_URL }));
 
-      expect(screen.getByTitle('Attachment')).toBeInTheDocument();
+      expect(screen.queryByTitle('Attachment')).not.toBeInTheDocument();
     });
 
     test('Renders an image preview titled by the attachment', () => {
@@ -175,7 +208,85 @@ describe('DocumentDetailPanel', () => {
     test('Reports an unsupported file type for a non-previewable attachment', () => {
       setup(withAttachment({ contentType: 'application/zip', url: 'http://example.com/binary/archive.zip' }));
 
-      expect(screen.getByText('No preview available for this file type')).toBeInTheDocument();
+      // Named, and offered — never a blank frame.
+      expect(screen.getByText(/application\/zip cannot be displayed in a browser/)).toBeInTheDocument();
+      const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+      fireEvent.click(screen.getByRole('button', { name: /Download file/ }));
+      expect(openSpy).toHaveBeenCalledWith('http://example.com/binary/archive.zip', '_blank', 'noopener,noreferrer');
+    });
+
+    test('Explains a Medplum-hosted PDF that is not really a PDF', async () => {
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('<html>Access denied</html>'));
+      setup(withAttachment({ contentType: 'application/pdf', url: 'Binary/bad' }));
+
+      expect(
+        await screen.findByText("This file is damaged or isn't a real PDF, so it can't be previewed.")
+      ).toBeInTheDocument();
+      expect(screen.queryByTitle('Attachment')).not.toBeInTheDocument();
+    });
+
+    test('Explains a file that was never copied into Medplum', async () => {
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('{}', { status: 404 }));
+      setup(withAttachment({ contentType: 'application/pdf', url: 'Binary/zus-only' }));
+
+      expect(
+        await screen.findByText("This file hasn't been copied into Lyfe yet. Re-import the patient to fetch it.")
+      ).toBeInTheDocument();
+    });
+
+    test('Renders a C-CDA document as readable sections', async () => {
+      const xml =
+        '<ClinicalDocument xmlns="urn:hl7-org:v3"><title>Progress Notes</title><component><structuredBody>' +
+        '<component><section><title>Plan</title><text><paragraph>Repeat LFTs<script>alert(1)</script></paragraph></text></section></component>' +
+        '</structuredBody></component></ClinicalDocument>';
+      const { container } = setup(withAttachment({ contentType: 'application/xml', data: btoa(xml) }));
+
+      expect(await screen.findByRole('heading', { name: 'Progress Notes' })).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Plan' })).toHaveTextContent('Repeat LFTs');
+      expect(container.querySelector('script')).toBeNull();
+    });
+
+    test('Loads a Medplum-hosted XML file and shows non-CDA XML as source', async () => {
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('<note>hello</note>'));
+      setup(withAttachment({ contentType: 'text/xml', url: 'Binary/xml' }));
+
+      expect(await screen.findByText('<note>hello</note>')).toBeInTheDocument();
+      expect(screen.getByText(/not a C-CDA clinical document/)).toBeInTheDocument();
+    });
+
+    test('Explains an XML file that was never copied into Medplum', async () => {
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('{}', { status: 404 }));
+      setup(withAttachment({ contentType: 'application/xml', url: 'Binary/zus-only' }));
+
+      expect(
+        await screen.findByText("This file hasn't been copied into Lyfe yet. Re-import the patient to fetch it.")
+      ).toBeInTheDocument();
+    });
+
+    // Documents imported before the importer typed its files carry only a link and a name.
+    test('Previews an untyped PDF named by its document description', () => {
+      const url = 'http://example.com/binary/abc123';
+      setup(withAttachment({ url, title: 'Document' }, { description: '08172026 LABCORP RESULTS .pdf' }));
+
+      expect(screen.getByTitle('Attachment')).toHaveAttribute('src', `${url}#navpanes=0`);
+      // The metadata still reports what is stored, not the guess.
+      expect(screen.queryByText('Content type')).not.toBeInTheDocument();
+    });
+
+    test('Previews an untyped image named by its attachment title', () => {
+      setup(withAttachment({ url: 'http://example.com/binary/xyz', title: 'wound photo.JPG' }));
+
+      expect(screen.getByRole('img', { name: 'wound photo.JPG' })).toHaveAttribute(
+        'src',
+        'http://example.com/binary/xyz'
+      );
+    });
+
+    test('Offers to open a file whose type cannot be determined', () => {
+      setup(withAttachment({ url: 'http://example.com/binary/unknown', title: 'MONARCH ELIGIBILITY' }));
+
+      expect(screen.getByText(/arrived without a type/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Download file/ })).toBeInTheDocument();
     });
   });
 

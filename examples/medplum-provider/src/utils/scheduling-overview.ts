@@ -4,6 +4,7 @@ import type { MantineColor } from '@mantine/core';
 import type { WithId } from '@medplum/core';
 import { formatCodeableConcept, formatHumanName, getReferenceString, isResource } from '@medplum/core';
 import type { Appointment, Bundle, Location, Patient, Practitioner, Reference, Resource } from '@medplum/fhirtypes';
+import { formatClinicLongDate, formatClinicTime, toClinicIsoDate } from './clinic-time';
 
 /** Provider grouping key used when an appointment has no Practitioner participant. */
 export const UNASSIGNED_PROVIDER_KEY = 'unassigned';
@@ -127,73 +128,57 @@ export function getInitials(name: string): string {
 }
 
 /**
- * Formats a Date as a local `YYYY-MM-DD` string. Used for URL state and day grouping so
- * that days are always the viewer's calendar days, never UTC days.
- * @param date - The date to format.
- * @returns The local ISO date.
+ * The clinic calendar day an appointment starts on, as `YYYY-MM-DD`.
+ *
+ * Day grouping and the `?day=` URL parameter both run on this. It has to be
+ * the clinic's own calendar day rather than the viewer's: from GMT+5 an
+ * afternoon Pacific appointment falls on the following local day, which files
+ * most of a clinic's afternoon under tomorrow. See `utils/clinic-time.ts`.
+ * @param date - The instant.
+ * @param timeZone - The clinic's IANA zone.
+ * @returns The clinic's calendar day.
  */
-export function toLocalIsoDate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+export function toDayKey(date: Date, timeZone: string): string {
+  return toClinicIsoDate(date, timeZone);
 }
 
 /**
- * Parses a local `YYYY-MM-DD` string into a Date at local midnight.
- * @param value - The ISO date string.
- * @returns The date, or undefined when the value is malformed or not a real calendar day.
+ * Validate a `YYYY-MM-DD` day key arriving from the URL.
+ *
+ * Returns the key itself rather than a `Date`, because a calendar day is not an
+ * instant and turning one into the other is what this whole change removes.
+ * @param value - The raw parameter value.
+ * @returns The key, or undefined when it is absent or not a real calendar day.
  */
-export function fromLocalIsoDate(value: string | null | undefined): Date | undefined {
+export function parseDayKey(value: string | null | undefined): string | undefined {
   const match = value ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value) : null;
   if (!match) {
     return undefined;
   }
-  const [year, month, day] = [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
-  const date = new Date(year, month, day);
-  if (date.getFullYear() !== year || date.getMonth() !== month || date.getDate() !== day) {
-    return undefined;
-  }
-  return date;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  const real = probe.getUTCFullYear() === year && probe.getUTCMonth() === month - 1 && probe.getUTCDate() === day;
+  return real ? (value ?? undefined) : undefined;
 }
 
 /**
- * Formats a time of day in the viewer's locale, e.g. "9:30 AM".
- * @param date - The date to format.
+ * Time of day as it reads at the clinic, e.g. "9:30 AM".
+ * @param date - The instant.
+ * @param timeZone - The clinic's IANA zone.
  * @returns The formatted time.
  */
-export function formatTime(date: Date): string {
-  return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+export function formatTime(date: Date, timeZone: string): string {
+  return formatClinicTime(date, timeZone);
 }
 
 /**
- * Formats a full date in the viewer's locale, e.g. "Tuesday, September 29, 2026".
- * @param date - The date to format.
+ * Full date as it reads at the clinic, e.g. "Tuesday, September 29, 2026".
+ * @param date - The instant.
+ * @param timeZone - The clinic's IANA zone.
  * @returns The formatted date.
  */
-export function formatLongDate(date: Date): string {
-  return date.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-}
-
-/**
- * Adds calendar days in local time (DST-safe).
- * @param date - The starting date.
- * @param days - Days to add; may be negative.
- * @returns A new date.
- */
-export function addDays(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-}
-
-/**
- * Local midnight at the start of the given day.
- * @param date - Any time on the day.
- * @returns A new date at 00:00 local time.
- */
-export function startOfDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+export function formatLongDate(date: Date, timeZone: string): string {
+  return formatClinicLongDate(date, timeZone);
 }
 
 function findParticipant<T extends Resource>(
@@ -423,14 +408,20 @@ export function filterOverviewAppointments(
 }
 
 /**
- * Rows that start on the given local calendar day, in start-time order.
+ * Rows that start on the given clinic calendar day, in start-time order.
  * @param rows - The appointments.
- * @param day - Any time on the day to select.
+ * @param dayKey - The clinic calendar day, as `YYYY-MM-DD`.
+ * @param timeZone - The clinic's IANA zone.
  * @returns The appointments on that day.
  */
-export function getAppointmentsForDay(rows: OverviewAppointment[], day: Date): OverviewAppointment[] {
-  const key = toLocalIsoDate(day);
-  return rows.filter((row) => toLocalIsoDate(row.start) === key).sort((a, b) => a.start.getTime() - b.start.getTime());
+export function getAppointmentsForDay(
+  rows: OverviewAppointment[],
+  dayKey: string,
+  timeZone: string
+): OverviewAppointment[] {
+  return rows
+    .filter((row) => toClinicIsoDate(row.start, timeZone) === dayKey)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
 }
 
 /**

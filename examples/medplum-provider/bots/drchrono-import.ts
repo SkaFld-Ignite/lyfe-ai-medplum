@@ -47,6 +47,7 @@ import type { BotEvent, MedplumClient } from '@medplum/core';
 import type {
   AllergyIntolerance,
   Appointment,
+  Attachment,
   AuditEvent,
   Communication,
   Condition,
@@ -80,6 +81,8 @@ import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/creden
 import { ZUS_ENROLMENT_EXTENSION, mergeEnabled, mergeZusEnabled, readDirectoryState } from './shared/directory.ts';
 import type { DrChronoClient } from './shared/drchrono.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
+import { contentTypeFromName } from './shared/file-type.ts';
+import { mapWithConcurrency, storeFile, storedBinaryReference } from './shared/files.ts';
 import { ImportProgress, buildStatusReason, countsToOutput } from './shared/progress.ts';
 import { DRCHRONO_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
@@ -471,6 +474,8 @@ interface DrDoctor {
   cell_phone?: string;
   /** DrChrono's own retirement flag for a provider. */
   is_account_suspended?: boolean;
+  /** IANA zone the provider's naive timestamps are wall-clock in. */
+  timezone?: string;
 }
 
 interface DrOffice {
@@ -851,17 +856,111 @@ async function drchronoOptional<T>(
  * and occasionally junk. FHIR `instant` accepts only a full ISO 8601 timestamp
  * with a zone, so an un-normalised value 400s the whole batch entry it sits in.
  * @param value - The raw DrChrono value.
+ * @param timeZone - The zone a naive value is wall-clock in. Defaults to the
+ *   practice zone; ignored when the value already carries an offset.
  * @returns A full ISO 8601 instant, or undefined when the value is unusable.
  */
-function toInstant(value: string | undefined | null): string | undefined {
+function toInstant(value: string | undefined | null, timeZone?: string): string | undefined {
   if (!value) {
     return undefined;
   }
   const withT = value.includes('T') ? value : value.replace(' ', 'T');
   const dated = withT.includes('T') ? withT : `${withT}T00:00:00`;
-  const zoned = /[Zz]|[+-]\d\d:?\d\d$/.test(dated) ? dated : `${dated}Z`;
-  const parsed = new Date(zoned);
+
+  // Already carries an offset: trust it.
+  if (/[Zz]|[+-]\d\d:?\d\d$/.test(dated)) {
+    const parsed = new Date(dated);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
+
+  // Naive, which is everything DrChrono sends. `scheduled_time` is the
+  // practice's WALL CLOCK — "2026-09-14T09:15:00" means quarter past nine in
+  // the clinic — and carries no offset at all.
+  //
+  // This used to append `Z`, which declares that wall clock to be UTC. Every
+  // appointment, encounter, vital and document was therefore stored seven or
+  // eight hours from when it happened, and a 9:15am visit rendered as 2:15pm
+  // for a reader in another zone. Nothing errored; the times were simply
+  // wrong, consistently, everywhere.
+  const parsedLocal = zonedWallClockToInstant(dated, timeZone ?? DEFAULT_PRACTICE_TIME_ZONE);
+  return parsedLocal ?? fallbackAsUtc(dated);
+}
+
+/**
+ * Parse a naive timestamp as UTC, which is what this did before time zones
+ * were handled. Reached only when the runtime cannot resolve a zone.
+ * @param dated - A naive ISO timestamp.
+ * @returns The instant, or undefined when unparseable.
+ */
+function fallbackAsUtc(dated: string): string | undefined {
+  const parsed = new Date(`${dated}Z`);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+/**
+ * How far ahead of UTC a zone is at a given instant, in milliseconds.
+ * @param instant - The moment to measure at, since the offset moves with DST.
+ * @param timeZone - An IANA zone name.
+ * @returns The offset, or undefined when the runtime cannot resolve the zone.
+ */
+function zoneOffsetMs(instant: Date, timeZone: string): number | undefined {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+      .formatToParts(instant)
+      .reduce<Record<string, string>>((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+      }, {});
+    const asUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour) % 24,
+      Number(parts.minute),
+      Number(parts.second)
+    );
+    return asUtc - instant.getTime();
+  } catch {
+    // A runtime built without full ICU rejects the zone name outright.
+    return undefined;
+  }
+}
+
+/**
+ * Read a naive timestamp as wall-clock time in a zone, and return the instant.
+ *
+ * Two passes, because the offset depends on the instant we are trying to find.
+ * The first pass guesses with the offset in force at the naive time read as
+ * UTC; the second re-reads the offset at that candidate and corrects it. That
+ * matters only within an hour of a DST change, which is exactly when a silent
+ * one-hour error would be hardest to notice.
+ * @param dated - A naive ISO timestamp, no offset.
+ * @param timeZone - The zone the timestamp is wall-clock in.
+ * @returns The UTC instant, or undefined when the zone cannot be resolved.
+ */
+function zonedWallClockToInstant(dated: string, timeZone: string): string | undefined {
+  const guess = new Date(`${dated}Z`);
+  if (Number.isNaN(guess.getTime())) {
+    return undefined;
+  }
+  const firstOffset = zoneOffsetMs(guess, timeZone);
+  if (firstOffset === undefined) {
+    return undefined;
+  }
+  const candidate = new Date(guess.getTime() - firstOffset);
+  const secondOffset = zoneOffsetMs(candidate, timeZone);
+  const corrected =
+    secondOffset === undefined || secondOffset === firstOffset ? candidate : new Date(guess.getTime() - secondOffset);
+  return corrected.toISOString();
 }
 
 /**
@@ -892,35 +991,6 @@ function isoDate(date: Date): string {
 function joinDefined(parts: (string | undefined | null)[], separator: string): string | undefined {
   const kept = parts.filter((part): part is string => Boolean(part));
   return kept.length > 0 ? kept.join(separator) : undefined;
-}
-
-/**
- * Run an async mapper over a list with a bounded number of in-flight calls.
- *
- * Used for the clinical-note PDFs, which are downloaded from DrChrono and
- * re-uploaded to Medplum one by one. Unbounded `Promise.all` over a few hundred
- * multi-megabyte PDFs exhausts sockets and memory; fully sequential is too slow
- * for the bot's timeout.
- * @param items - What to process.
- * @param limit - Maximum concurrent calls.
- * @param worker - Applied to each item.
- * @returns Results, index-aligned to `items`.
- */
-async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let cursor = 0;
-
-  const runner = async (): Promise<void> => {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor++;
-      out[index] = await worker(items[index]);
-    }
-  };
-
-  const lanes = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(Array.from({ length: lanes }, () => runner()));
-  return out;
 }
 
 /**
@@ -1304,13 +1374,15 @@ function mapPractitioner(d: DrDoctor, organization: Reference<Organization>, ena
  * @param organization - The calling clinic.
  * @param enabled - Whether this clinic has the office switched on.
  * @param zusEnabled - Whether patients seen here may be enrolled in Zus.
+ * @param timeZone - The practice's IANA zone, recorded so the UI reads times in it.
  * @returns The Location resource.
  */
 function mapLocation(
   o: DrOffice,
   organization: Reference<Organization>,
   enabled: boolean,
-  zusEnabled: boolean
+  zusEnabled: boolean,
+  timeZone: string
 ): Location {
   const telecom: Location['telecom'] = [];
   if (o.phone_number) {
@@ -1327,7 +1399,20 @@ function mapLocation(
     // Always written, never omitted when false: an absent extension and an
     // explicit `false` must not be distinguishable, or a re-pull would look
     // like a change and the value would drift.
-    extension: [{ url: ZUS_ENROLMENT_EXTENSION, valueBoolean: zusEnabled }],
+    extension: [
+      { url: ZUS_ENROLMENT_EXTENSION, valueBoolean: zusEnabled },
+      // The zone this office's wall-clock times are in, recorded so the UI can
+      // render them the way the clinic reads them rather than the way the
+      // viewer's browser does. DrChrono carries a timezone per *doctor*, not
+      // per office, so this is the practice-wide zone the importer resolved —
+      // written here deliberately, so the importer and the UI can never end up
+      // using two different zones for the same timestamp.
+      //
+      // `http://hl7.org/fhir/StructureDefinition/timezone` is the standard HL7
+      // extension, which Medplum exports as `TimezoneExtensionURI` and reads in
+      // its own scheduling code. No custom URI.
+      { url: 'http://hl7.org/fhir/StructureDefinition/timezone', valueCode: timeZone },
+    ],
     name: o.name,
     telecom: telecom.length > 0 ? telecom : undefined,
     address: o.address
@@ -1819,6 +1904,49 @@ function warnOnUnmappedStatuses(appointments: DrAppointment[]): void {
   }
 }
 
+/**
+ * The zone DrChrono's naive timestamps are wall-clock in, when the record
+ * itself does not say.
+ *
+ * DrChrono reports a `timezone` per doctor — this practice has 11 on
+ * `US/Pacific` and 2 on `US/Eastern` — so an appointment with a known doctor
+ * uses theirs. This is the fallback for the rest, and for a practice whose
+ * doctors report nothing.
+ */
+const DEFAULT_PRACTICE_TIME_ZONE = 'US/Pacific';
+
+/**
+ * The zone DrChrono's naive timestamps are wall-clock in for this practice.
+ *
+ * Deliberately a practice-wide value rather than the individual provider's.
+ * DrChrono reports a `timezone` per doctor, and using it looked more precise
+ * until it was tested: this practice has two doctors set to `US/Eastern`, and
+ * their clinics are in Anaheim. A 9:30am visit at Anaheim Main Office came out
+ * as 6:30am Pacific, because the provider's account setting is where *they*
+ * are, not where the visit is. `scheduled_time` is the clinic's wall clock.
+ *
+ * Offices carry no zone of their own, so the practice zone is taken as the
+ * most common one across its providers — the eleven Californian doctors
+ * outvote the two remote ones — falling back to Pacific when nothing is set.
+ * @param zones - Doctor id to IANA zone, collected from the directory.
+ * @returns The zone to read every naive timestamp in.
+ */
+function practiceZone(zones: Map<string, string>): string {
+  const tally = new Map<string, number>();
+  for (const zone of zones.values()) {
+    tally.set(zone, (tally.get(zone) ?? 0) + 1);
+  }
+  let best = DEFAULT_PRACTICE_TIME_ZONE;
+  let bestCount = 0;
+  for (const [zone, count] of tally) {
+    if (count > bestCount) {
+      best = zone;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 /** DrChrono's default visit length, used when the appointment carries none. */
 const DEFAULT_VISIT_MINUTES = 30;
 
@@ -1830,6 +1958,7 @@ const DEFAULT_VISIT_MINUTES = 30;
  * @param practitioners - DrChrono doctor id to Practitioner reference.
  * @param locations - DrChrono office id to Location reference.
  * @param appointmentRef - The scheduling Appointment, when it was written.
+ * @param timeZone - The zone the appointment's naive times are wall-clock in.
  * @returns The Encounter resource.
  */
 function mapEncounter(
@@ -1838,9 +1967,10 @@ function mapEncounter(
   organization: Reference<Organization>,
   practitioners: Map<string, Reference<Practitioner>>,
   locations: Map<string, Reference<Location>>,
-  appointmentRef: Reference<Appointment> | undefined
+  appointmentRef: Reference<Appointment> | undefined,
+  timeZone: string
 ): Encounter {
-  const start = toInstant(a.scheduled_time);
+  const start = toInstant(a.scheduled_time, timeZone);
   const minutes = a.duration ?? DEFAULT_VISIT_MINUTES;
   const practitioner = a.doctor ? lookup(practitioners, a.doctor) : undefined;
   const location = a.office ? lookup(locations, a.office) : undefined;
@@ -2298,12 +2428,14 @@ function labInterpretation(r: DrLabResult): Observation['interpretation'] {
  * @param r - The DrChrono lab result payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The Observation resource.
  */
 function mapLabObservation(
   r: DrLabResult,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string
 ): Observation {
   const display = r.test_name || r.observation_description || 'Lab Test';
   return {
@@ -2331,7 +2463,7 @@ function mapLabObservation(
     },
     subject: patient,
     effectiveDateTime: r.date_collected || r.date_resulted,
-    issued: toInstant(r.date_resulted),
+    issued: toInstant(r.date_resulted, timeZone),
     ...labObservationValue(r.value || r.result_value, r.units || r.result_units || ''),
     referenceRange: r.reference_range || r.normal_range ? [{ text: r.reference_range || r.normal_range }] : undefined,
     interpretation: labInterpretation(r),
@@ -2350,6 +2482,7 @@ function mapLabObservation(
  * @param organization - The calling clinic.
  * @param labOrders - DrChrono lab order id to ServiceRequest reference.
  * @param results - Observations this report summarises.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The DiagnosticReport resource.
  */
 function mapLabReport(
@@ -2357,7 +2490,8 @@ function mapLabReport(
   patient: Reference<Patient>,
   organization: Reference<Organization>,
   labOrders: Map<string, Reference<ServiceRequest>>,
-  results: Reference<Observation>[]
+  results: Reference<Observation>[],
+  timeZone: string
 ): DiagnosticReport {
   const display = r.test_name || r.observation_description || 'Lab Test';
   const basedOn = lookup(labOrders, r.lab_order);
@@ -2378,7 +2512,7 @@ function mapLabReport(
     },
     subject: patient,
     effectiveDateTime: r.date_collected || r.date_resulted,
-    issued: toInstant(r.date_resulted),
+    issued: toInstant(r.date_resulted, timeZone),
     basedOn: basedOn ? [basedOn] : undefined,
     result: results.length > 0 ? results : undefined,
     conclusion: r.comments || undefined,
@@ -2398,20 +2532,24 @@ function mapLabReport(
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
  * @param labOrders - DrChrono lab order id to ServiceRequest reference.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
+ * @param file - The PDF re-hosted in Medplum, when it could be copied; otherwise DrChrono's link is kept.
  * @returns The DocumentReference resource.
  */
 function mapLabDocument(
   d: DrLabDocument,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  labOrders: Map<string, Reference<ServiceRequest>>
+  labOrders: Map<string, Reference<ServiceRequest>>,
+  timeZone: string,
+  file?: Attachment
 ): DocumentReference {
   const isResult = (d.type ?? '').toUpperCase() === 'RES';
   const typeCode = isResult
     ? { system: 'http://loinc.org', code: '11502-2', display: 'Laboratory report' }
     : { system: 'http://loinc.org', code: '11488-4', display: 'Consultation note' };
   const labOrder = lookup(labOrders, d.lab_order);
-  const date = toInstant(d.timestamp);
+  const date = toInstant(d.timestamp, timeZone);
   return {
     resourceType: 'DocumentReference',
     meta: buildMeta(organization),
@@ -2441,6 +2579,7 @@ function mapLabDocument(
               attachment: {
                 contentType: 'application/pdf',
                 url: d.document,
+                ...file,
                 title: isResult ? `Lab Result ${date?.slice(0, 10) ?? ''}`.trim() : 'Lab Requisition',
               },
             },
@@ -2473,24 +2612,40 @@ function mapLabDocument(
  * @param d - The DrChrono document payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
+ * @param file - The file re-hosted in Medplum, when it could be copied. Otherwise DrChrono's link is
+ *   kept, typed from its name where possible, so the document still lists and can be retried.
  * @returns The DocumentReference resource.
  */
 function mapDocument(
   d: DrDocument,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string,
+  file?: Attachment
 ): DocumentReference {
+  const title = d.description || 'Document';
   return {
     resourceType: 'DocumentReference',
     meta: buildMeta(organization),
     identifier: [{ system: IDENTIFIER_SYSTEMS.document, value: String(d.id) }],
     status: 'current',
     subject: patient,
-    date: toInstant(d.date),
+    date: toInstant(d.date, timeZone),
     description: d.description || undefined,
     custodian: organization,
     category: d.metatags?.length ? [{ text: d.metatags.join(', ') }] : undefined,
-    content: [{ attachment: { url: d.document, title: d.description || 'Document' } }],
+    content: [
+      {
+        attachment: file
+          ? { ...file, title }
+          : {
+              contentType: contentTypeFromName(d.description) ?? contentTypeFromName(d.document),
+              url: d.document,
+              title,
+            },
+      },
+    ],
   };
 }
 
@@ -2561,12 +2716,14 @@ function mapFamilyMemberHistory(
  * @param s - The DrChrono social history payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns Zero, one or two Observations.
  */
 function mapSocialHistory(
   s: DrSocialHistory,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string
 ): Observation[] {
   const category = {
     coding: [
@@ -2577,7 +2734,7 @@ function mapSocialHistory(
       },
     ],
   };
-  const effectiveDateTime = toInstant(s.recorded_date) ?? new Date().toISOString();
+  const effectiveDateTime = toInstant(s.recorded_date, timeZone) ?? new Date().toISOString();
   const out: Observation[] = [];
 
   if (s.smoking_status) {
@@ -2627,12 +2784,14 @@ function mapSocialHistory(
  * @param m - The DrChrono message payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The Communication resource.
  */
 function mapCommunication(
   m: DrMessage,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string
 ): Communication {
   // FHIR has no "unread" status; an unread message is one still in progress.
   const status: Communication['status'] = m.archived || m.read ? 'completed' : 'in-progress';
@@ -2642,8 +2801,8 @@ function mapCommunication(
     identifier: [{ system: IDENTIFIER_SYSTEMS.communication, value: String(m.id) }],
     status,
     subject: patient,
-    sent: toInstant(m.received_at),
-    received: m.read ? toInstant(m.updated_at) : undefined,
+    sent: toInstant(m.received_at, timeZone),
+    received: m.read ? toInstant(m.updated_at, timeZone) : undefined,
     category: m.type
       ? [{ coding: [{ system: IDENTIFIER_SYSTEMS.messageType, code: m.type, display: m.type }] }]
       : undefined,
@@ -2662,6 +2821,7 @@ function mapCommunication(
  * @param organization - The calling clinic.
  * @param practitioners - DrChrono doctor id to Practitioner reference.
  * @param encounters - DrChrono appointment id to Encounter reference.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The Task resource.
  */
 function mapDrTask(
@@ -2669,7 +2829,8 @@ function mapDrTask(
   patient: Reference<Patient>,
   organization: Reference<Organization>,
   practitioners: Map<string, Reference<Practitioner>>,
-  encounters: Map<string, Reference<Encounter>>
+  encounters: Map<string, Reference<Encounter>>,
+  timeZone: string
 ): Task {
   const appointmentLink = t.associated_items?.find((a) => a.type === 'appointment');
   return {
@@ -2682,7 +2843,7 @@ function mapDrTask(
     for: patient,
     encounter: appointmentLink ? lookup(encounters, appointmentLink.value) : undefined,
     owner: t.assignee ? lookup(practitioners, t.assignee) : undefined,
-    authoredOn: toInstant(t.created_at),
+    authoredOn: toInstant(t.created_at, timeZone),
     restriction: t.due_date ? { period: { end: t.due_date } } : undefined,
     note: t.notes && t.notes !== t.title ? [{ text: t.notes }] : undefined,
   };
@@ -2857,6 +3018,17 @@ interface ImportContext {
   counts: ImportCounts;
   /** DrChrono doctor id to Practitioner reference. */
   practitioners: Map<string, Reference<Practitioner>>;
+  /** DrChrono doctor id to their IANA time zone, for reading naive timestamps. */
+  doctorTimeZones: Map<string, string>;
+  /**
+   * The zone every naive DrChrono timestamp is wall-clock in.
+   *
+   * Resolved once from the practice's providers and carried on the context so
+   * no mapper has to fall back to a hardcoded default. Every timestamp
+   * DrChrono returns is naive — `"2024-04-23T18:57:41"`, no offset — so this
+   * applies to documents, labs, messages and tasks, not just appointments.
+   */
+  timeZone: string;
   /** DrChrono office id to Location reference. */
   locations: Map<string, Reference<Location>>;
   /** DrChrono office ids the clinic has switched off. */
@@ -2953,6 +3125,11 @@ async function importPractice(ctx: ImportContext): Promise<void> {
   ctx.counts.locations = result.locationWrote;
   trackRefs(ctx, 'Location', result.locationIds);
 
+  for (const [drId, zone] of result.doctorTimeZones) {
+    ctx.doctorTimeZones.set(drId, zone);
+  }
+  ctx.timeZone = practiceZone(ctx.doctorTimeZones);
+
   ctx.disabledOffices = result.disabledOfficeIds;
   ctx.disabledDoctors = result.disabledDoctorIds;
 }
@@ -2963,6 +3140,8 @@ interface DirectorySyncResult {
   locationWrote: number;
   practitionerIds: (string | null)[];
   locationIds: (string | null)[];
+  /** DrChrono doctor id to IANA time zone. */
+  doctorTimeZones: Map<string, string>;
   practitionerRefs: Map<string, Reference<Practitioner>>;
   locationRefs: Map<string, Reference<Location>>;
   /** How many of each are switched off, for the caller to report. */
@@ -3020,6 +3199,12 @@ async function syncDirectoryResources(
   );
 
   const practitionerRefs = new Map<string, Reference<Practitioner>>();
+  const doctorTimeZones = new Map<string, string>();
+  for (const d of doctors) {
+    if (d.timezone) {
+      doctorTimeZones.set(String(d.id), d.timezone);
+    }
+  }
   for (let i = 0; i < doctors.length; i++) {
     const id = doctorResult.ids[i];
     if (id) {
@@ -3040,11 +3225,12 @@ async function syncDirectoryResources(
     })
   );
   const officeZus = offices.map((o) => mergeZusEnabled(existing.locations.get(String(o.id))));
+  const officeZone = practiceZone(doctorTimeZones);
   const officeResult = await write(
     medplum,
     offices.map((o, i) => ({
       resourceType: 'Location',
-      resource: mapLocation(o, organization, officeEnabled[i], officeZus[i]),
+      resource: mapLocation(o, organization, officeEnabled[i], officeZus[i], officeZone),
       system: IDENTIFIER_SYSTEMS.location,
       value: String(o.id),
     })),
@@ -3067,6 +3253,7 @@ async function syncDirectoryResources(
     locationIds: officeResult.ids,
     practitionerRefs,
     locationRefs,
+    doctorTimeZones,
     disabledPractitioners: doctorEnabled.filter((e) => !e).length,
     disabledLocations: officeEnabled.filter((e) => !e).length,
     disabledOfficeIds: new Set(offices.filter((_, i) => !officeEnabled[i]).map((o) => o.id)),
@@ -3286,7 +3473,8 @@ async function importAppointments(
 
   // Only a scheduled appointment can occupy a Slot; the rest still become
   // Encounters, which is what carries the clinical content.
-  const scheduled = appointments.filter((a) => Boolean(toInstant(a.scheduled_time)));
+  const zone = ctx.timeZone;
+  const scheduled = appointments.filter((a) => Boolean(toInstant(a.scheduled_time, zone)));
   const schedule = scheduled.length > 0 ? await getOrCreateSchedule(ctx) : undefined;
 
   const slotRefs = new Map<string, Reference<Slot>>();
@@ -3295,7 +3483,7 @@ async function importAppointments(
       ctx.medplum,
       scheduled.map((a) => ({
         resourceType: 'Slot',
-        resource: mapSlot(a, toInstant(a.scheduled_time) as string, schedule, ctx.organization),
+        resource: mapSlot(a, toInstant(a.scheduled_time, zone) as string, schedule, ctx.organization),
         system: IDENTIFIER_SYSTEMS.slot,
         value: String(a.id),
       })),
@@ -3319,7 +3507,7 @@ async function importAppointments(
       resourceType: 'Appointment',
       resource: mapAppointment(
         a,
-        toInstant(a.scheduled_time) as string,
+        toInstant(a.scheduled_time, zone) as string,
         lookup(slotRefs, a.id) as Reference<Slot>,
         patient,
         a.doctor ? lookup(ctx.practitioners, a.doctor) : undefined,
@@ -3350,7 +3538,8 @@ async function importAppointments(
         ctx.organization,
         ctx.practitioners,
         ctx.locations,
-        lookup(appointmentRefs, a.id)
+        lookup(appointmentRefs, a.id),
+        zone
       ),
       system: IDENTIFIER_SYSTEMS.encounter,
       value: String(a.id),
@@ -3368,7 +3557,7 @@ async function importAppointments(
 
   const vitalEntries: UpsertEntry[] = [];
   for (const appt of appointments) {
-    const effective = toInstant(appt.scheduled_time);
+    const effective = toInstant(appt.scheduled_time, zone);
     if (!appt.vitals || !effective) {
       continue;
     }
@@ -3416,7 +3605,7 @@ async function importClinicalNotes(
   appointments: DrAppointment[]
 ): Promise<void> {
   const withNotes = appointments
-    .filter((a) => Boolean(a.clinical_note?.pdf) && Boolean(toInstant(a.scheduled_time)))
+    .filter((a) => Boolean(a.clinical_note?.pdf) && Boolean(toInstant(a.scheduled_time, ctx.timeZone)))
     .slice(0, MAX_CLINICAL_NOTES);
   if (withNotes.length === 0) {
     return;
@@ -3443,7 +3632,7 @@ async function importClinicalNotes(
             }),
           `createBinary(note ${appt.id})`
         );
-        const date = toInstant(appt.scheduled_time) as string;
+        const date = toInstant(appt.scheduled_time, ctx.timeZone) as string;
         const author = appt.doctor ? lookup(ctx.practitioners, appt.doctor) : undefined;
         const encounter = lookup(ctx.encounters, appt.id);
         const resource: DocumentReference = {
@@ -3600,7 +3789,7 @@ async function importHistories(ctx: ImportContext, patient: Reference<Patient>):
   });
   const socialEntries: UpsertEntry[] = [];
   for (const s of social) {
-    for (const obs of mapSocialHistory(s, patient, ctx.organization)) {
+    for (const obs of mapSocialHistory(s, patient, ctx.organization, ctx.timeZone)) {
       socialEntries.push({
         resourceType: 'Observation',
         resource: obs,
@@ -3698,7 +3887,7 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
     ctx.medplum,
     results.map((r) => ({
       resourceType: 'Observation',
-      resource: mapLabObservation(r, patient, ctx.organization),
+      resource: mapLabObservation(r, patient, ctx.organization, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.labObservation,
       value: String(r.id),
     })),
@@ -3714,7 +3903,7 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
       const obsRefs: Reference<Observation>[] = obsId ? [{ reference: `Observation/${obsId}` }] : [];
       return {
         resourceType: 'DiagnosticReport',
-        resource: mapLabReport(r, patient, ctx.organization, ctx.labOrders, obsRefs),
+        resource: mapLabReport(r, patient, ctx.organization, ctx.labOrders, obsRefs, ctx.timeZone),
         system: IDENTIFIER_SYSTEMS.labReport,
         value: String(r.id),
       };
@@ -3730,11 +3919,27 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
     { patient: ctx.drchronoPatientId },
     { maxRecords: MAX_LAB_DOCUMENTS, sectionTimeoutMs: 180_000 }
   );
+  const labFiles = await rehostDocumentFiles(
+    ctx,
+    patient,
+    IDENTIFIER_SYSTEMS.labDocument,
+    documents,
+    'lab-document',
+    // DrChrono documents lab files as PDFs, so fall back to that when the bytes are not recognised.
+    () => ['lab.pdf']
+  );
   const documentResult = await write(
     ctx.medplum,
     documents.map((d) => ({
       resourceType: 'DocumentReference',
-      resource: mapLabDocument(d, patient, ctx.organization, ctx.labOrders),
+      resource: mapLabDocument(
+        d,
+        patient,
+        ctx.organization,
+        ctx.labOrders,
+        ctx.timeZone,
+        labFiles.get(String(d.id))
+      ),
       system: IDENTIFIER_SYSTEMS.labDocument,
       value: String(d.id),
     })),
@@ -3742,6 +3947,111 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
   );
   ctx.counts.labDocuments = documentResult.wrote;
   trackRefs(ctx, 'DocumentReference', documentResult.ids);
+}
+
+/** Cap on document files downloaded in one run; the rest keep DrChrono's link until the next run. */
+const MAX_DOCUMENT_FILES = 300;
+
+/** In-flight document downloads. */
+const DOCUMENT_FILE_CONCURRENCY = 4;
+
+/**
+ * Files already copied into Medplum by an earlier run, keyed by DrChrono id, so
+ * a re-import does not download and store every document again.
+ * @param ctx - The import context.
+ * @param patient - Reference to the imported patient.
+ * @param system - The identifier system of the documents.
+ * @returns DrChrono id to the stored attachment.
+ */
+async function loadStoredFiles(
+  ctx: ImportContext,
+  patient: Reference<Patient>,
+  system: string
+): Promise<Map<string, Attachment>> {
+  const stored = new Map<string, Attachment>();
+  const baseUrl = ctx.medplum.getBaseUrl();
+  for await (const page of ctx.medplum.searchResourcePages('DocumentReference', {
+    patient: patient.reference as string,
+    _elements: 'identifier,content',
+    _count: '1000',
+  })) {
+    for (const doc of page) {
+      const drchronoId = doc.identifier?.find((i) => i.system === system)?.value;
+      const attachment = doc.content?.[0]?.attachment;
+      const binary = storedBinaryReference(attachment?.url, baseUrl);
+      if (drchronoId && attachment?.contentType && binary) {
+        stored.set(drchronoId, { contentType: attachment.contentType, url: binary, size: attachment.size });
+      }
+    }
+  }
+  return stored;
+}
+
+/**
+ * Copy DrChrono-hosted document files into Medplum Binaries.
+ *
+ * DrChrono serves documents from short-lived presigned S3 links with no MIME
+ * type, so a DocumentReference that only stores the link cannot be previewed
+ * and stops opening within the hour. Files stored by an earlier run are reused;
+ * the rest are downloaded, typed from their bytes, and stored. A file that
+ * cannot be fetched is skipped and keeps DrChrono's link, to be retried next run.
+ * @param ctx - The import context.
+ * @param patient - Reference to the imported patient.
+ * @param system - The identifier system of the documents.
+ * @param documents - The DrChrono documents, each with an id and a file link.
+ * @param label - Names the files in storage and in logs.
+ * @param names - File names or titles that may reveal the type when the bytes do not.
+ * @returns DrChrono id to the stored attachment (content type, Binary URL and size).
+ */
+async function rehostDocumentFiles<T extends { id: number; document?: string }>(
+  ctx: ImportContext,
+  patient: Reference<Patient>,
+  system: string,
+  documents: T[],
+  label: string,
+  names: (d: T) => (string | undefined)[]
+): Promise<Map<string, Attachment>> {
+  const files = new Map<string, Attachment>();
+  if (documents.length === 0) {
+    return files;
+  }
+  try {
+    for (const [id, attachment] of await loadStoredFiles(ctx, patient, system)) {
+      files.set(id, attachment);
+    }
+  } catch (err) {
+    console.warn(
+      `[drchrono-import] could not read stored ${label} files: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  const pending = documents.filter((d) => d.document && !files.has(String(d.id))).slice(0, MAX_DOCUMENT_FILES);
+  if (pending.length > 0) {
+    log(`fetching ${pending.length} ${label} files (${files.size} already stored)`);
+  }
+  await mapWithConcurrency(pending, DOCUMENT_FILE_CONCURRENCY, async (d) => {
+    try {
+      const url = d.document as string;
+      const res = await withHardTimeout(fetch(url), DRCHRONO_REQUEST_TIMEOUT_MS, `${label} ${d.id}`);
+      if (!res.ok) {
+        return;
+      }
+      const data = new Uint8Array(await res.arrayBuffer());
+      const stored = await storeFile(
+        ctx.medplum,
+        data,
+        res.headers.get('content-type'),
+        [...names(d), url],
+        `drchrono-${label}-${d.id}`
+      );
+      files.set(String(d.id), stored);
+    } catch (err) {
+      console.warn(
+        `[drchrono-import] ${label} ${d.id} file failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  });
+  return files;
 }
 
 /** Cap on inbox messages per run. */
@@ -3759,11 +4069,14 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
   const documents = await drchronoOptional<DrDocument>(ctx.client, '/documents', {
     patient: ctx.drchronoPatientId,
   });
+  const files = await rehostDocumentFiles(ctx, patient, IDENTIFIER_SYSTEMS.document, documents, 'document', (d) => [
+    d.description,
+  ]);
   const documentResult = await write(
     ctx.medplum,
     documents.map((d) => ({
       resourceType: 'DocumentReference',
-      resource: mapDocument(d, patient, ctx.organization),
+      resource: mapDocument(d, patient, ctx.organization, ctx.timeZone, files.get(String(d.id))),
       system: IDENTIFIER_SYSTEMS.document,
       value: String(d.id),
     })),
@@ -3782,7 +4095,7 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
     ctx.medplum,
     messages.map((m) => ({
       resourceType: 'Communication',
-      resource: mapCommunication(m, patient, ctx.organization),
+      resource: mapCommunication(m, patient, ctx.organization, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.communication,
       value: String(m.id),
     })),
@@ -3801,7 +4114,7 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
     ctx.medplum,
     tasks.map((t) => ({
       resourceType: 'Task',
-      resource: mapDrTask(t, patient, ctx.organization, ctx.practitioners, ctx.encounters),
+      resource: mapDrTask(t, patient, ctx.organization, ctx.practitioners, ctx.encounters, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.task,
       value: String(t.id),
     })),
@@ -3953,6 +4266,8 @@ async function importChart(
     drchronoPatientId,
     counts,
     practitioners: new Map(),
+    doctorTimeZones: new Map(),
+    timeZone: DEFAULT_PRACTICE_TIME_ZONE,
     locations: new Map(),
     disabledOffices: new Set(),
     disabledDoctors: new Set(),
