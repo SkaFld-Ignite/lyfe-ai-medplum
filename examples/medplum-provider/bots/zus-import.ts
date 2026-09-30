@@ -51,7 +51,19 @@
  * another clinic's compartment.
  */
 import type { BotEvent, MedplumClient } from '@medplum/core';
-import type { Bundle, Coding, Identifier, Organization, Patient, Reference, Resource, Task } from '@medplum/fhirtypes';
+import type {
+  Attachment,
+  Binary,
+  Bundle,
+  Coding,
+  DocumentReference,
+  Identifier,
+  Organization,
+  Patient,
+  Reference,
+  Resource,
+  Task,
+} from '@medplum/fhirtypes';
 import { Buffer as NodeBuffer } from 'node:buffer';
 import { clearTimeout as nodeClearTimeout, setTimeout as nodeSetTimeout } from 'node:timers';
 import { sleep, upsertBatch, withMedplum429Retry } from './shared/batch.ts';
@@ -62,6 +74,7 @@ import {
   readCredentialRecord,
 } from './shared/credentials.ts';
 import { readZusEnabledLocationRefs } from './shared/directory.ts';
+import { mapWithConcurrency, storeFile, storedBinaryReference } from './shared/files.ts';
 import { linkPatientCoveragePayors } from './shared/payers.ts';
 import { ImportProgress, buildStatusReason } from './shared/progress.ts';
 import { ZUS_SOURCE_TAG } from './shared/source.ts';
@@ -1079,6 +1092,15 @@ async function importResourceType(props: {
     log(`${props.resourceType}: skipped ${skipped} resource(s) with no Zus id to key on`);
   }
 
+  if (props.resourceType === 'DocumentReference') {
+    await rehostZusDocumentFiles({
+      medplum: props.medplum,
+      zus: props.zus,
+      patientRef: props.patientRef,
+      entries,
+    });
+  }
+
   const result = await upsertBatch(props.medplum, entries, { label: `zus-import ${props.resourceType}` });
 
   // Feed this type's ids forward so later types can repoint their references.
@@ -1097,6 +1119,172 @@ async function importResourceType(props: {
     reasons.push(`${result.failed}/${entries.length} writes did not settle 2xx`);
   }
   return { wrote: result.wrote, reason: reasons.length > 0 ? reasons.join('; ') : undefined };
+}
+
+/** Cap on Zus document files copied in one run; the rest keep Zus's link until the next run. */
+const MAX_ZUS_DOCUMENT_FILES = 300;
+
+/** In-flight Zus file downloads. */
+const ZUS_FILE_CONCURRENCY = 4;
+
+/**
+ * The URL to download a Zus attachment from, with the Zus token.
+ *
+ * Only Zus's own FHIR server is called: a document can point anywhere, and the
+ * bearer token must never be sent to a third-party host.
+ * @param zus - Authenticated Zus connection.
+ * @param url - The attachment URL as Zus returned it.
+ * @returns The absolute Zus URL, or undefined when the file is not on Zus.
+ */
+function zusFileUrl(zus: ZusConnection, url: string | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+  if (url.startsWith('Binary/')) {
+    return `${zus.fhirUrl}/${url}`;
+  }
+  return url.startsWith(`${zus.fhirUrl}/`) ? url : undefined;
+}
+
+/**
+ * Download one file from Zus. A FHIR Binary may come back raw or wrapped as
+ * JSON with base64 `data`, depending on how Zus honours the Accept header.
+ * @param zus - Authenticated Zus connection.
+ * @param url - Absolute Zus URL.
+ * @returns The bytes and the type Zus reported, or undefined when the download failed.
+ */
+async function downloadZusFile(
+  zus: ZusConnection,
+  url: string
+): Promise<{ data: Uint8Array; contentType?: string } | undefined> {
+  const res = await zusFetch({ connection: zus, url, label: `zus file ${url}`, headers: { Accept: '*/*' } });
+  if (!res.ok) {
+    await res.text().catch(() => undefined);
+    return undefined;
+  }
+  const headerType = res.headers.get('content-type') ?? undefined;
+  if (headerType?.includes('json')) {
+    const body = (await res.json()) as Partial<Binary>;
+    if (body.resourceType === 'Binary' && body.data) {
+      return { data: new Uint8Array(NodeBuffer.from(body.data, 'base64')), contentType: body.contentType };
+    }
+    return { data: new Uint8Array(NodeBuffer.from(JSON.stringify(body))), contentType: headerType };
+  }
+  return { data: new Uint8Array(await res.arrayBuffer()), contentType: headerType };
+}
+
+/**
+ * Files already copied into Medplum by an earlier run, keyed by Zus id and
+ * index-aligned to `DocumentReference.content`, so a re-import reuses them.
+ * @param medplum - Bot-scoped Medplum client.
+ * @param patientRef - The Medplum Patient.
+ * @returns Zus document id to its stored attachments.
+ */
+async function loadStoredZusFiles(
+  medplum: MedplumClient,
+  patientRef: Reference<Patient>
+): Promise<Map<string, (Pick<Attachment, 'contentType' | 'url' | 'size'> | undefined)[]>> {
+  const stored = new Map<string, (Pick<Attachment, 'contentType' | 'url' | 'size'> | undefined)[]>();
+  const system = `${ZUS_IDENTIFIER_BASE}/DocumentReference`;
+  const baseUrl = medplum.getBaseUrl();
+  for await (const page of medplum.searchResourcePages('DocumentReference', {
+    patient: patientRef.reference as string,
+    _elements: 'identifier,content',
+    _count: '1000',
+  })) {
+    for (const doc of page) {
+      const zusId = doc.identifier?.find((i) => i.system === system)?.value;
+      if (!zusId) {
+        continue;
+      }
+      stored.set(
+        zusId,
+        (doc.content ?? []).map(({ attachment }) => {
+          const binary = storedBinaryReference(attachment.url, baseUrl);
+          return binary && attachment.contentType
+            ? { contentType: attachment.contentType, url: binary, size: attachment.size }
+            : undefined;
+        })
+      );
+    }
+  }
+  return stored;
+}
+
+/**
+ * Copy each Zus document's file into Medplum before the documents are written.
+ *
+ * Zus attachments point at Zus's own `Binary` endpoint, which only answers with
+ * the bot's Zus token, or carry the file inline as base64 (typical for C-CDA
+ * XML). Neither can be previewed in the app, so each is stored as a Medplum
+ * Binary and the attachment is repointed at it. Files stored by an earlier run
+ * are reused. A file that cannot be fetched keeps Zus's link and is retried on
+ * the next run.
+ * @param props - The inputs.
+ * @param props.medplum - Bot-scoped Medplum client.
+ * @param props.zus - Authenticated Zus connection.
+ * @param props.patientRef - The Medplum Patient.
+ * @param props.entries - The prepared DocumentReferences, mutated in place.
+ */
+async function rehostZusDocumentFiles(props: {
+  medplum: MedplumClient;
+  zus: ZusConnection;
+  patientRef: Reference<Patient>;
+  entries: { resource: Resource; value: string }[];
+}): Promise<void> {
+  let stored = new Map<string, (Pick<Attachment, 'contentType' | 'url' | 'size'> | undefined)[]>();
+  try {
+    stored = await loadStoredZusFiles(props.medplum, props.patientRef);
+  } catch (err) {
+    log(`DocumentReference: could not read stored files: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const jobs: { doc: DocumentReference; attachment: Attachment; zusId: string; index: number }[] = [];
+  let reused = 0;
+  for (const entry of props.entries) {
+    const doc = entry.resource as DocumentReference;
+    (doc.content ?? []).forEach(({ attachment }, index) => {
+      const previous = stored.get(entry.value)?.[index];
+      if (previous) {
+        Object.assign(attachment, previous);
+        delete attachment.data;
+        reused++;
+      } else if (attachment.data || zusFileUrl(props.zus, attachment.url)) {
+        jobs.push({ doc, attachment, zusId: entry.value, index });
+      }
+    });
+  }
+  const pending = jobs.slice(0, MAX_ZUS_DOCUMENT_FILES);
+  if (pending.length > 0) {
+    log(`DocumentReference: copying ${pending.length} file(s) into Medplum (${reused} already stored)`);
+  }
+
+  let copied = 0;
+  await mapWithConcurrency(pending, ZUS_FILE_CONCURRENCY, async ({ doc, attachment, zusId, index }) => {
+    try {
+      const file = attachment.data
+        ? { data: new Uint8Array(NodeBuffer.from(attachment.data, 'base64')), contentType: attachment.contentType }
+        : await downloadZusFile(props.zus, zusFileUrl(props.zus, attachment.url) as string);
+      if (!file) {
+        return;
+      }
+      const storedFile = await storeFile(
+        props.medplum,
+        file.data,
+        attachment.contentType ?? file.contentType,
+        [attachment.title, doc.description, attachment.url],
+        `zus-document-${zusId}-${index}`
+      );
+      Object.assign(attachment, storedFile);
+      delete attachment.data;
+      copied++;
+    } catch (err) {
+      log(`DocumentReference ${zusId}: file copy failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+  if (pending.length > 0) {
+    log(`DocumentReference: copied ${copied}/${pending.length} file(s)`);
+  }
 }
 
 /**
