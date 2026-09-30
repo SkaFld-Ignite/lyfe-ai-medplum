@@ -47,6 +47,7 @@ import type { BotEvent, MedplumClient } from '@medplum/core';
 import type {
   AllergyIntolerance,
   Appointment,
+  Attachment,
   AuditEvent,
   Communication,
   Condition,
@@ -80,6 +81,8 @@ import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/creden
 import { ZUS_ENROLMENT_EXTENSION, mergeEnabled, mergeZusEnabled, readDirectoryState } from './shared/directory.ts';
 import type { DrChronoClient } from './shared/drchrono.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
+import { contentTypeFromName } from './shared/file-type.ts';
+import { mapWithConcurrency, storeFile, storedBinaryReference } from './shared/files.ts';
 import { ImportProgress, buildStatusReason, countsToOutput } from './shared/progress.ts';
 import { DRCHRONO_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
@@ -892,35 +895,6 @@ function isoDate(date: Date): string {
 function joinDefined(parts: (string | undefined | null)[], separator: string): string | undefined {
   const kept = parts.filter((part): part is string => Boolean(part));
   return kept.length > 0 ? kept.join(separator) : undefined;
-}
-
-/**
- * Run an async mapper over a list with a bounded number of in-flight calls.
- *
- * Used for the clinical-note PDFs, which are downloaded from DrChrono and
- * re-uploaded to Medplum one by one. Unbounded `Promise.all` over a few hundred
- * multi-megabyte PDFs exhausts sockets and memory; fully sequential is too slow
- * for the bot's timeout.
- * @param items - What to process.
- * @param limit - Maximum concurrent calls.
- * @param worker - Applied to each item.
- * @returns Results, index-aligned to `items`.
- */
-async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let cursor = 0;
-
-  const runner = async (): Promise<void> => {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor++;
-      out[index] = await worker(items[index]);
-    }
-  };
-
-  const lanes = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(Array.from({ length: lanes }, () => runner()));
-  return out;
 }
 
 /**
@@ -2398,13 +2372,15 @@ function mapLabReport(
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
  * @param labOrders - DrChrono lab order id to ServiceRequest reference.
+ * @param file - The PDF re-hosted in Medplum, when it could be copied; otherwise DrChrono's link is kept.
  * @returns The DocumentReference resource.
  */
 function mapLabDocument(
   d: DrLabDocument,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  labOrders: Map<string, Reference<ServiceRequest>>
+  labOrders: Map<string, Reference<ServiceRequest>>,
+  file?: Attachment
 ): DocumentReference {
   const isResult = (d.type ?? '').toUpperCase() === 'RES';
   const typeCode = isResult
@@ -2441,6 +2417,7 @@ function mapLabDocument(
               attachment: {
                 contentType: 'application/pdf',
                 url: d.document,
+                ...file,
                 title: isResult ? `Lab Result ${date?.slice(0, 10) ?? ''}`.trim() : 'Lab Requisition',
               },
             },
@@ -2473,13 +2450,17 @@ function mapLabDocument(
  * @param d - The DrChrono document payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param file - The file re-hosted in Medplum, when it could be copied. Otherwise DrChrono's link is
+ *   kept, typed from its name where possible, so the document still lists and can be retried.
  * @returns The DocumentReference resource.
  */
 function mapDocument(
   d: DrDocument,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  file?: Attachment
 ): DocumentReference {
+  const title = d.description || 'Document';
   return {
     resourceType: 'DocumentReference',
     meta: buildMeta(organization),
@@ -2490,7 +2471,17 @@ function mapDocument(
     description: d.description || undefined,
     custodian: organization,
     category: d.metatags?.length ? [{ text: d.metatags.join(', ') }] : undefined,
-    content: [{ attachment: { url: d.document, title: d.description || 'Document' } }],
+    content: [
+      {
+        attachment: file
+          ? { ...file, title }
+          : {
+              contentType: contentTypeFromName(d.description) ?? contentTypeFromName(d.document),
+              url: d.document,
+              title,
+            },
+      },
+    ],
   };
 }
 
@@ -3730,11 +3721,20 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
     { patient: ctx.drchronoPatientId },
     { maxRecords: MAX_LAB_DOCUMENTS, sectionTimeoutMs: 180_000 }
   );
+  const labFiles = await rehostDocumentFiles(
+    ctx,
+    patient,
+    IDENTIFIER_SYSTEMS.labDocument,
+    documents,
+    'lab-document',
+    // DrChrono documents lab files as PDFs, so fall back to that when the bytes are not recognised.
+    () => ['lab.pdf']
+  );
   const documentResult = await write(
     ctx.medplum,
     documents.map((d) => ({
       resourceType: 'DocumentReference',
-      resource: mapLabDocument(d, patient, ctx.organization, ctx.labOrders),
+      resource: mapLabDocument(d, patient, ctx.organization, ctx.labOrders, labFiles.get(String(d.id))),
       system: IDENTIFIER_SYSTEMS.labDocument,
       value: String(d.id),
     })),
@@ -3742,6 +3742,111 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
   );
   ctx.counts.labDocuments = documentResult.wrote;
   trackRefs(ctx, 'DocumentReference', documentResult.ids);
+}
+
+/** Cap on document files downloaded in one run; the rest keep DrChrono's link until the next run. */
+const MAX_DOCUMENT_FILES = 300;
+
+/** In-flight document downloads. */
+const DOCUMENT_FILE_CONCURRENCY = 4;
+
+/**
+ * Files already copied into Medplum by an earlier run, keyed by DrChrono id, so
+ * a re-import does not download and store every document again.
+ * @param ctx - The import context.
+ * @param patient - Reference to the imported patient.
+ * @param system - The identifier system of the documents.
+ * @returns DrChrono id to the stored attachment.
+ */
+async function loadStoredFiles(
+  ctx: ImportContext,
+  patient: Reference<Patient>,
+  system: string
+): Promise<Map<string, Attachment>> {
+  const stored = new Map<string, Attachment>();
+  const baseUrl = ctx.medplum.getBaseUrl();
+  for await (const page of ctx.medplum.searchResourcePages('DocumentReference', {
+    patient: patient.reference as string,
+    _elements: 'identifier,content',
+    _count: '1000',
+  })) {
+    for (const doc of page) {
+      const drchronoId = doc.identifier?.find((i) => i.system === system)?.value;
+      const attachment = doc.content?.[0]?.attachment;
+      const binary = storedBinaryReference(attachment?.url, baseUrl);
+      if (drchronoId && attachment?.contentType && binary) {
+        stored.set(drchronoId, { contentType: attachment.contentType, url: binary, size: attachment.size });
+      }
+    }
+  }
+  return stored;
+}
+
+/**
+ * Copy DrChrono-hosted document files into Medplum Binaries.
+ *
+ * DrChrono serves documents from short-lived presigned S3 links with no MIME
+ * type, so a DocumentReference that only stores the link cannot be previewed
+ * and stops opening within the hour. Files stored by an earlier run are reused;
+ * the rest are downloaded, typed from their bytes, and stored. A file that
+ * cannot be fetched is skipped and keeps DrChrono's link, to be retried next run.
+ * @param ctx - The import context.
+ * @param patient - Reference to the imported patient.
+ * @param system - The identifier system of the documents.
+ * @param documents - The DrChrono documents, each with an id and a file link.
+ * @param label - Names the files in storage and in logs.
+ * @param names - File names or titles that may reveal the type when the bytes do not.
+ * @returns DrChrono id to the stored attachment (content type, Binary URL and size).
+ */
+async function rehostDocumentFiles<T extends { id: number; document?: string }>(
+  ctx: ImportContext,
+  patient: Reference<Patient>,
+  system: string,
+  documents: T[],
+  label: string,
+  names: (d: T) => (string | undefined)[]
+): Promise<Map<string, Attachment>> {
+  const files = new Map<string, Attachment>();
+  if (documents.length === 0) {
+    return files;
+  }
+  try {
+    for (const [id, attachment] of await loadStoredFiles(ctx, patient, system)) {
+      files.set(id, attachment);
+    }
+  } catch (err) {
+    console.warn(
+      `[drchrono-import] could not read stored ${label} files: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  const pending = documents.filter((d) => d.document && !files.has(String(d.id))).slice(0, MAX_DOCUMENT_FILES);
+  if (pending.length > 0) {
+    log(`fetching ${pending.length} ${label} files (${files.size} already stored)`);
+  }
+  await mapWithConcurrency(pending, DOCUMENT_FILE_CONCURRENCY, async (d) => {
+    try {
+      const url = d.document as string;
+      const res = await withHardTimeout(fetch(url), DRCHRONO_REQUEST_TIMEOUT_MS, `${label} ${d.id}`);
+      if (!res.ok) {
+        return;
+      }
+      const data = new Uint8Array(await res.arrayBuffer());
+      const stored = await storeFile(
+        ctx.medplum,
+        data,
+        res.headers.get('content-type'),
+        [...names(d), url],
+        `drchrono-${label}-${d.id}`
+      );
+      files.set(String(d.id), stored);
+    } catch (err) {
+      console.warn(
+        `[drchrono-import] ${label} ${d.id} file failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  });
+  return files;
 }
 
 /** Cap on inbox messages per run. */
@@ -3759,11 +3864,14 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
   const documents = await drchronoOptional<DrDocument>(ctx.client, '/documents', {
     patient: ctx.drchronoPatientId,
   });
+  const files = await rehostDocumentFiles(ctx, patient, IDENTIFIER_SYSTEMS.document, documents, 'document', (d) => [
+    d.description,
+  ]);
   const documentResult = await write(
     ctx.medplum,
     documents.map((d) => ({
       resourceType: 'DocumentReference',
-      resource: mapDocument(d, patient, ctx.organization),
+      resource: mapDocument(d, patient, ctx.organization, files.get(String(d.id))),
       system: IDENTIFIER_SYSTEMS.document,
       value: String(d.id),
     })),
