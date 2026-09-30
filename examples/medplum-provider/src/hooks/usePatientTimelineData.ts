@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { DRCHRONO_SOURCE_TAG } from '../utils/data-source';
 import type { PatientTimeline, TimelineSources } from '../utils/patient-timeline';
 import { buildPatientTimeline } from '../utils/patient-timeline';
+import { useClinicTimeZone } from './useClinicTimeZone';
 
 /** Records requested per resource type (the server's maximum page size). */
 export const TIMELINE_PAGE_SIZE = 1000;
@@ -108,6 +109,8 @@ function remember(medplum: MedplumClient, patientId: string, entry: CachedTimeli
  */
 export function usePatientTimelineData(patientId: string | undefined): PatientTimelineData {
   const medplum = useMedplum();
+  // Not while there is no patient: an idle timeline must not reach the server.
+  const timeZone = useClinicTimeZone({ enabled: Boolean(patientId) });
   const [reloadKey, setReloadKey] = useState(0);
   const [settled, setSettled] = useState<{
     requestKey: string;
@@ -126,7 +129,7 @@ export function usePatientTimelineData(patientId: string | undefined): PatientTi
     const key = `${patientId}:${reloadKey}`;
     fetchTimelineSources(medplum, patientId)
       .then(({ sources, truncatedTypes }) => {
-        const timeline = buildPatientTimeline(sources);
+        const timeline = buildPatientTimeline(sources, timeZone);
         remember(medplum, patientId, { timeline, truncatedTypes });
         if (active) {
           setSettled({ requestKey: key, timeline, truncatedTypes });
@@ -146,7 +149,7 @@ export function usePatientTimelineData(patientId: string | undefined): PatientTi
     return () => {
       active = false;
     };
-  }, [medplum, patientId, reloadKey]);
+  }, [medplum, patientId, reloadKey, timeZone]);
 
   const reload = useCallback(() => setReloadKey((key) => key + 1), []);
   const current = settled.requestKey === requestKey;

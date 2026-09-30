@@ -7,6 +7,7 @@ import { getDocumentTypeDisplay } from '../pages/patient/DocumentReference.utils
 import { getAttachmentContentType } from './document-file-type';
 import type { DataSource } from './patient-timeline';
 import { getDataSource, toDayKey } from './patient-timeline';
+import { fhirDayKey } from './clinic-time';
 
 /** What kind of file a document holds, for its icon. */
 export type DocumentFileKind = 'pdf' | 'image' | 'text' | 'other';
@@ -187,13 +188,18 @@ export function collectCategories(rows: DocumentRow[]): { label: string; count: 
 /**
  * Plain-text list of documents, for copying into a note or message.
  * @param rows - The rows to list.
+ * @param timeZone - The clinic's IANA zone, which the dates are read in.
  * @returns One line per document.
  */
-export function formatDocumentList(rows: DocumentRow[]): string {
+export function formatDocumentList(rows: DocumentRow[], timeZone: string): string {
   return rows
     .map((row) => {
-      const date = row.date ?? row.updated;
-      return [date && toDayKey(date), row.title, row.typeLabel].filter(Boolean).join(' — ');
+      // Read from the raw FHIR value, not from `row.date`: a date-only value
+      // has no zone to convert from, and parsing it into a `Date` would shift
+      // it a day west of UTC. See `fhirDayKey`.
+      const day =
+        fhirDayKey(row.document.date, timeZone) ?? (row.updated ? toDayKey(row.updated, timeZone) : undefined);
+      return [day, row.title, row.typeLabel].filter(Boolean).join(' — ');
     })
     .join('\n');
 }

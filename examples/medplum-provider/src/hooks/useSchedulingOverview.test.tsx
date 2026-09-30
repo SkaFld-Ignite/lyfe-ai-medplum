@@ -6,6 +6,7 @@ import { MedplumProvider } from '@medplum/react';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { JSX, ReactNode } from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { addClinicDays, clinicDayStart, clinicToday, DEFAULT_CLINIC_TIME_ZONE } from '../utils/clinic-time';
 import { DRCHRONO_SOURCE_TAG, LYFE_SOURCE_TAG_SYSTEM } from '../utils/data-source';
 import {
   fetchOverviewBundle,
@@ -16,11 +17,24 @@ import {
 
 type SearchBundle = Awaited<ReturnType<MockClient['search']>>;
 
+/**
+ * An instant at `hour:minute` on a day relative to **the clinic's** today.
+ *
+ * The counts are bucketed by the clinic's calendar day, so a fixture built
+ * from the runner's local clock lands on the wrong day whenever the two zones
+ * disagree — which is the whole point of the change these tests cover.
+ * @param dayOffset - Days from the clinic's today; may be negative.
+ * @param hour - Hour of the clinic's day.
+ * @param minute - Minute of the hour.
+ * @returns The instant.
+ */
 function at(dayOffset: number, hour: number, minute = 0): Date {
-  const date = new Date();
-  date.setHours(hour, minute, 0, 0);
-  date.setDate(date.getDate() + dayOffset);
-  return date;
+  const dayKey = addClinicDays(clinicToday(DEFAULT_CLINIC_TIME_ZONE), dayOffset);
+  const midnight = clinicDayStart(dayKey, DEFAULT_CLINIC_TIME_ZONE);
+  if (!midnight) {
+    throw new Error(`bad fixture day: ${dayKey}`);
+  }
+  return new Date(midnight.getTime() + (hour * 60 + minute) * 60_000);
 }
 
 function makeAppointment(start: Date, minutes: number, status: Appointment['status'] = 'booked'): Appointment {

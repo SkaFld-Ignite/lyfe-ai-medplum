@@ -46,18 +46,20 @@ import { FilterMenu } from '../../components/scheduling-overview/FilterMenu';
 import overviewClasses from '../../components/scheduling-overview/SchedulingOverview.module.css';
 import { SchedulingToolbar } from '../../components/scheduling-overview/SchedulingToolbar';
 import { StatCard } from '../../components/scheduling-overview/StatCard';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 import { usePersistentState } from '../../hooks/usePersistentState';
 import { useAppointmentCounts, useSchedulingOverview } from '../../hooks/useSchedulingOverview';
+import { clinicToday } from '../../utils/clinic-time';
 import type { OverviewAppointment } from '../../utils/scheduling-overview';
 import {
   countPatients,
   filterOverviewAppointments,
-  fromLocalIsoDate,
   getColorForKey,
   getLocationOptions,
   getProviderOptions,
   isInactiveStatus,
-  toLocalIsoDate,
+  parseDayKey,
+  toDayKey,
 } from '../../utils/scheduling-overview';
 import classes from './SchedulingOverviewPage.module.css';
 
@@ -76,6 +78,8 @@ export function SchedulingOverviewPage(): JSX.Element {
   const navigate = useNavigate();
   const profile = useMedplumProfile();
   const [searchParams, setSearchParams] = useSearchParams();
+  // Every time on this page reads in the clinic's zone, not the viewer's.
+  const timeZone = useClinicTimeZone();
   // Mantine's `lg` breakpoint: below it the day panel becomes a drawer instead of a rail.
   const isCompact = useMediaQuery('(max-width: 74.99em)') ?? false;
 
@@ -101,7 +105,10 @@ export function SchedulingOverviewPage(): JSX.Element {
 
   // ---- URL state -----------------------------------------------------------------------------
 
-  const selectedDay = fromLocalIsoDate(searchParams.get('day')) ?? new Date();
+  // The selected day is a calendar day, not an instant, so it stays a
+  // `YYYY-MM-DD` key from the URL all the way to the panel. Converting it to a
+  // `Date` and back is what put afternoon appointments on the wrong day.
+  const selectedDayKey = parseDayKey(searchParams.get('day')) ?? clinicToday(timeZone);
   const selectedAppointmentId = searchParams.get('appointment') ?? undefined;
 
   const updateParams = useCallback(
@@ -126,22 +133,22 @@ export function SchedulingOverviewPage(): JSX.Element {
 
   // Make the selected day explicit in the URL on first load so the view is always shareable.
   useEffect(() => {
-    if (!fromLocalIsoDate(searchParams.get('day'))) {
-      updateParams({ day: toLocalIsoDate(new Date()) }, true);
+    if (!parseDayKey(searchParams.get('day'))) {
+      updateParams({ day: clinicToday(timeZone) }, true);
     }
-  }, [searchParams, updateParams]);
+  }, [searchParams, updateParams, timeZone]);
 
   const openDay = useCallback(
     (date: Date) => {
       setPanelOpen(true);
-      updateParams({ day: toLocalIsoDate(date), appointment: undefined });
+      updateParams({ day: toDayKey(date, timeZone), appointment: undefined });
     },
-    [setPanelOpen, updateParams]
+    [setPanelOpen, updateParams, timeZone]
   );
 
   const openAppointment = useCallback(
-    (row: OverviewAppointment) => updateParams({ appointment: row.appointment.id, day: toLocalIsoDate(row.start) }),
-    [updateParams]
+    (row: OverviewAppointment) => updateParams({ appointment: row.appointment.id, day: toDayKey(row.start, timeZone) }),
+    [updateParams, timeZone]
   );
 
   const closeAppointment = useCallback(() => updateParams({ appointment: undefined }), [updateParams]);
@@ -224,7 +231,8 @@ export function SchedulingOverviewPage(): JSX.Element {
 
   const dayPanel = (
     <DayAppointmentsPanel
-      date={selectedDay}
+      dayKey={selectedDayKey}
+      timeZone={timeZone}
       appointments={filtered}
       loading={loading && appointments.length === 0}
       onSelectAppointment={openAppointment}
@@ -398,6 +406,7 @@ export function SchedulingOverviewPage(): JSX.Element {
 
       <AppointmentDetailDrawer
         opened={Boolean(selectedAppointmentId)}
+        timeZone={timeZone}
         row={selectedRow}
         loading={loading || !range}
         onClose={closeAppointment}

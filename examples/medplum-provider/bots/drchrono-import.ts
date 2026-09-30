@@ -1374,13 +1374,15 @@ function mapPractitioner(d: DrDoctor, organization: Reference<Organization>, ena
  * @param organization - The calling clinic.
  * @param enabled - Whether this clinic has the office switched on.
  * @param zusEnabled - Whether patients seen here may be enrolled in Zus.
+ * @param timeZone - The practice's IANA zone, recorded so the UI reads times in it.
  * @returns The Location resource.
  */
 function mapLocation(
   o: DrOffice,
   organization: Reference<Organization>,
   enabled: boolean,
-  zusEnabled: boolean
+  zusEnabled: boolean,
+  timeZone: string
 ): Location {
   const telecom: Location['telecom'] = [];
   if (o.phone_number) {
@@ -1397,7 +1399,20 @@ function mapLocation(
     // Always written, never omitted when false: an absent extension and an
     // explicit `false` must not be distinguishable, or a re-pull would look
     // like a change and the value would drift.
-    extension: [{ url: ZUS_ENROLMENT_EXTENSION, valueBoolean: zusEnabled }],
+    extension: [
+      { url: ZUS_ENROLMENT_EXTENSION, valueBoolean: zusEnabled },
+      // The zone this office's wall-clock times are in, recorded so the UI can
+      // render them the way the clinic reads them rather than the way the
+      // viewer's browser does. DrChrono carries a timezone per *doctor*, not
+      // per office, so this is the practice-wide zone the importer resolved —
+      // written here deliberately, so the importer and the UI can never end up
+      // using two different zones for the same timestamp.
+      //
+      // `http://hl7.org/fhir/StructureDefinition/timezone` is the standard HL7
+      // extension, which Medplum exports as `TimezoneExtensionURI` and reads in
+      // its own scheduling code. No custom URI.
+      { url: 'http://hl7.org/fhir/StructureDefinition/timezone', valueCode: timeZone },
+    ],
     name: o.name,
     telecom: telecom.length > 0 ? telecom : undefined,
     address: o.address
@@ -3210,11 +3225,12 @@ async function syncDirectoryResources(
     })
   );
   const officeZus = offices.map((o) => mergeZusEnabled(existing.locations.get(String(o.id))));
+  const officeZone = practiceZone(doctorTimeZones);
   const officeResult = await write(
     medplum,
     offices.map((o, i) => ({
       resourceType: 'Location',
-      resource: mapLocation(o, organization, officeEnabled[i], officeZus[i]),
+      resource: mapLocation(o, organization, officeEnabled[i], officeZus[i], officeZone),
       system: IDENTIFIER_SYSTEMS.location,
       value: String(o.id),
     })),

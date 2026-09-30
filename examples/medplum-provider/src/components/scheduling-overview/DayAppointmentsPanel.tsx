@@ -21,16 +21,15 @@ import {
 import { IconCalendarOff, IconClock, IconSearch, IconUsers } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useMemo, useState } from 'react';
+import { formatDayKeyLong } from '../../utils/clinic-time';
 import type { OverviewAppointment } from '../../utils/scheduling-overview';
 import {
-  formatLongDate,
   formatTime,
   getAppointmentsForDay,
   getColorForKey,
   getInitials,
   groupByProvider,
   searchAppointments,
-  toLocalIsoDate,
 } from '../../utils/scheduling-overview';
 import { StatusIcon, TypeIcon } from './AppointmentDisplay';
 import classes from './SchedulingOverview.module.css';
@@ -38,8 +37,11 @@ import classes from './SchedulingOverview.module.css';
 export type DayGrouping = 'provider' | 'time';
 
 export interface DayAppointmentsPanelProps {
-  date: Date;
-  /** Appointments already narrowed by the page filters; the panel picks out `date`. */
+  /** The clinic calendar day to show, as `YYYY-MM-DD`. */
+  dayKey: string;
+  /** The clinic's IANA zone, which every time on this panel is read in. */
+  timeZone: string;
+  /** Appointments already narrowed by the page filters; the panel picks out `dayKey`. */
   appointments: OverviewAppointment[];
   loading?: boolean;
   onSelectAppointment: (row: OverviewAppointment) => void;
@@ -52,17 +54,19 @@ export interface DayAppointmentsPanelProps {
  * @returns The day schedule panel.
  */
 export function DayAppointmentsPanel(props: DayAppointmentsPanelProps): JSX.Element {
-  const { date, appointments, loading, onSelectAppointment } = props;
+  const { dayKey, timeZone, appointments, loading, onSelectAppointment } = props;
   const [grouping, setGrouping] = useState<DayGrouping>('provider');
 
   // The search belongs to the day it was typed on: switching days starts with a clean search,
   // while the grouping choice is kept.
-  const dayKey = toLocalIsoDate(date);
   const [search, setSearch] = useState({ dayKey, query: '' });
   const query = search.dayKey === dayKey ? search.query : '';
   const setQuery = (value: string): void => setSearch({ dayKey, query: value });
 
-  const dayAppointments = useMemo(() => getAppointmentsForDay(appointments, date), [appointments, date]);
+  const dayAppointments = useMemo(
+    () => getAppointmentsForDay(appointments, dayKey, timeZone),
+    [appointments, dayKey, timeZone]
+  );
   const visible = useMemo(() => searchAppointments(dayAppointments, query), [dayAppointments, query]);
   const groups = useMemo(() => groupByProvider(visible), [visible]);
   const providerCount = useMemo(() => new Set(dayAppointments.map((a) => a.providerKey)).size, [dayAppointments]);
@@ -110,7 +114,12 @@ export function DayAppointmentsPanel(props: DayAppointmentsPanelProps): JSX.Elem
             </Group>
             <Divider />
             {group.appointments.map((row) => (
-              <AppointmentRow key={row.appointment.id} row={row} onClick={() => onSelectAppointment(row)} />
+              <AppointmentRow
+                key={row.appointment.id}
+                row={row}
+                timeZone={timeZone}
+                onClick={() => onSelectAppointment(row)}
+              />
             ))}
           </Stack>
         ))}
@@ -120,7 +129,12 @@ export function DayAppointmentsPanel(props: DayAppointmentsPanelProps): JSX.Elem
     body = (
       <Stack gap={6}>
         {visible.map((row) => (
-          <AppointmentRow key={row.appointment.id} row={row} onClick={() => onSelectAppointment(row)} />
+          <AppointmentRow
+            key={row.appointment.id}
+            row={row}
+            timeZone={timeZone}
+            onClick={() => onSelectAppointment(row)}
+          />
         ))}
       </Stack>
     );
@@ -132,7 +146,7 @@ export function DayAppointmentsPanel(props: DayAppointmentsPanelProps): JSX.Elem
         <Text size="xs" fw={600} c="dimmed" tt="uppercase" className={classes.statLabel}>
           Day schedule
         </Text>
-        <Title order={4}>{formatLongDate(date)}</Title>
+        <Title order={4}>{formatDayKeyLong(dayKey)}</Title>
         <Text size="xs" c="dimmed">
           {countLabel}
           {providerCount > 0 && ` · ${providerCount} ${providerCount === 1 ? 'provider' : 'providers'}`}
@@ -191,15 +205,27 @@ export function DayAppointmentsPanel(props: DayAppointmentsPanelProps): JSX.Elem
   );
 }
 
-function AppointmentRow({ row, onClick }: { row: OverviewAppointment; onClick: () => void }): JSX.Element {
+function AppointmentRow({
+  row,
+  timeZone,
+  onClick,
+}: {
+  row: OverviewAppointment;
+  timeZone: string;
+  onClick: () => void;
+}): JSX.Element {
   const color = getColorForKey(row.providerKey);
   const patientName = row.patient?.name ?? 'No patient';
   return (
-    <UnstyledButton onClick={onClick} className={classes.row} aria-label={`${patientName} at ${formatTime(row.start)}`}>
+    <UnstyledButton
+      onClick={onClick}
+      className={classes.row}
+      aria-label={`${patientName} at ${formatTime(row.start, timeZone)}`}
+    >
       <Box className={classes.rowStripe} bg={`${color}.6`} aria-hidden />
       <Stack gap={0} w={64} py={8} pl={6} className={classes.rowTime}>
         <Text size="xs" fw={600} className={classes.tabular}>
-          {formatTime(row.start)}
+          {formatTime(row.start, timeZone)}
         </Text>
         {row.durationMinutes > 0 && (
           <Text size="xs" c="dimmed">

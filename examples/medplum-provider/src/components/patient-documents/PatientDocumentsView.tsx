@@ -45,6 +45,7 @@ import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { DocumentRowItem } from './DocumentRowItem';
 import { DOCUMENT_SOURCES, DOCUMENTS_PER_PAGE } from './documents-config';
 import classes from './PatientDocuments.module.css';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 
 export interface PatientDocumentsViewProps {
   patientId: string;
@@ -66,6 +67,7 @@ export interface PatientDocumentsViewProps {
 export function PatientDocumentsView(props: PatientDocumentsViewProps): JSX.Element {
   const { patientId, documentId, onOpenDocument, onClosePreview, onUpload, reloadKey } = props;
   const { rows, loading, error, truncated, reload } = usePatientDocuments(patientId, reloadKey);
+  const timeZone = useClinicTimeZone();
   const [filters, setFilters] = useState<DocumentFilters>(DEFAULT_DOCUMENT_FILTERS);
   const [page, setPage] = useState(1);
 
@@ -90,7 +92,7 @@ export function PatientDocumentsView(props: PatientDocumentsViewProps): JSX.Elem
 
   const copyList = (): void => {
     navigator.clipboard
-      .writeText(formatDocumentList(filtered))
+      .writeText(formatDocumentList(filtered, timeZone))
       .then(() => showSuccessNotification({ message: `Copied ${filtered.length} documents` }))
       .catch(showErrorNotification);
   };

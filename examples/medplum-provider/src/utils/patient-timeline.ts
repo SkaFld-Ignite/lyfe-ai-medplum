@@ -18,6 +18,7 @@ import type {
   Reference,
   Resource,
 } from '@medplum/fhirtypes';
+import { toClinicIsoDate, weekdayForDayKey } from './clinic-time';
 
 /** Where a record came from, derived from `meta.tag` (e.g. `https://lyfe.com/source|drchrono`). */
 export type DataSource = 'drchrono' | 'zus' | 'other';
@@ -115,15 +116,18 @@ export interface PatientTimeline {
 // ---- Small helpers ---------------------------------------------------------------------------
 
 /**
- * Formats a date as a local `YYYY-MM-DD` key, so days are the viewer's calendar days.
- * @param date - The date.
- * @returns The local day key.
+ * Formats an instant as the `YYYY-MM-DD` day it falls on **at the clinic**.
+ *
+ * The timeline groups records into day sections, so this is what decides which
+ * heading a lab or a visit appears under. Using the viewer's calendar day puts
+ * an afternoon record under the next day's heading for anyone east of the
+ * clinic. See `utils/clinic-time.ts`.
+ * @param date - The instant.
+ * @param timeZone - The clinic's IANA zone.
+ * @returns The clinic's day key.
  */
-export function toDayKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+export function toDayKey(date: Date, timeZone: string): string {
+  return toClinicIsoDate(date, timeZone);
 }
 
 function parseDate(value: string | undefined): Date | undefined {
@@ -347,10 +351,10 @@ function linkedEncounterId(resource: Resource): string | undefined {
 }
 
 // Keeps one record per kind + title (+ day), dropping exact duplicates that arrive from several sources.
-function dedupeRecords(records: TimelineRecord[]): TimelineRecord[] {
+function dedupeRecords(records: TimelineRecord[], timeZone: string): TimelineRecord[] {
   const seen = new Set<string>();
   return records.filter((record) => {
-    const key = `${record.kind}|${normalize(record.title)}|${record.detail ?? ''}|${record.date ? toDayKey(record.date) : ''}`;
+    const key = `${record.kind}|${normalize(record.title)}|${record.detail ?? ''}|${record.date ? toDayKey(record.date, timeZone) : ''}`;
     if (seen.has(key)) {
       return false;
     }
@@ -463,7 +467,11 @@ function buildVisits(sources: TimelineSources): VisitDraft[] {
   return [...drafts.values()];
 }
 
-function toVisitEvent(draft: VisitDraft, recordsByEncounter: Map<string, TimelineRecord[]>): VisitEvent {
+function toVisitEvent(
+  draft: VisitDraft,
+  recordsByEncounter: Map<string, TimelineRecord[]>,
+  timeZone: string
+): VisitEvent {
   const encounters = [...draft.encounters].sort((a, b) => encounterScore(b) - encounterScore(a));
   const encounter = encounters[0];
   const appointment = draft.appointment;
@@ -500,14 +508,19 @@ function toVisitEvent(draft: VisitDraft, recordsByEncounter: Map<string, Timelin
 
   const title = visitTitle(encounter, appointment);
   const encounterIds = encounters.map((e) => e.id);
-  const records = sortRecords(dedupeRecords(encounterIds.flatMap((id) => recordsByEncounter.get(id) ?? [])));
+  const records = sortRecords(
+    dedupeRecords(
+      encounterIds.flatMap((id) => recordsByEncounter.get(id) ?? []),
+      timeZone
+    )
+  );
 
   const id = encounter ? `visit-${encounter.id}` : `visit-${appointment?.id}`;
   return {
     type: 'visit',
     id,
     date: draft.start,
-    dayKey: toDayKey(draft.start),
+    dayKey: toDayKey(draft.start, timeZone),
     sources: uniqueSources([...encounters.map(getDataSource), ...(appointment ? [getDataSource(appointment)] : [])]),
     encounter,
     appointment,
@@ -534,9 +547,10 @@ function toVisitEvent(draft: VisitDraft, recordsByEncounter: Map<string, Timelin
  * - Undated conditions, medications and allergies become "ongoing care" items.
  * Entered-in-error resources are ignored.
  * @param sources - The patient's resources, grouped by type.
+ * @param timeZone - The clinic's IANA zone, which day sections are grouped by.
  * @returns The timeline events (newest first) and ongoing-care items.
  */
-export function buildPatientTimeline(sources: TimelineSources): PatientTimeline {
+export function buildPatientTimeline(sources: TimelineSources, timeZone: string): PatientTimeline {
   const drafts = buildVisits(sources);
   const visitEncounterIds = new Set(drafts.flatMap((d) => d.encounters.map((e) => e.id)));
 
@@ -576,7 +590,7 @@ export function buildPatientTimeline(sources: TimelineSources): PatientTimeline 
     }
   }
 
-  const events: TimelineEvent[] = drafts.map((draft) => toVisitEvent(draft, recordsByEncounter));
+  const events: TimelineEvent[] = drafts.map((draft) => toVisitEvent(draft, recordsByEncounter, timeZone));
   const ongoing: OngoingItem[] = [];
 
   // Conditions: dated ones become events (deduplicated by name + day); undated ones are ongoing.
@@ -593,7 +607,7 @@ export function buildPatientTimeline(sources: TimelineSources): PatientTimeline 
       });
       continue;
     }
-    const key = `${normalize(record.title)}|${toDayKey(record.date)}`;
+    const key = `${normalize(record.title)}|${toDayKey(record.date, timeZone)}`;
     const existing = conditionEvents.get(key);
     if (existing) {
       existing.copies++;
@@ -605,7 +619,7 @@ export function buildPatientTimeline(sources: TimelineSources): PatientTimeline 
       type: 'condition',
       id: `condition-${condition.id}`,
       date: record.date,
-      dayKey: toDayKey(record.date),
+      dayKey: toDayKey(record.date, timeZone),
       sources: [record.source],
       condition,
       title: record.title,
@@ -630,14 +644,14 @@ export function buildPatientTimeline(sources: TimelineSources): PatientTimeline 
       });
       continue;
     }
-    const key = toDayKey(record.date);
+    const key = toDayKey(record.date, timeZone);
     const list = byDay.get(key) ?? [];
     list.push(record);
     byDay.set(key, list);
   }
   for (const [dayKey, records] of byDay) {
     const [year, month, day] = dayKey.split('-').map(Number);
-    const unique = sortRecords(dedupeRecords(records));
+    const unique = sortRecords(dedupeRecords(records, timeZone));
     events.push({
       type: 'records',
       id: `records-${dayKey}`,
@@ -842,9 +856,11 @@ export function getRelativeDayLabel(dayKey: string, todayKey: string): string | 
   if (dayKey === todayKey) {
     return 'Today';
   }
+  // Both keys are already clinic calendar days, so they are compared as UTC
+  // midnights — a fixed 24-hour grid with no zone and no DST to fall through.
   const toDate = (key: string): Date => {
     const [y, m, d] = key.split('-').map(Number);
-    return new Date(y, m - 1, d);
+    return new Date(Date.UTC(y, m - 1, d));
   };
   const diffDays = Math.round((toDate(dayKey).getTime() - toDate(todayKey).getTime()) / 86_400_000);
   if (diffDays === -1) {
@@ -857,7 +873,7 @@ export function getRelativeDayLabel(dayKey: string, todayKey: string): string | 
     return 'Upcoming';
   }
   if (diffDays >= -6) {
-    return toDate(dayKey).toLocaleDateString(undefined, { weekday: 'long' });
+    return weekdayForDayKey(dayKey);
   }
   return undefined;
 }

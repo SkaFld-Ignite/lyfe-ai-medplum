@@ -11,6 +11,7 @@ import {
 } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useState } from 'react';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 import type { TimelineRecord, VisitEvent } from '../../utils/patient-timeline';
 import { chartPath, getVisitStatusLabel } from '../../utils/patient-timeline';
 import classes from './PatientTimeline.module.css';
@@ -31,6 +32,7 @@ export interface VisitCardProps {
  * @returns The visit card.
  */
 export function VisitCard(props: VisitCardProps): JSX.Element {
+  const timeZone = useClinicTimeZone();
   const { patientId, visit, upcoming, onOpenRecord } = props;
   const [expanded, setExpanded] = useState(false);
   const subtitle = [visit.provider, visit.location].filter(Boolean).join(' — ');
@@ -95,10 +97,10 @@ export function VisitCard(props: VisitCardProps): JSX.Element {
         </Stack>
         <Stack gap={0} align="flex-end" className={classes.visitWhen}>
           <Text size="xs" fw={600} className={classes.tabular}>
-            {formatShortTime(visit.date)}
+            {formatShortTime(visit.date, timeZone)}
           </Text>
           <Text size="xs" c="dimmed" className={classes.tabular}>
-            {formatMediumDate(visit.date)}
+            {formatMediumDate(visit.date, timeZone)}
           </Text>
         </Stack>
       </UnstyledButton>

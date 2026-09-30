@@ -101,6 +101,6 @@ describe('filterDocuments', () => {
   test('counts sources and categories, and formats a copyable list', () => {
     expect(countBySource(rows)).toEqual({ drchrono: 2, zus: 1, other: 1 });
     expect(collectCategories(rows)).toEqual([{ label: 'Notes', count: 1 }]);
-    expect(formatDocumentList(rows.slice(1, 2))).toBe('2026-03-01 — Alpha labs — Lab');
+    expect(formatDocumentList(rows.slice(1, 2), 'US/Pacific')).toBe('2026-03-01 — Alpha labs — Lab');
   });
 });

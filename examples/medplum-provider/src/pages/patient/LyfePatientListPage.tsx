@@ -54,6 +54,7 @@ import {
   getInitials,
   getMrn,
 } from '../../components/patients/patient-roster-utils';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 
 const PAGE_SIZE = 20;
 const DEBOUNCE_MS = 300;
@@ -82,6 +83,8 @@ const FILTER_LABEL = {
 export function LyfePatientListPage(): JSX.Element {
   const medplum = useMedplum();
   const navigate = useNavigate();
+  // Age is measured against the clinic's today, not the viewer's.
+  const timeZone = useClinicTimeZone();
 
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -190,7 +193,7 @@ export function LyfePatientListPage(): JSX.Element {
           getDisplayName(p),
           getMrn(p) ?? '',
           formatDob(p.birthDate),
-          getAge(p.birthDate),
+          getAge(p.birthDate, timeZone),
           p.gender ?? '',
           email ?? '',
           phone ?? '',
@@ -204,7 +207,7 @@ export function LyfePatientListPage(): JSX.Element {
     a.download = `patients-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [patients]);
+  }, [patients, timeZone]);
 
   return (
     <Stack gap="md" m="xs">
@@ -442,7 +445,7 @@ export function LyfePatientListPage(): JSX.Element {
                     </Table.Td>
                     <Table.Td>
                       <Text size="sm" c="gray.9">
-                        {getAge(p.birthDate)}
+                        {getAge(p.birthDate, timeZone)}
                       </Text>
                     </Table.Td>
                     <Table.Td>
