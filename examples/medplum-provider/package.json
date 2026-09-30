@@ -25,19 +25,20 @@
     "trailingComma": "es5"
   },
   "devDependencies": {
+    "@fontsource-variable/inter": "5.3.0",
     "@mantine/core": "8.3.18",
     "@mantine/hooks": "8.3.18",
     "@mantine/notifications": "8.3.18",
     "@mantine/spotlight": "8.3.18",
     "@medplum/core": "5.1.42",
     "@medplum/dosespot-react": "5.1.42",
-    "@medplum/scriptsure-react": "5.1.42",
     "@medplum/eslint-config": "5.1.42",
     "@medplum/fhirtypes": "5.1.42",
     "@medplum/health-gorilla-core": "5.1.42",
     "@medplum/health-gorilla-react": "5.1.42",
     "@medplum/react": "5.1.42",
     "@medplum/react-scheduling": "5.1.42",
+    "@medplum/scriptsure-react": "5.1.42",
     "@tabler/icons-react": "3.48.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "7.0.1",
@@ -47,8 +48,9 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
-    "jsqr": "1.4.0",
+    "esbuild": "0.28.2",
     "jsdom": "29.1.1",
+    "jsqr": "1.4.0",
     "postcss": "8.5.28",
     "postcss-preset-mantine": "1.18.0",
     "prettier-plugin-organize-imports": "4.3.0",
@@ -61,8 +63,7 @@
     "remark-gfm": "4.0.1",
     "typescript": "6.0.3",
     "vite": "8.3.1",
-    "vitest": "4.1.11",
-    "esbuild": "0.28.2"
+    "vitest": "4.1.11"
   },
   "packageManager": "npm@11.19.1",
   "engines": {
