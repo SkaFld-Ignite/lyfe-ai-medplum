@@ -5,196 +5,191 @@ import type { WithId } from '@medplum/core';
 import type { DocumentReference } from '@medplum/fhirtypes';
 import { HomerSimpson, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { NavigateFunction } from 'react-router';
-import * as reactRouter from 'react-router';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { DOCUMENTS_PER_PAGE } from '../../components/patient-documents/documents-config';
 import { DocumentsPage } from './DocumentsPage';
 
 vi.mock('../../utils/notifications');
 
 const patientId = HomerSimpson.id as string;
+const tag = (code: string): DocumentReference['meta'] => ({ tag: [{ system: 'https://lyfe.com/source', code }] });
 
 describe('DocumentsPage', () => {
   let medplum: MockClient;
-  let navigateMock: NavigateFunction;
 
   beforeEach(() => {
     medplum = new MockClient();
     vi.clearAllMocks();
-    // Mock navigation so the page's redirects/selections don't change the route under test.
-    navigateMock = vi.fn() as NavigateFunction;
-    vi.spyOn(reactRouter, 'useNavigate').mockReturnValue(navigateMock);
   });
 
-  const createDocument = async (overrides: Partial<DocumentReference> = {}): Promise<WithId<DocumentReference>> => {
-    return medplum.createResource<DocumentReference>({
+  const createDocument = (overrides: Partial<DocumentReference> = {}): Promise<WithId<DocumentReference>> =>
+    medplum.createResource<DocumentReference>({
       resourceType: 'DocumentReference',
       status: 'current',
       subject: { reference: `Patient/${patientId}` },
       content: [{ attachment: { contentType: 'application/pdf', url: 'Binary/example', title: 'file.pdf' } }],
       ...overrides,
     });
-  };
 
-  const setup = (url: string): ReturnType<typeof render> => {
-    return render(
-      <MemoryRouter initialEntries={[url]}>
-        <MedplumProvider medplum={medplum}>
-          <MantineProvider>
-            <Routes>
-              <Route path="/Patient/:patientId/DocumentReference" element={<DocumentsPage />} />
-              <Route path="/Patient/:patientId/DocumentReference/:documentId" element={<DocumentsPage />} />
-            </Routes>
-          </MantineProvider>
-        </MedplumProvider>
-      </MemoryRouter>
+  const setup = (path = `/Patient/${patientId}/DocumentReference`): ReturnType<typeof createMemoryRouter> => {
+    const router = createMemoryRouter(
+      [
+        { path: '/Patient/:patientId/DocumentReference', element: <DocumentsPage /> },
+        { path: '/Patient/:patientId/DocumentReference/:documentId', element: <DocumentsPage /> },
+      ],
+      { initialEntries: [path] }
     );
+    render(
+      <MedplumProvider medplum={medplum}>
+        <MantineProvider>
+          <RouterProvider router={router} />
+        </MantineProvider>
+      </MedplumProvider>
+    );
+    return router;
   };
 
-  test('lists the patient documents', async () => {
-    await createDocument();
-    await createDocument();
+  const rows = (): HTMLElement[] => screen.queryAllByTestId('document-row');
 
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated`);
-
-    expect(await screen.findByText('All Documents')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(2));
-  });
-
-  test('shows the empty state when there are no documents', async () => {
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated`);
-
-    expect(await screen.findByText('No documents.')).toBeInTheDocument();
-    expect(screen.queryAllByRole('link')).toHaveLength(0);
-  });
-
-  test('hides soft-deleted (entered-in-error) documents', async () => {
-    await createDocument();
-    await createDocument({ status: 'entered-in-error' });
-
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated`);
-
-    // Only the 'current' document should be listed; the entered-in-error one is filtered out.
-    await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(1));
-  });
-
-  test('renders the detail panel for the selected document', async () => {
-    const doc = await createDocument({ type: { coding: [{ display: 'Lab Report' }] } });
-
-    setup(`/Patient/${patientId}/DocumentReference/${doc.id}?_sort=-_lastUpdated`);
-
-    // Author/Added are metadata labels rendered only by the detail panel.
-    expect(await screen.findByText('Author')).toBeInTheDocument();
-    expect(screen.getByText('Added')).toBeInTheDocument();
-  });
-
-  test('pins the full search (filters, sort, count, total) into the URL', async () => {
-    await createDocument();
-
-    setup(`/Patient/${patientId}/DocumentReference`);
-
-    await waitFor(() => {
-      expect(navigateMock).toHaveBeenCalledWith(expect.stringContaining('_sort=-_lastUpdated'), { replace: true });
+  test('lists documents with their source, type, dates and categories', async () => {
+    await createDocument({
+      description: 'LABCORP FINAL LABS',
+      meta: tag('drchrono'),
+      date: '2025-12-17T10:00:00Z',
+      type: { text: 'Laboratory report' },
+      category: [{ text: 'Labs, Results' }],
     });
-    const url = navigatedUrls().find((u) => u.includes('_sort=-_lastUpdated')) as string;
-    expect(url).toContain('_count=20');
-    expect(url).toContain('_total=accurate');
-    expect(url).toContain('status:not=entered-in-error');
-    // The patient is carried by the path, so the subject filter stays out of the query string.
-    expect(url).not.toContain('subject=');
+    await createDocument({ description: 'Clinical Summary', meta: tag('zus'), date: '2026-09-15T10:00:00Z' });
+    setup();
+
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(screen.getByText('2 of 2 documents • 1 from DrChrono')).toBeInTheDocument();
+
+    const lab = rows()[1];
+    expect(within(lab).getByText('LABCORP FINAL LABS')).toBeInTheDocument();
+    expect(within(lab).getByText('From DrChrono')).toBeInTheDocument();
+    expect(within(lab).getByText(/Laboratory report · Dated/)).toBeInTheDocument();
+    expect(within(lab).getByText('Labs')).toBeInTheDocument();
+    expect(within(lab).getByText('Results')).toBeInTheDocument();
+    // Newest first by default.
+    expect(within(rows()[0]).getByText('From Zus/HIE')).toBeInTheDocument();
   });
 
-  const LAB_FILTER_PARAM = `identifier=${encodeURIComponent('https://www.healthgorilla.com|')}`;
-  const OTHER_FILTER_PARAM = `identifier:not=${encodeURIComponent('https://www.healthgorilla.com|')}`;
+  test('shows the empty state and hides soft-deleted documents', async () => {
+    await createDocument({ description: 'Deleted', status: 'entered-in-error' });
+    setup();
 
-  const navigatedUrls = (): string[] =>
-    (navigateMock as unknown as ReturnType<typeof vi.fn>).mock.calls
-      .map((call) => call[0] as unknown)
-      .filter((url): url is string => typeof url === 'string');
-
-  test('filter menu lists the document sources', async () => {
-    await createDocument();
-
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated`);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Filter documents' }));
-
-    expect(await screen.findByText('Document Source')).toBeInTheDocument();
-    expect(screen.getByText('Lab')).toBeInTheDocument();
-    expect(screen.getByText('Other Documents')).toBeInTheDocument();
+    expect(await screen.findByText('No documents yet')).toBeInTheDocument();
+    expect(screen.queryByText('Deleted')).not.toBeInTheDocument();
   });
 
-  test('selecting Lab navigates with the identifier filter and resets pagination', async () => {
-    await createDocument();
-
-    setup(`/Patient/${patientId}/DocumentReference?_offset=20&_sort=-_lastUpdated`);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Filter documents' }));
-    fireEvent.click(await screen.findByText('Lab'));
-
-    await waitFor(() => {
-      expect(navigateMock).toHaveBeenCalledWith(expect.stringContaining(LAB_FILTER_PARAM));
+  describe('search, filters and sort', () => {
+    beforeEach(async () => {
+      await createDocument({ description: 'Beta note', meta: tag('drchrono'), category: [{ text: 'Notes' }] });
+      await createDocument({ description: 'Alpha labs', meta: tag('drchrono'), category: [{ text: 'Labs' }] });
+      await createDocument({ description: 'Zus summary', meta: tag('zus') });
     });
-    const url = navigatedUrls().find((u) => u.includes(LAB_FILTER_PARAM)) as string;
-    expect(url.startsWith(`/Patient/${patientId}/DocumentReference?`)).toBe(true);
-    expect(url).not.toContain('_offset');
-  });
 
-  test('selecting Other Documents navigates with the not-Health-Gorilla and missing-related filters', async () => {
-    await createDocument();
+    test('searches', async () => {
+      setup();
+      await waitFor(() => expect(rows()).toHaveLength(3));
 
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated`);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Filter documents' }));
-    fireEvent.click(await screen.findByText('Other Documents'));
-
-    await waitFor(() => {
-      expect(navigateMock).toHaveBeenCalledWith(expect.stringContaining(OTHER_FILTER_PARAM));
+      fireEvent.change(screen.getByLabelText('Search documents'), { target: { value: 'labs' } });
+      await waitFor(() => expect(rows()).toHaveLength(1));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear search text' }));
+      await waitFor(() => expect(rows()).toHaveLength(3));
     });
-    const url = navigatedUrls().find((u) => u.includes(OTHER_FILTER_PARAM)) as string;
-    expect(url).toContain('related:missing=true');
-  });
 
-  test('the Lab filter narrows the list to Health Gorilla documents', async () => {
-    await createDocument({ identifier: [{ system: 'https://www.healthgorilla.com', value: 'hg-123' }] });
-    await createDocument();
+    test('filters by source', async () => {
+      setup();
+      await waitFor(() => expect(rows()).toHaveLength(3));
 
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated&${LAB_FILTER_PARAM}`);
-
-    // The active source is reflected in the list header, and only the HG doc is listed.
-    expect(await screen.findByText('Lab Documents')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(1));
-  });
-
-  test('the Other Documents filter keeps non-Health-Gorilla documents visible', async () => {
-    // A doc with an unrelated identifier is not a lab doc, so it belongs under Other Documents.
-    await createDocument({ identifier: [{ system: 'https://example.com', value: 'ext-1' }] });
-    await createDocument(); // plain upload: no identifier
-    await createDocument({ identifier: [{ system: 'https://www.healthgorilla.com', value: 'hg-123' }] });
-
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated&${OTHER_FILTER_PARAM}&related:missing=true`);
-
-    expect(await screen.findByText('Other Documents')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(2));
-  });
-
-  test('reselecting the active source clears the filter', async () => {
-    await createDocument();
-
-    setup(`/Patient/${patientId}/DocumentReference?_sort=-_lastUpdated&${LAB_FILTER_PARAM}`);
-
-    expect(await screen.findByText('Lab Documents')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Filter documents' }));
-    fireEvent.click(await screen.findByText('Lab'));
-
-    await waitFor(() => {
-      const cleared = navigatedUrls().find(
-        (u) => u.startsWith(`/Patient/${patientId}/DocumentReference?`) && !u.includes('identifier')
-      );
-      expect(cleared).toBeDefined();
+      fireEvent.click(screen.getByRole('button', { name: 'Zus/HIE (1 document)' }));
+      await waitFor(() => expect(rows()).toHaveLength(1));
+      expect(screen.getByText('Zus summary')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'All sources' }));
+      await waitFor(() => expect(rows()).toHaveLength(3));
     });
+
+    test('sorts by name', async () => {
+      const user = userEvent.setup();
+      setup();
+      await waitFor(() => expect(rows()).toHaveLength(3));
+
+      await user.click(screen.getByRole('button', { name: /Sort:/ }));
+      await user.click(await screen.findByRole('menuitem', { name: 'Name (A–Z)' }));
+      await waitFor(() => expect(within(rows()[0]).getByText('Alpha labs')).toBeInTheDocument());
+    });
+
+    test('filters by category', async () => {
+      const user = userEvent.setup();
+      setup();
+      await waitFor(() => expect(rows()).toHaveLength(3));
+
+      await user.click(screen.getByRole('button', { name: 'Filter by categories' }));
+      await user.click(await screen.findByRole('checkbox', { name: 'Notes (1)' }));
+      await waitFor(() => expect(rows()).toHaveLength(1));
+      expect(screen.getByText('Beta note')).toBeInTheDocument();
+    });
+  });
+
+  test('opens a document preview from the list and closes it', async () => {
+    const user = userEvent.setup();
+    const doc = await createDocument({ description: 'Referral letter', type: { text: 'Referral' } });
+    const router = setup();
+
+    await user.click(await screen.findByRole('button', { name: 'Preview Referral letter' }));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/Patient/${patientId}/DocumentReference/${doc.id}`)
+    );
+
+    const dialog = await screen.findByRole('dialog');
+    // The detail panel's metadata.
+    expect(within(dialog).getByText('Author')).toBeInTheDocument();
+
+    await user.click(within(dialog).getAllByRole('button')[0]);
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/Patient/${patientId}/DocumentReference`));
+  });
+
+  test('opens the preview from a deep link', async () => {
+    const doc = await createDocument({ description: 'Deep linked' });
+    setup(`/Patient/${patientId}/DocumentReference/${doc.id}`);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('Deep linked')).toBeInTheDocument();
+  });
+
+  test('pages long lists', async () => {
+    const user = userEvent.setup();
+    for (let i = 0; i < DOCUMENTS_PER_PAGE + 3; i++) {
+      await createDocument({
+        description: `Doc ${String(i).padStart(2, '0')}`,
+        date: `2026-01-${String((i % 28) + 1).padStart(2, '0')}`,
+      });
+    }
+    setup();
+
+    await waitFor(() => expect(rows()).toHaveLength(DOCUMENTS_PER_PAGE));
+    await user.click(screen.getByRole('button', { name: '2' }));
+    await waitFor(() => expect(rows()).toHaveLength(3));
+  });
+
+  test('opens the upload modal', async () => {
+    const user = userEvent.setup();
+    setup();
+
+    await user.click(await screen.findByRole('button', { name: 'Upload' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  test('shows an error when documents cannot be loaded', async () => {
+    vi.spyOn(medplum, 'search').mockRejectedValue(new Error('Server unavailable'));
+    setup();
+
+    expect(await screen.findByText('Could not load documents')).toBeInTheDocument();
+    expect(screen.getByText('Server unavailable')).toBeInTheDocument();
   });
 });
