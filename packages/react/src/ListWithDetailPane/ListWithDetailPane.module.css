@@ -120,3 +120,14 @@
     text-decoration: none;
   }
 }
+
+/* Stacked layout: the bar above a full-width detail, linking back to the list. */
+.backBar {
+  flex-shrink: 0;
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

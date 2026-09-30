@@ -41,14 +41,40 @@ const gray: MantineColorsTuple = [
   '#0f172a',
 ];
 
+/** Inter, self-hosted through the `@fontsource-variable/inter` package so no font request leaves the app. */
+const FONT_FAMILY =
+  "'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+
+// Lyfe's elevation scale: soft, layered, slate-tinted shadows rather than Mantine's grey ones.
+const shadows = {
+  xs: '0 1px 2px 0 hsl(220 40% 14% / 0.04)',
+  sm: '0 1px 2px -1px hsl(220 40% 14% / 0.06), 0 1px 3px 0 hsl(220 40% 14% / 0.04)',
+  md: '0 4px 6px -2px hsl(220 40% 14% / 0.05), 0 2px 4px -2px hsl(220 40% 14% / 0.04)',
+  lg: '0 10px 24px -6px hsl(220 40% 14% / 0.08), 0 4px 10px -4px hsl(220 40% 14% / 0.05)',
+  xl: '0 20px 40px -12px hsl(220 40% 14% / 0.12), 0 8px 16px -8px hsl(220 40% 14% / 0.06)',
+};
+
 export const lyfeTheme = createTheme({
   colors: { primary, gray },
   primaryColor: 'primary',
   primaryShade: 6,
 
+  fontFamily: FONT_FAMILY,
+  fontFamilyMonospace: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+  black: '#171d2b',
+
+  // Lyfe's base radius is 0.625rem (10px); the scale steps around it.
+  defaultRadius: 'md',
+  radius: { xs: '4px', sm: '6px', md: '10px', lg: '14px', xl: '18px' },
+  shadows,
+  cursorType: 'pointer',
+  focusRing: 'auto',
+
   // Carried over unchanged from the stock Medplum provider theme — these set the
   // app's type scale and are unrelated to branding.
   headings: {
+    fontFamily: FONT_FAMILY,
+    fontWeight: '650',
     sizes: {
       h1: {
         fontSize: '1.125rem',
@@ -63,5 +89,34 @@ export const lyfeTheme = createTheme({
     md: '0.875rem',
     lg: '1.0rem',
     xl: '1.125rem',
+  },
+
+  // Component defaults, so every page (Medplum's own screens included) picks up the Lyfe look
+  // without per-page styling.
+  components: {
+    Button: { defaultProps: { radius: 'md' }, styles: { root: { fontWeight: 550 } } },
+    ActionIcon: { defaultProps: { radius: 'md' } },
+    Paper: { defaultProps: { radius: 'md' } },
+    Card: { defaultProps: { radius: 'lg', withBorder: true, shadow: 'xs', padding: 'lg' } },
+    Badge: { defaultProps: { radius: 'sm' }, styles: { root: { letterSpacing: '0.02em' } } },
+    TextInput: { defaultProps: { radius: 'md' } },
+    PasswordInput: { defaultProps: { radius: 'md' } },
+    NumberInput: { defaultProps: { radius: 'md' } },
+    Textarea: { defaultProps: { radius: 'md' } },
+    Select: { defaultProps: { radius: 'md', comboboxProps: { shadow: 'lg', radius: 'md' } } },
+    MultiSelect: { defaultProps: { radius: 'md', comboboxProps: { shadow: 'lg', radius: 'md' } } },
+    Autocomplete: { defaultProps: { radius: 'md', comboboxProps: { shadow: 'lg', radius: 'md' } } },
+    Menu: { defaultProps: { radius: 'md', shadow: 'lg' } },
+    Popover: { defaultProps: { radius: 'md', shadow: 'lg' } },
+    Tooltip: { defaultProps: { radius: 'sm', withArrow: true, openDelay: 200 } },
+    Modal: {
+      defaultProps: { radius: 'lg', shadow: 'xl', overlayProps: { backgroundOpacity: 0.35, blur: 3 } },
+      styles: { title: { fontWeight: 650 } },
+    },
+    Drawer: { defaultProps: { overlayProps: { backgroundOpacity: 0.3, blur: 2 } } },
+    Table: { defaultProps: { highlightOnHover: true, verticalSpacing: 'sm', horizontalSpacing: 'md' } },
+    SegmentedControl: { defaultProps: { radius: 'md' } },
+    Notification: { defaultProps: { radius: 'md' } },
+    Alert: { defaultProps: { radius: 'md' } },
   },
 });

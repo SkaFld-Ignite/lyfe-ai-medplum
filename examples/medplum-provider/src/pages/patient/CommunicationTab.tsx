@@ -69,10 +69,6 @@ export function CommunicationTab(): JSX.Element {
     navigate(getThreadUri(message))?.catch(console.error);
   };
 
-  const onSelectFirst = (thread: Communication): void => {
-    navigate(getThreadUri(thread), { replace: true })?.catch(console.error);
-  };
-
   return (
     <div style={{ height: '100%' }}>
       <ThreadInbox
@@ -81,7 +77,9 @@ export function CommunicationTab(): JSX.Element {
         subject={patient}
         showPatientSummary={false}
         onNew={onNew}
-        onSelectFirst={onSelectFirst}
+        stacked
+        backUri={`/Patient/${patientId}/Communication${location.search}`}
+        backLabel="All messages"
         getThreadUri={getThreadUri}
         onChange={onChange}
         inProgressUri={inProgressUri}

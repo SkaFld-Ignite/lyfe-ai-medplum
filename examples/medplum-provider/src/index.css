@@ -70,3 +70,43 @@
 .grecaptcha-badge {
   visibility: hidden;
 }
+
+/* ---- Lyfe base look -------------------------------------------------------------------------- */
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings:
+    'cv11' 1,
+    'ss01' 1;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular figures wherever numbers line up: tables, badges and dates in lists. */
+.mantine-Table-td,
+.mantine-Badge-root,
+.mantine-Pagination-control {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Lyfe's input focus: a soft blue halo around the field. */
+.mantine-Input-input:focus,
+.mantine-Input-input:focus-within {
+  border-color: var(--mantine-color-primary-5);
+  box-shadow: 0 0 0 3px hsl(217 91% 60% / 0.14);
+}
+
+/* Softer table header and row separators. */
+.mantine-Table-th {
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mantine-color-gray-6);
+}
+
+/* Thin, unobtrusive scrollbars that match the slate palette. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--mantine-color-gray-3) transparent;
+}

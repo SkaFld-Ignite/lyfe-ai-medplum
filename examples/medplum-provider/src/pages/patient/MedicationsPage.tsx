@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import {
   ActionIcon,
+  Anchor,
   Box,
   Button,
   Divider,
@@ -25,21 +26,20 @@ import {
   DOSESPOT_PRESCRIPTIONS_SYNC_BOT,
 } from '@medplum/dosespot-react';
 import type { MedicationRequest } from '@medplum/fhirtypes';
-import { Loading, useMedplum } from '@medplum/react';
+import { Loading, MedplumLink, useMedplum } from '@medplum/react';
 import {
   SCRIPTSURE_IFRAME_BOT,
   SCRIPTSURE_MEDICATION_ORDER_EXTENSIONS,
   useScriptSureCart,
   useScriptSureOrderMedication,
 } from '@medplum/scriptsure-react';
-import { IconPlus, IconShoppingCart, IconTrash } from '@tabler/icons-react';
+import { IconArrowLeft, IconPlus, IconShoppingCart, IconTrash } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { MedicationRequestDetails } from '../../components/meds/MedicationRequestDetails';
 import type { MedTab } from '../../components/meds/MedListItem';
 import { MedListItem } from '../../components/meds/MedListItem';
-import { MedSelectEmpty } from '../../components/meds/MedSelectEmpty';
 import { PrescriptionIFrameModal } from '../../components/meds/PrescriptionIFrameModal';
 import { hasDoseSpotIdentifier, hasScriptSureIdentifier } from '../../components/utils';
 import { usePatient } from '../../hooks/usePatient';
@@ -224,6 +224,9 @@ export function MedicationsPage(): JSX.Element {
   fetchDataRef.current = fetchData;
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const listQuery = searchParams.toString();
+  const listUrl = `/Patient/${patientId}/MedicationRequest${listQuery ? `?${listQuery}` : ''}`;
 
   const getOrderUrl = useCallback(
     (order: MedicationRequest): string => {
@@ -607,7 +610,8 @@ export function MedicationsPage(): JSX.Element {
   return (
     <Box w="100%" h="100%">
       <Flex h="100%">
-        <Box w={350} h="100%">
+        {/* One column: the list fills the width, and an open prescription replaces it. */}
+        <Box w="100%" h="100%" hidden={Boolean(medicationRequestId)}>
           <Flex direction="column" h="100%" className={classes.borderRight}>
             <Paper>
               <Flex h={64} align="center" justify="space-between" p="md" wrap="wrap" gap="xs">
@@ -738,18 +742,31 @@ export function MedicationsPage(): JSX.Element {
           </Flex>
         </Box>
 
-        <Box h="100%" style={{ flex: 1 }} className={classes.borderRight}>
-          {currentOrder ? (
-            <MedicationRequestDetails
-              key={currentOrder.id}
-              medicationRequest={currentOrder}
-              medicationOrderExtensions={SCRIPTSURE_MEDICATION_ORDER_EXTENSIONS}
-              onOpenInScriptSure={() => handleOpenScriptSureFromDetails().catch(showErrorNotification)}
-            />
-          ) : (
-            <MedSelectEmpty />
-          )}
-        </Box>
+        {medicationRequestId && (
+          <Flex direction="column" h="100%" style={{ flex: 1, minWidth: 0 }}>
+            <Group h={44} px="md" style={{ flexShrink: 0 }}>
+              <Anchor component={MedplumLink} to={listUrl} size="sm" fw={500}>
+                <Group gap={6} component="span">
+                  <IconArrowLeft size={16} />
+                  All medications
+                </Group>
+              </Anchor>
+            </Group>
+            <Divider />
+            <Box style={{ flex: 1, minHeight: 0 }}>
+              {currentOrder ? (
+                <MedicationRequestDetails
+                  key={currentOrder.id}
+                  medicationRequest={currentOrder}
+                  medicationOrderExtensions={SCRIPTSURE_MEDICATION_ORDER_EXTENSIONS}
+                  onOpenInScriptSure={() => handleOpenScriptSureFromDetails().catch(showErrorNotification)}
+                />
+              ) : (
+                <Loading />
+              )}
+            </Box>
+          </Flex>
+        )}
       </Flex>
 
       <Modal

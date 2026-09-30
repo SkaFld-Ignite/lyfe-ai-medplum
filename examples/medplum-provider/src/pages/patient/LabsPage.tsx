@@ -205,6 +205,9 @@ export function LabsPage(props: LabsPageProps): JSX.Element {
         page={page}
         pageCount={pageCount}
         onPageChange={handlePageChange}
+        stacked
+        backUri={`/Patient/${patientId}/${resourceType}${location.search}`}
+        backLabel="All orders"
         renderItem={(item, ctx) =>
           item.resourceType === 'DiagnosticReport' ? (
             <LabResultListItem

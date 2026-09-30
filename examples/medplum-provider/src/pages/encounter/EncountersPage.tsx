@@ -118,7 +118,9 @@ export function EncountersPage(): JSX.Element {
           <Text c="dimmed">Select a visit to view its chart.</Text>
         </Box>
       }
-      onSelectFirst={(encounter) => navigate(encounterUri(encounter.id), { replace: true })?.catch(console.error)}
+      stacked
+      backUri={`/Patient/${patientId}/Encounter${location.search}`}
+      backLabel="All visits"
       onChange={(s) => {
         navigate(`${location.pathname}${formatSearchQuery(s)}`)?.catch(console.error);
       }}

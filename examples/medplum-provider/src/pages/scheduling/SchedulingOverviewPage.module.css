@@ -3,10 +3,6 @@
   min-height: 100vh;
 }
 
-.eyebrow {
-  letter-spacing: 0.06em;
-}
-
 .layout {
   display: flex;
   gap: var(--mantine-spacing-md);

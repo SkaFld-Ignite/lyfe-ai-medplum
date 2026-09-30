@@ -3932,14 +3932,7 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
     ctx.medplum,
     documents.map((d) => ({
       resourceType: 'DocumentReference',
-      resource: mapLabDocument(
-        d,
-        patient,
-        ctx.organization,
-        ctx.labOrders,
-        ctx.timeZone,
-        labFiles.get(String(d.id))
-      ),
+      resource: mapLabDocument(d, patient, ctx.organization, ctx.labOrders, ctx.timeZone, labFiles.get(String(d.id))),
       system: IDENTIFIER_SYSTEMS.labDocument,
       value: String(d.id),
     })),

@@ -36,6 +36,9 @@ interface FilterState {
  * @property newTaskOpened - Controlled open state for the new task modal. When provided, use `onNewTaskOpen` and `onNewTaskClose` to update it.
  * @property onNewTaskOpen - Called when the user clicks the new task button. Required when `newTaskOpened` is provided.
  * @property onNewTaskClose - Called when the new task modal is closed. Required when `newTaskOpened` is provided.
+ * @property stacked - Single-column layout: the list fills the width and an open task replaces it, under a link back
+ *   to `backUri`; nothing is auto-selected.
+ * @property backUri - Stacked layout only: where the back link returns to.
  * @returns The TaskBoard component.
  */
 interface TaskBoardProps {
@@ -50,6 +53,8 @@ interface TaskBoardProps {
   newTaskOpened?: boolean;
   onNewTaskOpen?: () => void;
   onNewTaskClose?: () => void;
+  stacked?: boolean;
+  backUri?: string;
 }
 
 export function TaskBoard({
@@ -64,6 +69,8 @@ export function TaskBoard({
   newTaskOpened,
   onNewTaskOpen,
   onNewTaskClose,
+  stacked,
+  backUri,
 }: TaskBoardProps): JSX.Element {
   const medplum = useMedplum();
   const navigate = useNavigate();
@@ -261,6 +268,9 @@ export function TaskBoard({
         )}
         emptyDetail={<TaskSelectEmpty />}
         refresh={fetchTasks}
+        stacked={stacked}
+        backUri={backUri}
+        backLabel="All tasks"
         page={currentPage}
         pageCount={total !== undefined ? Math.ceil(total / itemsPerPage) : 0}
         onPageChange={(page) => {
