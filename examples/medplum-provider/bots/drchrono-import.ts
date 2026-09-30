@@ -1570,8 +1570,8 @@ function mapMedication(
   m: DrMedication,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  practitioners: Map<number, Reference<Practitioner>>,
-  encounters: Map<number, Reference<Encounter>>
+  practitioners: Map<string, Reference<Practitioner>>,
+  encounters: Map<string, Reference<Encounter>>
 ): MedicationRequest {
   const dosageParts = [m.dosage || joinDefined([m.dosage_quantity, m.dosage_units], ' '), m.frequency, m.route];
   const dosageText = joinDefined(dosageParts, ' ');
@@ -1583,8 +1583,8 @@ function mapMedication(
     status: MEDICATION_STATUS_MAP[m.status?.toLowerCase() ?? ''] ?? 'active',
     intent: 'order',
     subject: patient,
-    encounter: m.appointment ? encounters.get(m.appointment) : undefined,
-    requester: m.doctor ? practitioners.get(m.doctor) : undefined,
+    encounter: m.appointment ? lookup(encounters, m.appointment) : undefined,
+    requester: m.doctor ? lookup(practitioners, m.doctor) : undefined,
     medicationCodeableConcept: {
       coding: [
         ...(m.ndc ? [{ system: 'http://hl7.org/fhir/sid/ndc', code: m.ndc, display: m.name }] : []),
@@ -1636,7 +1636,7 @@ function mapCondition(
   p: DrProblem,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  encounters: Map<number, Reference<Encounter>>
+  encounters: Map<string, Reference<Encounter>>
 ): Condition {
   const icdCode = p.icd10_code || p.icd_code;
   // These rows come from /problems, so problem-list-item is the right default;
@@ -1647,7 +1647,7 @@ function mapCondition(
     meta: buildMeta(organization),
     identifier: [{ system: IDENTIFIER_SYSTEMS.condition, value: String(p.id) }],
     subject: patient,
-    encounter: p.appointment ? encounters.get(p.appointment) : undefined,
+    encounter: p.appointment ? lookup(encounters, p.appointment) : undefined,
     clinicalStatus: {
       coding: [
         {
@@ -1714,17 +1714,17 @@ function mapProcedure(
   p: DrProcedure,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  practitioners: Map<number, Reference<Practitioner>>,
-  encounters: Map<number, Reference<Encounter>>
+  practitioners: Map<string, Reference<Practitioner>>,
+  encounters: Map<string, Reference<Encounter>>
 ): Procedure {
-  const performer = p.doctor ? practitioners.get(p.doctor) : undefined;
+  const performer = p.doctor ? lookup(practitioners, p.doctor) : undefined;
   return {
     resourceType: 'Procedure',
     meta: buildMeta(organization),
     identifier: [{ system: IDENTIFIER_SYSTEMS.procedure, value: String(p.id) }],
     status: PROCEDURE_STATUS_MAP[(p.status ?? '').toLowerCase()] ?? 'unknown',
     subject: patient,
-    encounter: p.appointment ? encounters.get(p.appointment) : undefined,
+    encounter: p.appointment ? lookup(encounters, p.appointment) : undefined,
     code: {
       coding: p.code ? [{ system: 'http://www.ama-assn.org/go/cpt', code: p.code, display: p.description }] : [],
       text: p.description || (p.code ? `CPT ${p.code}` : 'Unknown procedure'),
@@ -1836,14 +1836,14 @@ function mapEncounter(
   a: DrAppointment,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  practitioners: Map<number, Reference<Practitioner>>,
-  locations: Map<number, Reference<Location>>,
+  practitioners: Map<string, Reference<Practitioner>>,
+  locations: Map<string, Reference<Location>>,
   appointmentRef: Reference<Appointment> | undefined
 ): Encounter {
   const start = toInstant(a.scheduled_time);
   const minutes = a.duration ?? DEFAULT_VISIT_MINUTES;
-  const practitioner = a.doctor ? practitioners.get(a.doctor) : undefined;
-  const location = a.office ? locations.get(a.office) : undefined;
+  const practitioner = a.doctor ? lookup(practitioners, a.doctor) : undefined;
+  const location = a.office ? lookup(locations, a.office) : undefined;
   return {
     resourceType: 'Encounter',
     meta: buildMeta(organization),
@@ -2139,10 +2139,10 @@ function mapImmunization(
   i: DrImmunization,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  practitioners: Map<number, Reference<Practitioner>>
+  practitioners: Map<string, Reference<Practitioner>>
 ): Immunization {
   const display = i.vaccine_name || i.name || 'Vaccine';
-  const performer = i.doctor ? practitioners.get(i.doctor) : undefined;
+  const performer = i.doctor ? lookup(practitioners, i.doctor) : undefined;
   const doseValue = i.dose ? parseFloat(i.dose) : Number.NaN;
   const immunizationNote = joinDefined([i.notes, i.reaction ? `Reaction: ${i.reaction}` : undefined], '; ');
   return {
@@ -2216,8 +2216,8 @@ function mapLabOrder(
   l: DrLabOrder,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  practitioners: Map<number, Reference<Practitioner>>,
-  encounters: Map<number, Reference<Encounter>>
+  practitioners: Map<string, Reference<Practitioner>>,
+  encounters: Map<string, Reference<Encounter>>
 ): ServiceRequest {
   return {
     resourceType: 'ServiceRequest',
@@ -2237,8 +2237,8 @@ function mapLabOrder(
     ],
     priority: LAB_PRIORITY_MAP[(l.priority || 'routine').toLowerCase()] ?? 'routine',
     subject: patient,
-    encounter: l.appointment ? encounters.get(l.appointment) : undefined,
-    requester: l.doctor ? practitioners.get(l.doctor) : undefined,
+    encounter: l.appointment ? lookup(encounters, l.appointment) : undefined,
+    requester: l.doctor ? lookup(practitioners, l.doctor) : undefined,
     authoredOn: l.timestamp || l.created_at,
     reasonCode: l.icd10_codes?.length
       ? l.icd10_codes.map((code) => ({ coding: [{ system: 'http://hl7.org/fhir/sid/icd-10-cm', code }] }))
@@ -2356,11 +2356,11 @@ function mapLabReport(
   r: DrLabResult,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  labOrders: Map<number, Reference<ServiceRequest>>,
+  labOrders: Map<string, Reference<ServiceRequest>>,
   results: Reference<Observation>[]
 ): DiagnosticReport {
   const display = r.test_name || r.observation_description || 'Lab Test';
-  const basedOn = labOrders.get(r.lab_order);
+  const basedOn = lookup(labOrders, r.lab_order);
   return {
     resourceType: 'DiagnosticReport',
     meta: buildMeta(organization),
@@ -2404,13 +2404,13 @@ function mapLabDocument(
   d: DrLabDocument,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  labOrders: Map<number, Reference<ServiceRequest>>
+  labOrders: Map<string, Reference<ServiceRequest>>
 ): DocumentReference {
   const isResult = (d.type ?? '').toUpperCase() === 'RES';
   const typeCode = isResult
     ? { system: 'http://loinc.org', code: '11502-2', display: 'Laboratory report' }
     : { system: 'http://loinc.org', code: '11488-4', display: 'Consultation note' };
-  const labOrder = labOrders.get(d.lab_order);
+  const labOrder = lookup(labOrders, d.lab_order);
   const date = toInstant(d.timestamp);
   return {
     resourceType: 'DocumentReference',
@@ -2668,8 +2668,8 @@ function mapDrTask(
   t: DrTask,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  practitioners: Map<number, Reference<Practitioner>>,
-  encounters: Map<number, Reference<Encounter>>
+  practitioners: Map<string, Reference<Practitioner>>,
+  encounters: Map<string, Reference<Encounter>>
 ): Task {
   const appointmentLink = t.associated_items?.find((a) => a.type === 'appointment');
   return {
@@ -2680,8 +2680,8 @@ function mapDrTask(
     intent: 'order',
     description: t.title || t.notes || `DrChrono task ${t.id}`,
     for: patient,
-    encounter: appointmentLink ? encounters.get(appointmentLink.value) : undefined,
-    owner: t.assignee ? practitioners.get(t.assignee) : undefined,
+    encounter: appointmentLink ? lookup(encounters, appointmentLink.value) : undefined,
+    owner: t.assignee ? lookup(practitioners, t.assignee) : undefined,
     authoredOn: toInstant(t.created_at),
     restriction: t.due_date ? { period: { end: t.due_date } } : undefined,
     note: t.notes && t.notes !== t.title ? [{ text: t.notes }] : undefined,
@@ -2856,17 +2856,17 @@ interface ImportContext {
   /** Running tallies, mutated in place by each step. */
   counts: ImportCounts;
   /** DrChrono doctor id to Practitioner reference. */
-  practitioners: Map<number, Reference<Practitioner>>;
+  practitioners: Map<string, Reference<Practitioner>>;
   /** DrChrono office id to Location reference. */
-  locations: Map<number, Reference<Location>>;
+  locations: Map<string, Reference<Location>>;
   /** DrChrono office ids the clinic has switched off. */
   disabledOffices: Set<number>;
   /** DrChrono provider ids the clinic has switched off. */
   disabledDoctors: Set<number>;
   /** DrChrono appointment id to Encounter reference. */
-  encounters: Map<number, Reference<Encounter>>;
+  encounters: Map<string, Reference<Encounter>>;
   /** DrChrono lab order id to ServiceRequest reference. */
-  labOrders: Map<number, Reference<ServiceRequest>>;
+  labOrders: Map<string, Reference<ServiceRequest>>;
   /** Written resource references, grouped by type, for Provenance. */
   refsByType: Map<string, Reference[]>;
   /** Per-run RxNorm memo. */
@@ -2893,6 +2893,40 @@ function trackRefs(ctx: ImportContext, resourceType: string, ids: (string | null
  * Log a progress line with a timestamp, matching the original importer's format.
  * @param message - What happened.
  */
+/**
+ * Key a cross-reference map by a DrChrono id.
+ *
+ * Every map in this importer is keyed by an id out of DrChrono's JSON, and
+ * DrChrono is not consistent about the type: an appointment's own `id` arrives
+ * as the STRING "306503074", while the `appointment` field pointing at it from
+ * a procedure, problem or medication arrives as the NUMBER 306503074.
+ * TypeScript cannot see this — both are declared `number` — so
+ * `encounters.get(procedure.appointment)` compiled, ran, and returned
+ * undefined every time.
+ *
+ * The damage was invisible. The import reported success and wrote every
+ * resource; each one was simply unlinked from the visit it belonged to, so the
+ * chart looked complete while nothing joined up. Folding both sides through
+ * `String()` removes the class of bug rather than the instance, which matters
+ * because there are nine of these lookups.
+ * @param id - A DrChrono id, however its JSON happened to type it.
+ * @returns The id as a string, or undefined when there is none.
+ */
+function refKey(id: string | number | null | undefined): string | undefined {
+  return id === null || id === undefined || id === '' ? undefined : String(id);
+}
+
+/**
+ * Resolve a reference by DrChrono id, normalising the key.
+ * @param map - The cross-reference map.
+ * @param id - The DrChrono id to resolve.
+ * @returns The reference, or undefined when absent.
+ */
+function lookup<T>(map: Map<string, T>, id: string | number | null | undefined): T | undefined {
+  const key = refKey(id);
+  return key === undefined ? undefined : map.get(key);
+}
+
 function log(message: string): void {
   console.log(`[drchrono-import] ${new Date().toISOString().slice(11, 19)} ${message}`);
 }
@@ -2908,13 +2942,13 @@ async function importPractice(ctx: ImportContext): Promise<void> {
   const result = await syncDirectoryResources(ctx.medplum, ctx.client, ctx.organization);
 
   for (const [drId, ref] of result.practitionerRefs) {
-    ctx.practitioners.set(drId, ref);
+    ctx.practitioners.set(String(drId), ref);
   }
   ctx.counts.practitioners = result.practitionerWrote;
   trackRefs(ctx, 'Practitioner', result.practitionerIds);
 
   for (const [drId, ref] of result.locationRefs) {
-    ctx.locations.set(drId, ref);
+    ctx.locations.set(String(drId), ref);
   }
   ctx.counts.locations = result.locationWrote;
   trackRefs(ctx, 'Location', result.locationIds);
@@ -2929,8 +2963,8 @@ interface DirectorySyncResult {
   locationWrote: number;
   practitionerIds: (string | null)[];
   locationIds: (string | null)[];
-  practitionerRefs: Map<number, Reference<Practitioner>>;
-  locationRefs: Map<number, Reference<Location>>;
+  practitionerRefs: Map<string, Reference<Practitioner>>;
+  locationRefs: Map<string, Reference<Location>>;
   /** How many of each are switched off, for the caller to report. */
   disabledPractitioners: number;
   disabledLocations: number;
@@ -2985,11 +3019,11 @@ async function syncDirectoryResources(
     'practitioners'
   );
 
-  const practitionerRefs = new Map<number, Reference<Practitioner>>();
+  const practitionerRefs = new Map<string, Reference<Practitioner>>();
   for (let i = 0; i < doctors.length; i++) {
     const id = doctorResult.ids[i];
     if (id) {
-      practitionerRefs.set(doctors[i].id, {
+      practitionerRefs.set(String(doctors[i].id), {
         reference: `Practitioner/${id}`,
         display: `${doctors[i].first_name} ${doctors[i].last_name}`.trim(),
       });
@@ -3017,11 +3051,11 @@ async function syncDirectoryResources(
     'locations'
   );
 
-  const locationRefs = new Map<number, Reference<Location>>();
+  const locationRefs = new Map<string, Reference<Location>>();
   for (let i = 0; i < offices.length; i++) {
     const id = officeResult.ids[i];
     if (id) {
-      locationRefs.set(offices[i].id, { reference: `Location/${id}`, display: offices[i].name });
+      locationRefs.set(String(offices[i].id), { reference: `Location/${id}`, display: offices[i].name });
     }
   }
 
@@ -3057,7 +3091,7 @@ async function importPatientRecord(
   const drPatient = (await res.json()) as DrPatient;
 
   const resource = mapPatient(drPatient, ctx.organization);
-  const generalPractitioner = drPatient.doctor ? ctx.practitioners.get(drPatient.doctor) : undefined;
+  const generalPractitioner = drPatient.doctor ? lookup(ctx.practitioners, drPatient.doctor) : undefined;
   if (generalPractitioner) {
     resource.generalPractitioner = [generalPractitioner];
   }
@@ -3255,7 +3289,7 @@ async function importAppointments(
   const scheduled = appointments.filter((a) => Boolean(toInstant(a.scheduled_time)));
   const schedule = scheduled.length > 0 ? await getOrCreateSchedule(ctx) : undefined;
 
-  const slotRefs = new Map<number, Reference<Slot>>();
+  const slotRefs = new Map<string, Reference<Slot>>();
   if (schedule) {
     const slotResult = await write(
       ctx.medplum,
@@ -3270,15 +3304,15 @@ async function importAppointments(
     for (let i = 0; i < scheduled.length; i++) {
       const id = slotResult.ids[i];
       if (id) {
-        slotRefs.set(scheduled[i].id, { reference: `Slot/${id}` });
+        slotRefs.set(String(scheduled[i].id), { reference: `Slot/${id}` });
       }
     }
     ctx.counts.slots = slotResult.wrote;
     trackRefs(ctx, 'Slot', slotResult.ids);
   }
 
-  const withSlots = scheduled.filter((a) => slotRefs.has(a.id));
-  const appointmentRefs = new Map<number, Reference<Appointment>>();
+  const withSlots = scheduled.filter((a) => slotRefs.has(String(a.id)));
+  const appointmentRefs = new Map<string, Reference<Appointment>>();
   const apptResult = await write(
     ctx.medplum,
     withSlots.map((a) => ({
@@ -3286,10 +3320,10 @@ async function importAppointments(
       resource: mapAppointment(
         a,
         toInstant(a.scheduled_time) as string,
-        slotRefs.get(a.id) as Reference<Slot>,
+        lookup(slotRefs, a.id) as Reference<Slot>,
         patient,
-        a.doctor ? ctx.practitioners.get(a.doctor) : undefined,
-        a.office ? ctx.locations.get(a.office) : undefined,
+        a.doctor ? lookup(ctx.practitioners, a.doctor) : undefined,
+        a.office ? lookup(ctx.locations, a.office) : undefined,
         ctx.organization
       ),
       system: IDENTIFIER_SYSTEMS.appointment,
@@ -3300,7 +3334,7 @@ async function importAppointments(
   for (let i = 0; i < withSlots.length; i++) {
     const id = apptResult.ids[i];
     if (id) {
-      appointmentRefs.set(withSlots[i].id, { reference: `Appointment/${id}` });
+      appointmentRefs.set(String(withSlots[i].id), { reference: `Appointment/${id}` });
     }
   }
   ctx.counts.appointmentResources = apptResult.wrote;
@@ -3310,7 +3344,14 @@ async function importAppointments(
     ctx.medplum,
     appointments.map((a) => ({
       resourceType: 'Encounter',
-      resource: mapEncounter(a, patient, ctx.organization, ctx.practitioners, ctx.locations, appointmentRefs.get(a.id)),
+      resource: mapEncounter(
+        a,
+        patient,
+        ctx.organization,
+        ctx.practitioners,
+        ctx.locations,
+        lookup(appointmentRefs, a.id)
+      ),
       system: IDENTIFIER_SYSTEMS.encounter,
       value: String(a.id),
     })),
@@ -3319,7 +3360,7 @@ async function importAppointments(
   for (let i = 0; i < appointments.length; i++) {
     const id = encounterResult.ids[i];
     if (id) {
-      ctx.encounters.set(appointments[i].id, { reference: `Encounter/${id}` });
+      ctx.encounters.set(String(appointments[i].id), { reference: `Encounter/${id}` });
     }
   }
   ctx.counts.appointments = encounterResult.wrote;
@@ -3331,8 +3372,8 @@ async function importAppointments(
     if (!appt.vitals || !effective) {
       continue;
     }
-    const encounter = ctx.encounters.get(appt.id);
-    const performer = appt.doctor ? ctx.practitioners.get(appt.doctor) : undefined;
+    const encounter = lookup(ctx.encounters, appt.id);
+    const performer = appt.doctor ? lookup(ctx.practitioners, appt.doctor) : undefined;
     for (const obs of mapVitals(appt.vitals, appt.id, effective, patient, ctx.organization)) {
       if (encounter) {
         obs.encounter = encounter;
@@ -3403,8 +3444,8 @@ async function importClinicalNotes(
           `createBinary(note ${appt.id})`
         );
         const date = toInstant(appt.scheduled_time) as string;
-        const author = appt.doctor ? ctx.practitioners.get(appt.doctor) : undefined;
-        const encounter = ctx.encounters.get(appt.id);
+        const author = appt.doctor ? lookup(ctx.practitioners, appt.doctor) : undefined;
+        const encounter = lookup(ctx.encounters, appt.id);
         const resource: DocumentReference = {
           resourceType: 'DocumentReference',
           meta: buildMeta(ctx.organization),
@@ -3637,7 +3678,7 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
   for (let i = 0; i < orders.length; i++) {
     const id = orderResult.ids[i];
     if (id) {
-      ctx.labOrders.set(orders[i].id, { reference: `ServiceRequest/${id}` });
+      ctx.labOrders.set(String(orders[i].id), { reference: `ServiceRequest/${id}` });
     }
   }
   ctx.counts.labOrders = orderResult.wrote;
