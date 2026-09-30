@@ -2439,12 +2439,14 @@ function labInterpretation(r: DrLabResult): Observation['interpretation'] {
  * @param r - The DrChrono lab result payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The Observation resource.
  */
 function mapLabObservation(
   r: DrLabResult,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string
 ): Observation {
   const display = r.test_name || r.observation_description || 'Lab Test';
   return {
@@ -2472,7 +2474,7 @@ function mapLabObservation(
     },
     subject: patient,
     effectiveDateTime: r.date_collected || r.date_resulted,
-    issued: toInstant(r.date_resulted),
+    issued: toInstant(r.date_resulted, timeZone),
     ...labObservationValue(r.value || r.result_value, r.units || r.result_units || ''),
     referenceRange: r.reference_range || r.normal_range ? [{ text: r.reference_range || r.normal_range }] : undefined,
     interpretation: labInterpretation(r),
@@ -2491,6 +2493,7 @@ function mapLabObservation(
  * @param organization - The calling clinic.
  * @param labOrders - DrChrono lab order id to ServiceRequest reference.
  * @param results - Observations this report summarises.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The DiagnosticReport resource.
  */
 function mapLabReport(
@@ -2498,7 +2501,8 @@ function mapLabReport(
   patient: Reference<Patient>,
   organization: Reference<Organization>,
   labOrders: Map<string, Reference<ServiceRequest>>,
-  results: Reference<Observation>[]
+  results: Reference<Observation>[],
+  timeZone: string
 ): DiagnosticReport {
   const display = r.test_name || r.observation_description || 'Lab Test';
   const basedOn = lookup(labOrders, r.lab_order);
@@ -2519,7 +2523,7 @@ function mapLabReport(
     },
     subject: patient,
     effectiveDateTime: r.date_collected || r.date_resulted,
-    issued: toInstant(r.date_resulted),
+    issued: toInstant(r.date_resulted, timeZone),
     basedOn: basedOn ? [basedOn] : undefined,
     result: results.length > 0 ? results : undefined,
     conclusion: r.comments || undefined,
@@ -2539,20 +2543,22 @@ function mapLabReport(
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
  * @param labOrders - DrChrono lab order id to ServiceRequest reference.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The DocumentReference resource.
  */
 function mapLabDocument(
   d: DrLabDocument,
   patient: Reference<Patient>,
   organization: Reference<Organization>,
-  labOrders: Map<string, Reference<ServiceRequest>>
+  labOrders: Map<string, Reference<ServiceRequest>>,
+  timeZone: string
 ): DocumentReference {
   const isResult = (d.type ?? '').toUpperCase() === 'RES';
   const typeCode = isResult
     ? { system: 'http://loinc.org', code: '11502-2', display: 'Laboratory report' }
     : { system: 'http://loinc.org', code: '11488-4', display: 'Consultation note' };
   const labOrder = lookup(labOrders, d.lab_order);
-  const date = toInstant(d.timestamp);
+  const date = toInstant(d.timestamp, timeZone);
   return {
     resourceType: 'DocumentReference',
     meta: buildMeta(organization),
@@ -2614,12 +2620,14 @@ function mapLabDocument(
  * @param d - The DrChrono document payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The DocumentReference resource.
  */
 function mapDocument(
   d: DrDocument,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string
 ): DocumentReference {
   return {
     resourceType: 'DocumentReference',
@@ -2627,7 +2635,7 @@ function mapDocument(
     identifier: [{ system: IDENTIFIER_SYSTEMS.document, value: String(d.id) }],
     status: 'current',
     subject: patient,
-    date: toInstant(d.date),
+    date: toInstant(d.date, timeZone),
     description: d.description || undefined,
     custodian: organization,
     category: d.metatags?.length ? [{ text: d.metatags.join(', ') }] : undefined,
@@ -2702,12 +2710,14 @@ function mapFamilyMemberHistory(
  * @param s - The DrChrono social history payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns Zero, one or two Observations.
  */
 function mapSocialHistory(
   s: DrSocialHistory,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string
 ): Observation[] {
   const category = {
     coding: [
@@ -2718,7 +2728,7 @@ function mapSocialHistory(
       },
     ],
   };
-  const effectiveDateTime = toInstant(s.recorded_date) ?? new Date().toISOString();
+  const effectiveDateTime = toInstant(s.recorded_date, timeZone) ?? new Date().toISOString();
   const out: Observation[] = [];
 
   if (s.smoking_status) {
@@ -2768,12 +2778,14 @@ function mapSocialHistory(
  * @param m - The DrChrono message payload.
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The Communication resource.
  */
 function mapCommunication(
   m: DrMessage,
   patient: Reference<Patient>,
-  organization: Reference<Organization>
+  organization: Reference<Organization>,
+  timeZone: string
 ): Communication {
   // FHIR has no "unread" status; an unread message is one still in progress.
   const status: Communication['status'] = m.archived || m.read ? 'completed' : 'in-progress';
@@ -2783,8 +2795,8 @@ function mapCommunication(
     identifier: [{ system: IDENTIFIER_SYSTEMS.communication, value: String(m.id) }],
     status,
     subject: patient,
-    sent: toInstant(m.received_at),
-    received: m.read ? toInstant(m.updated_at) : undefined,
+    sent: toInstant(m.received_at, timeZone),
+    received: m.read ? toInstant(m.updated_at, timeZone) : undefined,
     category: m.type
       ? [{ coding: [{ system: IDENTIFIER_SYSTEMS.messageType, code: m.type, display: m.type }] }]
       : undefined,
@@ -2803,6 +2815,7 @@ function mapCommunication(
  * @param organization - The calling clinic.
  * @param practitioners - DrChrono doctor id to Practitioner reference.
  * @param encounters - DrChrono appointment id to Encounter reference.
+ * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
  * @returns The Task resource.
  */
 function mapDrTask(
@@ -2810,7 +2823,8 @@ function mapDrTask(
   patient: Reference<Patient>,
   organization: Reference<Organization>,
   practitioners: Map<string, Reference<Practitioner>>,
-  encounters: Map<string, Reference<Encounter>>
+  encounters: Map<string, Reference<Encounter>>,
+  timeZone: string
 ): Task {
   const appointmentLink = t.associated_items?.find((a) => a.type === 'appointment');
   return {
@@ -2823,7 +2837,7 @@ function mapDrTask(
     for: patient,
     encounter: appointmentLink ? lookup(encounters, appointmentLink.value) : undefined,
     owner: t.assignee ? lookup(practitioners, t.assignee) : undefined,
-    authoredOn: toInstant(t.created_at),
+    authoredOn: toInstant(t.created_at, timeZone),
     restriction: t.due_date ? { period: { end: t.due_date } } : undefined,
     note: t.notes && t.notes !== t.title ? [{ text: t.notes }] : undefined,
   };
@@ -3000,6 +3014,15 @@ interface ImportContext {
   practitioners: Map<string, Reference<Practitioner>>;
   /** DrChrono doctor id to their IANA time zone, for reading naive timestamps. */
   doctorTimeZones: Map<string, string>;
+  /**
+   * The zone every naive DrChrono timestamp is wall-clock in.
+   *
+   * Resolved once from the practice's providers and carried on the context so
+   * no mapper has to fall back to a hardcoded default. Every timestamp
+   * DrChrono returns is naive — `"2024-04-23T18:57:41"`, no offset — so this
+   * applies to documents, labs, messages and tasks, not just appointments.
+   */
+  timeZone: string;
   /** DrChrono office id to Location reference. */
   locations: Map<string, Reference<Location>>;
   /** DrChrono office ids the clinic has switched off. */
@@ -3099,6 +3122,7 @@ async function importPractice(ctx: ImportContext): Promise<void> {
   for (const [drId, zone] of result.doctorTimeZones) {
     ctx.doctorTimeZones.set(drId, zone);
   }
+  ctx.timeZone = practiceZone(ctx.doctorTimeZones);
 
   ctx.disabledOffices = result.disabledOfficeIds;
   ctx.disabledDoctors = result.disabledDoctorIds;
@@ -3442,8 +3466,7 @@ async function importAppointments(
 
   // Only a scheduled appointment can occupy a Slot; the rest still become
   // Encounters, which is what carries the clinical content.
-  // One zone for the whole practice: see practiceZone() for why not per-doctor.
-  const zone = practiceZone(ctx.doctorTimeZones);
+  const zone = ctx.timeZone;
   const scheduled = appointments.filter((a) => Boolean(toInstant(a.scheduled_time, zone)));
   const schedule = scheduled.length > 0 ? await getOrCreateSchedule(ctx) : undefined;
 
@@ -3575,7 +3598,7 @@ async function importClinicalNotes(
   appointments: DrAppointment[]
 ): Promise<void> {
   const withNotes = appointments
-    .filter((a) => Boolean(a.clinical_note?.pdf) && Boolean(toInstant(a.scheduled_time)))
+    .filter((a) => Boolean(a.clinical_note?.pdf) && Boolean(toInstant(a.scheduled_time, ctx.timeZone)))
     .slice(0, MAX_CLINICAL_NOTES);
   if (withNotes.length === 0) {
     return;
@@ -3602,7 +3625,7 @@ async function importClinicalNotes(
             }),
           `createBinary(note ${appt.id})`
         );
-        const date = toInstant(appt.scheduled_time) as string;
+        const date = toInstant(appt.scheduled_time, ctx.timeZone) as string;
         const author = appt.doctor ? lookup(ctx.practitioners, appt.doctor) : undefined;
         const encounter = lookup(ctx.encounters, appt.id);
         const resource: DocumentReference = {
@@ -3759,7 +3782,7 @@ async function importHistories(ctx: ImportContext, patient: Reference<Patient>):
   });
   const socialEntries: UpsertEntry[] = [];
   for (const s of social) {
-    for (const obs of mapSocialHistory(s, patient, ctx.organization)) {
+    for (const obs of mapSocialHistory(s, patient, ctx.organization, ctx.timeZone)) {
       socialEntries.push({
         resourceType: 'Observation',
         resource: obs,
@@ -3857,7 +3880,7 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
     ctx.medplum,
     results.map((r) => ({
       resourceType: 'Observation',
-      resource: mapLabObservation(r, patient, ctx.organization),
+      resource: mapLabObservation(r, patient, ctx.organization, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.labObservation,
       value: String(r.id),
     })),
@@ -3873,7 +3896,7 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
       const obsRefs: Reference<Observation>[] = obsId ? [{ reference: `Observation/${obsId}` }] : [];
       return {
         resourceType: 'DiagnosticReport',
-        resource: mapLabReport(r, patient, ctx.organization, ctx.labOrders, obsRefs),
+        resource: mapLabReport(r, patient, ctx.organization, ctx.labOrders, obsRefs, ctx.timeZone),
         system: IDENTIFIER_SYSTEMS.labReport,
         value: String(r.id),
       };
@@ -3893,7 +3916,7 @@ async function importLabs(ctx: ImportContext, patient: Reference<Patient>): Prom
     ctx.medplum,
     documents.map((d) => ({
       resourceType: 'DocumentReference',
-      resource: mapLabDocument(d, patient, ctx.organization, ctx.labOrders),
+      resource: mapLabDocument(d, patient, ctx.organization, ctx.labOrders, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.labDocument,
       value: String(d.id),
     })),
@@ -3922,7 +3945,7 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
     ctx.medplum,
     documents.map((d) => ({
       resourceType: 'DocumentReference',
-      resource: mapDocument(d, patient, ctx.organization),
+      resource: mapDocument(d, patient, ctx.organization, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.document,
       value: String(d.id),
     })),
@@ -3941,7 +3964,7 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
     ctx.medplum,
     messages.map((m) => ({
       resourceType: 'Communication',
-      resource: mapCommunication(m, patient, ctx.organization),
+      resource: mapCommunication(m, patient, ctx.organization, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.communication,
       value: String(m.id),
     })),
@@ -3960,7 +3983,7 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
     ctx.medplum,
     tasks.map((t) => ({
       resourceType: 'Task',
-      resource: mapDrTask(t, patient, ctx.organization, ctx.practitioners, ctx.encounters),
+      resource: mapDrTask(t, patient, ctx.organization, ctx.practitioners, ctx.encounters, ctx.timeZone),
       system: IDENTIFIER_SYSTEMS.task,
       value: String(t.id),
     })),
@@ -4113,6 +4136,7 @@ async function importChart(
     counts,
     practitioners: new Map(),
     doctorTimeZones: new Map(),
+    timeZone: DEFAULT_PRACTICE_TIME_ZONE,
     locations: new Map(),
     disabledOffices: new Set(),
     disabledDoctors: new Set(),
