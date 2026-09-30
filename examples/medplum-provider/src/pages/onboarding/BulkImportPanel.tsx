@@ -43,6 +43,29 @@ const RUN_STATUS_COLOR: Record<RunRow['status'], string> = {
 
 const RUN_BADGE = { textTransform: 'none', fontWeight: 500 } as const;
 
+/**
+ * Explain the gap between appointments scanned and patients found.
+ * @param preview - The preview result.
+ * @returns A clause listing each reason an appointment was excluded.
+ */
+function describeExclusions(preview: PreviewState): string {
+  const parts: string[] = [];
+  if (preview.excludedByStatus > 0) {
+    parts.push(`${preview.excludedByStatus} were cancelled, rescheduled or no-shows`);
+  }
+  if (preview.excludedNoPatient > 0) {
+    parts.push(`${preview.excludedNoPatient} were blocked time with no patient`);
+  }
+  if (preview.skippedByDirectory > 0) {
+    parts.push(`${preview.skippedByDirectory} were at a switched-off office or provider`);
+  }
+  const total = preview.scannedAppointments - preview.candidates.length;
+  if (parts.length === 0) {
+    return `${total} were excluded,`;
+  }
+  return `${parts.join(', ')},`;
+}
+
 /** Per-patient outcome while a bulk run is in flight. */
 interface RunRow {
   readonly drchronoId: string;
@@ -56,6 +79,8 @@ interface PreviewState {
   readonly candidates: BulkImportCandidate[];
   /** Appointments dropped because their office or provider is switched off. */
   readonly skippedByDirectory: number;
+  readonly excludedByStatus: number;
+  readonly excludedNoPatient: number;
   /** DrChrono ids already present in Medplum, so the UI can show what is genuinely new. */
   readonly existing: ReadonlySet<string>;
 }
@@ -178,13 +203,13 @@ export function BulkImportPanel(): JSX.Element {
           Bulk Patient Import
         </Text>
         <Text size="sm" c="gray.5">
-          Import all patients from a specific appointment date
+          Import every patient with an appointment in a date range
         </Text>
       </Box>
 
       <Alert variant="light" color="gray" icon={<IconDatabase size={16} />}>
-        Select an appointment date to import all patients from that day. Only new patients will be imported (existing
-        patients are skipped).
+        Cancelled, rescheduled and no-show appointments are excluded, as is blocked time with no patient on it. Patients
+        already in Medplum are skipped.
       </Alert>
 
       <Box>
@@ -245,6 +270,15 @@ export function BulkImportPanel(): JSX.Element {
             <Stat label="New to import" value={newCount} highlight />
             <Stat label="Already in Medplum" value={preview.candidates.length - newCount} />
           </Group>
+
+          {/* "171 scanned, 113 patients" reads like somebody was booked twice.
+              Saying what came out of the 171 removes the question. */}
+          {preview.scannedAppointments > preview.candidates.length && (
+            <Text size="xs" c="gray.6" mb="sm">
+              Of {preview.scannedAppointments} appointments on the schedule, {describeExclusions(preview)} leaving{' '}
+              {preview.candidates.length}.
+            </Text>
+          )}
 
           {preview.skippedByDirectory > 0 && (
             <Text size="sm" c="dimmed" mb="sm">

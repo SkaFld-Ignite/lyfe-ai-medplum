@@ -108,6 +108,10 @@ export interface BulkImportPreview {
   readonly candidates: BulkImportCandidate[];
   /** Appointments dropped because their office or provider is switched off. */
   readonly skippedByDirectory: number;
+  /** Cancelled, rescheduled or no-show appointments, which never happened. */
+  readonly excludedByStatus: number;
+  /** Slots with no patient on them: blocked time, breaks, admin holds. */
+  readonly excludedNoPatient: number;
 }
 
 /**
@@ -131,11 +135,15 @@ export async function previewBulkImport(
     scannedAppointments?: number;
     results?: BulkImportCandidate[];
     skippedByDirectory?: number;
+    excludedByStatus?: number;
+    excludedNoPatient?: number;
   }>(medplum, { action: 'preview', start, ...(end ? { end } : {}) });
   return {
     scannedAppointments: body.scannedAppointments ?? 0,
     candidates: body.results ?? [],
     skippedByDirectory: body.skippedByDirectory ?? 0,
+    excludedByStatus: body.excludedByStatus ?? 0,
+    excludedNoPatient: body.excludedNoPatient ?? 0,
   };
 }
 
