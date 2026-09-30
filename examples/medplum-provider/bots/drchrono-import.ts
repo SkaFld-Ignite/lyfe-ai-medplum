@@ -80,6 +80,7 @@ import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/creden
 import { ZUS_ENROLMENT_EXTENSION, mergeEnabled, mergeZusEnabled, readDirectoryState } from './shared/directory.ts';
 import type { DrChronoClient } from './shared/drchrono.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
+import { DRCHRONO_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
 /**
@@ -299,7 +300,12 @@ export const IDENTIFIER_SYSTEMS = {
 };
 
 /** Marks every resource this bot writes, so a DrChrono-sourced chart is separable. */
-export const SOURCE_TAG = { system: 'https://lyfe.health/source', code: 'drchrono' };
+/**
+ * Re-exported from {@link DRCHRONO_SOURCE_TAG} so there is one definition.
+ * This constant previously carried its own literal, which drifted from the one
+ * the app searches on — see `shared/source.ts`.
+ */
+export const SOURCE_TAG = DRCHRONO_SOURCE_TAG;
 
 /** US Core profile and extension URLs. Conformance depends on the exact strings. */
 const US_CORE = {
@@ -1744,26 +1750,73 @@ const ENCOUNTER_STATUS_MAP: Record<string, Encounter['status']> = {
 /** DrChrono appointment statuses mapped onto Slot status. */
 const SLOT_STATUS_MAP: Record<string, Slot['status']> = {
   Complete: 'busy',
+  'NOTE COMPLETE': 'busy',
   Arrived: 'busy',
+  'Checked In': 'busy',
+  'In Room': 'busy',
   'In Session': 'busy',
   Scheduled: 'busy-tentative',
   Confirmed: 'busy-tentative',
   'Not Confirmed': 'busy-tentative',
   Cancelled: 'free',
+  Rescheduled: 'free',
   'No Show': 'free',
 };
 
-/** DrChrono appointment statuses mapped onto Appointment status. */
+/**
+ * DrChrono appointment statuses mapped onto Appointment status.
+ *
+ * Two of these are easy to miss and were, which left 8 of the pilot patient's
+ * 17 visits reported as still "booked":
+ *
+ *   NOTE COMPLETE — the visit happened and its note is signed. This is the
+ *     status a finished visit actually ends up in for practices that sign
+ *     notes, so treating it as anything other than `fulfilled` understates
+ *     every completed appointment.
+ *   Rescheduled — this slot did not happen; a different appointment replaced
+ *     it. FHIR has no "rescheduled", and `cancelled` is the honest reading.
+ *     It also matches how the bulk-import preview already treats it.
+ *
+ * Anything unmapped falls back to `booked` and is reported by
+ * {@link warnOnUnmappedStatuses}, because DrChrono lets a practice define its
+ * own statuses and a silent fallback turns that into wrong data rather than a
+ * visible gap.
+ */
 const APPOINTMENT_STATUS_MAP: Record<string, Appointment['status']> = {
   Complete: 'fulfilled',
+  'NOTE COMPLETE': 'fulfilled',
   Arrived: 'arrived',
+  'Checked In': 'checked-in',
+  'In Room': 'arrived',
   'In Session': 'arrived',
   Scheduled: 'booked',
   Confirmed: 'booked',
   Cancelled: 'cancelled',
+  Rescheduled: 'cancelled',
   'No Show': 'noshow',
   'Not Confirmed': 'pending',
 };
+
+/**
+ * Log any DrChrono status this importer has no mapping for.
+ *
+ * A practice can define its own appointment statuses, so the map can never be
+ * exhaustive. Reporting the distinct unknown values once per import makes a
+ * new one a one-line fix instead of a silent drift to `booked`.
+ * @param appointments - The appointments about to be written.
+ */
+function warnOnUnmappedStatuses(appointments: DrAppointment[]): void {
+  const unknown = new Set<string>();
+  for (const a of appointments) {
+    const status = a.status ?? '';
+    if (status && !(status in APPOINTMENT_STATUS_MAP)) {
+      unknown.add(status);
+    }
+  }
+  if (unknown.size > 0) {
+    log(`unmapped DrChrono appointment status(es), defaulted to "booked": ${[...unknown].join(', ')}`);
+  }
+}
 
 /** DrChrono's default visit length, used when the appointment carries none. */
 const DEFAULT_VISIT_MINUTES = 30;
@@ -1857,6 +1910,7 @@ function mapSlot(
  * @param slot - The Slot this appointment occupies.
  * @param patient - Reference to the imported patient.
  * @param practitioner - The attending provider, when known.
+ * @param location - The office the visit is booked at, when known.
  * @param organization - The calling clinic.
  * @returns The Appointment resource.
  */
@@ -1866,6 +1920,7 @@ function mapAppointment(
   slot: Reference<Slot>,
   patient: Reference<Patient>,
   practitioner: Reference<Practitioner> | undefined,
+  location: Reference<Location> | undefined,
   organization: Reference<Organization>
 ): Appointment {
   const minutes = a.duration ?? DEFAULT_VISIT_MINUTES;
@@ -1879,9 +1934,15 @@ function mapAppointment(
     start,
     end: addMinutes(start, minutes),
     minutesDuration: minutes,
+    // The office is carried as a participant actor, which is where FHIR puts
+    // it and where every reader looks for it — including Medplum's own
+    // scheduling views, whose Location filter is built from exactly this.
+    // Putting it only on the Encounter, as this importer first did, leaves the
+    // calendar unable to say where any appointment is.
     participant: [
       { actor: patient, status: 'accepted' },
       ...(practitioner ? [{ actor: practitioner, status: 'accepted' as const }] : []),
+      ...(location ? [{ actor: location, status: 'accepted' as const }] : []),
     ],
     comment: joinDefined([a.reason, a.notes], '; '),
   };
@@ -3175,6 +3236,8 @@ async function importAppointments(
     return;
   }
 
+  warnOnUnmappedStatuses(appointments);
+
   // Only a scheduled appointment can occupy a Slot; the rest still become
   // Encounters, which is what carries the clinical content.
   const scheduled = appointments.filter((a) => Boolean(toInstant(a.scheduled_time)));
@@ -3214,6 +3277,7 @@ async function importAppointments(
         slotRefs.get(a.id) as Reference<Slot>,
         patient,
         a.doctor ? ctx.practitioners.get(a.doctor) : undefined,
+        a.office ? ctx.locations.get(a.office) : undefined,
         ctx.organization
       ),
       system: IDENTIFIER_SYSTEMS.appointment,

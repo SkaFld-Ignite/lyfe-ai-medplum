@@ -80,15 +80,25 @@ const PROJECT_SCOPED_READONLY = [
   'ValueSet',
   'CodeSystem',
   'UserConfiguration',
-  // Long imports must run with `Prefer: respond-async`: Railway caps any single
-  // request at 300s, so a synchronous $execute is killed mid-import — and the
-  // Medplum client RETRIES that failure, starting a second concurrent import.
-  // Polling the resulting job needs read access to AsyncJob.
-  'AsyncJob',
 ];
 
-/** Scheduling is clinic-level and must be writable to book anything. */
-const PROJECT_SCOPED_WRITABLE = ['Schedule', 'Slot'];
+/**
+ * Types a clinic user must be able to write.
+ *
+ * Scheduling is clinic-level and must be writable to book anything.
+ *
+ * `AsyncJob` is here rather than in the readonly list above, and the
+ * distinction is load-bearing. Long imports must run with
+ * `Prefer: respond-async`: Railway caps any single request at 300s, so a
+ * synchronous $execute is killed mid-import — and the Medplum client RETRIES
+ * that failure, starting a second concurrent import. Starting an async run
+ * makes the server call `createResource<AsyncJob>` on the CALLER's repository
+ * (`AsyncJobExecutor.init`), so read access is not enough: with AsyncJob
+ * readonly, every async bot execution fails with a bare `Forbidden` before the
+ * bot is ever reached, while synchronous execution of the same bot still
+ * works — which is a genuinely confusing pair of symptoms.
+ */
+const PROJECT_SCOPED_WRITABLE = ['Schedule', 'Slot', 'AsyncJob'];
 
 /**
  * Sleep out a Medplum 429 and retry.

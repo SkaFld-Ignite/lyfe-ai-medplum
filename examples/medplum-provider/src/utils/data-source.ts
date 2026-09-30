@@ -1,7 +1,15 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 
-/** Tag system the Lyfe importers stamp on every resource to record where it came from. */
+/**
+ * Tag system the Lyfe importers stamp on every resource to record where it came from.
+ *
+ * Must stay identical to `LYFE_SOURCE_TAG_SYSTEM` in `bots/shared/source.ts`.
+ * The two once disagreed — the DrChrono bot wrote `https://lyfe.health/source`
+ * — and because this value is only ever used inside a `_tag` search filter,
+ * the mismatch failed silently: the scheduling calendar, the patient timeline
+ * and the encounters list all returned nothing while the data was there.
+ */
 export const LYFE_SOURCE_TAG_SYSTEM = 'https://lyfe.com/source';
 
 /**

@@ -62,6 +62,7 @@ import {
   readCredentialRecord,
 } from './shared/credentials.ts';
 import { readZusEnabledLocationRefs } from './shared/directory.ts';
+import { ZUS_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
 /**
@@ -139,7 +140,7 @@ interface ZusImportFailure {
 }
 
 /** Tag stamped on every mirrored resource so Lyfe-sourced data stays identifiable. */
-const SOURCE_TAG: Coding = { system: 'https://lyfe.com/source', code: 'zus' };
+const SOURCE_TAG: Coding = ZUS_SOURCE_TAG;
 
 /**
  * Identifier system prefix for the Zus resource id, e.g.
