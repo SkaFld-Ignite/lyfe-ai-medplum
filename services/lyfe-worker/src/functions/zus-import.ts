@@ -1,0 +1,126 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
+import { handler as zusHandler } from '../../../../examples/medplum-provider/bots/zus-import.ts';
+import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
+import { getMedplum } from '../medplum.ts';
+import { completeTask, failTask, setPhase, startTask } from '../task.ts';
+import { classify } from './chart-import.ts';
+
+/**
+ * How long to let Zus's network queries run before reading the record.
+ *
+ * A patient already enrolled has their record ready now. A **fresh** patient
+ * does not: enrolling starts queries out to Carequality and CommonWell, which
+ * come back over hours, not seconds. The bot read the record immediately after
+ * enrolling — so a fresh patient imported as an empty record and was marked
+ * done, which looks like "Zus has nothing for them" and is not.
+ *
+ * This is the shape neither Medplum bot runtime could express: the wait is far
+ * past any execution ceiling, and holding a worker open for it would be wrong
+ * even if it were allowed. As Inngest steps, the wait costs nothing — the run
+ * is suspended, not held.
+ */
+const FRESH_ENROLMENT_WAITS = ['30m', '2h', '6h'] as const;
+
+/**
+ * Pull a patient's Zus record.
+ *
+ * Split into steps so the slow path is durable: enrol, wait, pull, and if the
+ * record is still empty, wait longer and try again. Each step is short; the
+ * run spans hours without anything being held open, and a deploy or restart
+ * in the middle loses nothing.
+ */
+export const zusImport = inngest.createFunction(
+  {
+    id: 'zus-record-import',
+    name: 'Zus record import',
+    concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
+    retries: 3,
+  },
+  { event: 'lyfe/zus.import.requested' },
+  async ({ event, step, runId, logger }) => {
+    const { organizationId, medplumPatientId, batchId } = event.data;
+    const medplum = await getMedplum();
+    const organization = { reference: `Organization/${organizationId}` };
+
+    const taskId = await step.run('open-task', async () => {
+      const task = await startTask({
+        medplum,
+        organization,
+        code: 'zus-import',
+        patientId: medplumPatientId,
+        runId,
+        batchId,
+      });
+      return task.id as string;
+    });
+
+    try {
+      // First attempt. For an already-enrolled patient this is the whole job,
+      // and the waits below never happen.
+      let result = await step.run('pull-record', async () => {
+        await setPhase(medplum, taskId, 'pulling Zus record');
+        return zusHandler(medplum, {
+          bot: { reference: 'Bot/inngest' },
+          contentType: 'application/json',
+          secrets: {},
+          input: { action: 'import', medplumPatientId },
+        } as never);
+      });
+
+      // A fresh enrolment comes back successful but nearly empty, because the
+      // networks have not answered yet. Counting what landed is the only way to
+      // tell that apart from a patient who genuinely has no outside record.
+      for (const [attempt, wait] of FRESH_ENROLMENT_WAITS.entries()) {
+        if (total(result) > 0) {
+          break;
+        }
+        logger.info('record empty, waiting for the networks', { medplumPatientId, wait });
+        await setPhase(medplum, taskId, `enrolled — waiting ${wait} for the networks`);
+        await step.sleep(`await-networks-${attempt}`, wait);
+        result = await step.run(`re-pull-${attempt}`, async () => {
+          await setPhase(medplum, taskId, `pulling Zus record (attempt ${attempt + 2})`);
+          return zusHandler(medplum, {
+            bot: { reference: 'Bot/inngest' },
+            contentType: 'application/json',
+            secrets: {},
+            input: { action: 'import', medplumPatientId },
+          } as never);
+        });
+      }
+
+      if (!result.ok) {
+        // Ineligible is not a failure: the office may simply not be enrolled in
+        // Zus, which is a configuration choice. It closes the Task as complete
+        // with the reason, rather than as an error someone has to triage.
+        const message = 'error' in result ? String(result.error) : 'Zus import failed';
+        await step.run('close-skipped', () => setPhase(medplum, taskId, `skipped — ${message}`));
+        await step.run('complete-skipped', () => completeTask(medplum, taskId, {}));
+        return { skipped: true, reason: message };
+      }
+
+      const counts = ('counts' in result ? result.counts : {}) as Record<string, number>;
+      await step.run('complete-task', () => completeTask(medplum, taskId, counts));
+      return { counts, empty: total(result) === 0 };
+    } catch (err) {
+      // Recorded on the Task before rethrowing, so the patient-keyed view shows
+      // the failure even while Inngest is still retrying the run.
+      await step
+        .run('record-failure', () =>
+          failTask(medplum, taskId, classify(err), err instanceof Error ? err.message : String(err))
+        )
+        .catch(() => undefined);
+      throw err;
+    }
+  }
+);
+
+/**
+ * How many resources a Zus result actually wrote.
+ * @param result - The bot's response.
+ * @returns The total across every resource type.
+ */
+function total(result: unknown): number {
+  const counts = (result as { counts?: Record<string, number> })?.counts;
+  return counts ? Object.values(counts).reduce((sum, n) => sum + n, 0) : 0;
+}

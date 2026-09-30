@@ -125,3 +125,6 @@ AGENTS.md
 temp/
 old-code/
 .old-code/*
+
+# Worker credentials
+services/lyfe-worker/.env

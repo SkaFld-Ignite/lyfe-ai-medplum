@@ -1,0 +1,23 @@
+{
+  "name": "@lyfe/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Inngest worker that runs Lyfe's DrChrono and Zus imports.",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "inngest": "inngest-cli dev -u http://localhost:3020/api/inngest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@medplum/core": "*",
+    "@medplum/fhirtypes": "*",
+    "inngest": "^3.27.0"
+  },
+  "devDependencies": {
+    "inngest-cli": "^1.4.0",
+    "tsx": "4.19.2",
+    "typescript": "5.9.3"
+  }
+}
