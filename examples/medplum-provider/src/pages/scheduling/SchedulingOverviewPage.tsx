@@ -10,9 +10,6 @@ import {
   Paper,
   SimpleGrid,
   Stack,
-  Text,
-  ThemeIcon,
-  Title,
   Tooltip,
   VisuallyHidden,
 } from '@mantine/core';
@@ -40,6 +37,7 @@ import {
 import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
+import { LyfePageHeader } from '../../components/brand/LyfePageHeader';
 import { AppointmentDetailDrawer } from '../../components/scheduling-overview/AppointmentDetailDrawer';
 import { DayAppointmentsPanel } from '../../components/scheduling-overview/DayAppointmentsPanel';
 import { FilterMenu } from '../../components/scheduling-overview/FilterMenu';
@@ -233,20 +231,12 @@ export function SchedulingOverviewPage(): JSX.Element {
 
   return (
     <Stack gap="md" p="md" className={classes.page}>
-      <Group gap="md" wrap="nowrap">
-        <ThemeIcon variant="light" size={48} radius="md">
-          <IconCalendarStats size={26} />
-        </ThemeIcon>
-        <Stack gap={0}>
-          <Text size="xs" fw={600} c="dimmed" tt="uppercase" className={classes.eyebrow}>
-            Calendar
-          </Text>
-          <Title order={2}>Scheduling Overview</Title>
-          <Text size="sm" c="dimmed">
-            View all providers, patients, and their appointments in one place
-          </Text>
-        </Stack>
-      </Group>
+      <LyfePageHeader
+        icon={<IconCalendarStats size={20} />}
+        eyebrow="Calendar"
+        title="Scheduling Overview"
+        description="View all providers, patients, and their appointments in one place"
+      />
 
       <div className={classes.layout}>
         <Stack gap="md" className={classes.main}>

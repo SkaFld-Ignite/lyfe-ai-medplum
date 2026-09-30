@@ -5,13 +5,14 @@ import { formatSearchQuery, getReferenceString, Operator } from '@medplum/core';
 import type { Communication, DocumentReference, Reference } from '@medplum/fhirtypes';
 import { createPharmaciesSection, getDefaultSections, ThreadInbox } from '@medplum/react';
 import { useMedplum } from '@medplum/react-hooks';
+import { IconMessages } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useEffect, useMemo } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
+import { LyfeWorkspacePage } from '../../components/brand/LyfeWorkspacePage';
 import { usePharmacyDialog } from '../../components/pharmacy/usePharmacyDialog';
 import { useNewInUrl } from '../../hooks/useNewInUrl';
 import { normalizeCommunicationSearch } from '../../utils/communication-search';
-import classes from './MessagesPage.module.css';
 /**
  * Fetches
  * @returns A React component that displays all Threads/Topics.
@@ -96,7 +97,12 @@ export function MessagesPage(): JSX.Element {
   };
 
   return (
-    <div className={classes.container}>
+    <LyfeWorkspacePage
+      icon={<IconMessages size={20} />}
+      eyebrow="Inbox"
+      title="Messages"
+      description="Conversations with patients and your care team."
+    >
       <ThreadInbox
         threadId={messageId}
         query={formatSearchQuery(parsedSearch).substring(1)}
@@ -115,6 +121,6 @@ export function MessagesPage(): JSX.Element {
         completedUri={completedUri}
         uploadEnabled={true}
       />
-    </div>
+    </LyfeWorkspacePage>
   );
 }

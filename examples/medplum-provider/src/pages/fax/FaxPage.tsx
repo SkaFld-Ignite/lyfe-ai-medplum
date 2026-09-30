@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { SearchRequest } from '@medplum/core';
 import type { Communication } from '@medplum/fhirtypes';
+import { IconPrinter } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
+import { LyfeWorkspacePage } from '../../components/brand/LyfeWorkspacePage';
 import { FaxBoard } from '../../components/fax/FaxBoard';
 import type { FaxTab } from '../../components/fax/FaxListItem';
 import { useNewInUrl } from '../../hooks/useNewInUrl';
-import classes from './FaxPage.module.css';
 
 const FAX_QUERY_BASE = '_count=20&_sort=-_lastUpdated';
 const INBOX_URI = `/Fax/Communication?${FAX_QUERY_BASE}&category=inbound`;
@@ -51,7 +52,12 @@ export function FaxPage(): JSX.Element {
   };
 
   return (
-    <div className={classes.container}>
+    <LyfeWorkspacePage
+      icon={<IconPrinter size={20} />}
+      eyebrow="Inbox"
+      title="Faxes"
+      description="Faxes received by and sent from the clinic."
+    >
       <FaxBoard
         faxId={faxId}
         activeTab={activeTab}
@@ -65,6 +71,6 @@ export function FaxPage(): JSX.Element {
         onSendFaxOpen={onSendFaxOpen}
         onSendFaxClose={onSendFaxClose}
       />
-    </div>
+    </LyfeWorkspacePage>
   );
 }

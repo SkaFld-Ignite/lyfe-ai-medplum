@@ -37,9 +37,11 @@ export function LyfePageHeader(props: LyfePageHeaderProps): JSX.Element {
       component="header"
       p="lg"
       style={{
-        background: 'var(--mantine-color-white)',
-        border: '1px solid var(--mantine-color-gray-2)',
-        borderRadius: 12,
+        flexShrink: 0,
+        background: 'var(--mantine-color-body)',
+        border: '1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4))',
+        borderRadius: 'var(--mantine-radius-lg)',
+        boxShadow: 'var(--mantine-shadow-xs)',
       }}
     >
       <Group justify="space-between" align="flex-start" wrap="nowrap" gap="md">

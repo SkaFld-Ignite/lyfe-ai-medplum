@@ -4,13 +4,14 @@ import type { SearchRequest } from '@medplum/core';
 import { formatSearchQuery, getReferenceString, Operator } from '@medplum/core';
 import type { Task } from '@medplum/fhirtypes';
 import { Loading, useMedplumProfile } from '@medplum/react';
+import { IconChecklist } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
+import { LyfeWorkspacePage } from '../../components/brand/LyfeWorkspacePage';
 import { TaskBoard } from '../../components/tasks/TaskBoard';
 import { useNewInUrl } from '../../hooks/useNewInUrl';
 import { normalizeTaskSearch } from '../../utils/task-search';
-import classes from './TasksPage.module.css';
 
 export function TasksPage(): JSX.Element {
   const { taskId } = useParams();
@@ -88,7 +89,12 @@ export function TasksPage(): JSX.Element {
   const allTasksQuery = formatSearchQuery(allTasksSearch);
 
   return (
-    <div className={classes.container}>
+    <LyfeWorkspacePage
+      icon={<IconChecklist size={20} />}
+      eyebrow="Workflow"
+      title="Tasks"
+      description="Follow-ups, orders and reviews assigned across the clinic."
+    >
       <TaskBoard
         query={formatSearchQuery(parsedSearch).substring(1)}
         selectedTaskId={taskId}
@@ -102,6 +108,6 @@ export function TasksPage(): JSX.Element {
         myTasksUri={myTasksQuery ? `/Task?${myTasksQuery.substring(1)}` : '/Task'}
         allTasksUri={allTasksQuery ? `/Task?${allTasksQuery.substring(1)}` : '/Task'}
       />
-    </div>
+    </LyfeWorkspacePage>
   );
 }
