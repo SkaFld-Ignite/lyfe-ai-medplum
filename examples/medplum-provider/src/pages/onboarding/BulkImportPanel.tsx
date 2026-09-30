@@ -1,10 +1,24 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Alert, Badge, Box, Button, Group, Paper, SimpleGrid, Stack, Table, Text, TextInput } from '@mantine/core';
+import {
+  Alert,
+  Anchor,
+  Badge,
+  Box,
+  Button,
+  Group,
+  Paper,
+  SimpleGrid,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+} from '@mantine/core';
 import { useMedplum } from '@medplum/react';
 import { IconAlertCircle, IconDatabase, IconSearch } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useState } from 'react';
+import { Link } from 'react-router';
 import type { BulkImportCandidate } from '../../services/onboarding';
 import { DRCHRONO_IDENTIFIER_SYSTEM, formatDrChronoName, previewBulkImport } from '../../services/onboarding';
 
@@ -13,6 +27,8 @@ const today = (): string => new Date().toISOString().slice(0, 10);
 interface PreviewState {
   readonly scannedAppointments: number;
   readonly candidates: BulkImportCandidate[];
+  /** Appointments dropped because their office or provider is switched off. */
+  readonly skippedByDirectory: number;
   /** DrChrono ids already present in Medplum, so the UI can show what is genuinely new. */
   readonly existing: ReadonlySet<string>;
 }
@@ -119,6 +135,17 @@ export function BulkImportPanel(): JSX.Element {
             <Stat label="New to import" value={newCount} highlight />
             <Stat label="Already in Medplum" value={preview.candidates.length - newCount} />
           </Group>
+
+          {preview.skippedByDirectory > 0 && (
+            <Text size="sm" c="dimmed" mb="sm">
+              {preview.skippedByDirectory} appointment{preview.skippedByDirectory === 1 ? ' was' : 's were'} skipped:
+              their office or provider is switched off in the{' '}
+              <Anchor component={Link} to="/directory">
+                Directory
+              </Anchor>
+              .
+            </Text>
+          )}
 
           {preview.candidates.length > 0 && (
             <Table highlightOnHover verticalSpacing="xs" mt="sm">

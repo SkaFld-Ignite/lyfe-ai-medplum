@@ -44,7 +44,7 @@ const BOTS: BotDefinition[] = [
   },
   {
     name: 'lyfe-zus-import',
-    description: "Enrol a patient in Zus and pull their longitudinal record into Medplum.",
+    description: 'Enrol a patient in Zus and pull their longitudinal record into Medplum.',
     source: 'zus-import.ts',
     timeout: 900,
   },

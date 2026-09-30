@@ -106,6 +106,8 @@ export interface BulkImportPreview {
   /** Appointments examined, before cancelled/rescheduled/no-show were dropped. */
   readonly scannedAppointments: number;
   readonly candidates: BulkImportCandidate[];
+  /** Appointments dropped because their office or provider is switched off. */
+  readonly skippedByDirectory: number;
 }
 
 /**
@@ -113,7 +115,8 @@ export interface BulkImportPreview {
  *
  * This is the "import everyone on Tuesday's schedule" flow. Cancelled,
  * rescheduled and no-show appointments are excluded server-side, since those
- * never produced a visit worth pulling a chart for.
+ * never produced a visit worth pulling a chart for. So are appointments at an
+ * office or with a provider the clinic has switched off in the Directory.
  * @param medplum - Authenticated Medplum client.
  * @param start - First appointment date, as YYYY-MM-DD.
  * @param end - Last appointment date; defaults to `start` when omitted.
@@ -127,10 +130,12 @@ export async function previewBulkImport(
   const body = await executeSearchBot<{
     scannedAppointments?: number;
     results?: BulkImportCandidate[];
+    skippedByDirectory?: number;
   }>(medplum, { action: 'preview', start, ...(end ? { end } : {}) });
   return {
     scannedAppointments: body.scannedAppointments ?? 0,
     candidates: body.results ?? [],
+    skippedByDirectory: body.skippedByDirectory ?? 0,
   };
 }
 

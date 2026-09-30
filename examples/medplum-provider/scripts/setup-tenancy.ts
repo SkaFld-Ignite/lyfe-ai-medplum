@@ -50,6 +50,10 @@ const COMPARTMENT_SCOPED = [
   'ClinicalImpression',
   'ChargeItem',
   'Provenance',
+  // The clinic's offices. Compartment-scoped rather than project-readonly
+  // because the Directory page writes `Location.status` to switch an office
+  // off, and that write must not be able to reach another tenant's office.
+  'Location',
 ];
 
 /**
@@ -181,6 +185,17 @@ async function main(): Promise<void> {
         resourceType,
         criteria: `${resourceType}?_compartment=%organization`,
       })),
+      // Practitioner appears twice on purpose. Medplum grants an interaction
+      // when ANY entry matches (`satisfiedAccessPolicy` is a `.find`), so the
+      // project-wide readonly entry above and this compartment-scoped writable
+      // one compose to: read any Practitioner, write only our own.
+      //
+      // Both halves are needed. Reading project-wide is what lets a
+      // Practitioner reference render a name — including the clinic's own
+      // staff logins, which carry no organization account and would otherwise
+      // be invisible to their own owner. Writing must still be confined to the
+      // clinic, because the Directory page toggles `Practitioner.active`.
+      { resourceType: 'Practitioner', criteria: 'Practitioner?_compartment=%organization' },
     ],
   };
 

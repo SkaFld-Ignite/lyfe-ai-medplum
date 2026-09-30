@@ -8,6 +8,7 @@ import { AppShell, Loading, useMedplum, useMedplumProfile } from '@medplum/react
 import {
   IconApps,
   IconBook2,
+  IconBuildingHospital,
   IconCalendarEvent,
   IconClipboardCheck,
   IconMail,
@@ -30,6 +31,7 @@ import { ScriptSurePracticeProvider } from './scriptsure/ScriptSurePractice';
 const SETUP_DISMISSED_KEY = 'medplum-provider-setup-completed';
 const PROVIDER_HIDE_GET_STARTED_SETTING = 'hideGetStarted';
 
+import { LyfeDirectoryPage } from './pages/directory/LyfeDirectoryPage';
 import { EncountersPage } from './pages/encounter/EncountersPage';
 import { FaxPage } from './pages/fax/FaxPage';
 import { GetStartedPage } from './pages/getstarted/GetStartedPage';
@@ -198,6 +200,7 @@ export function App(): JSX.Element | null {
                     : []),
                   { icon: <IconUserPlus />, label: 'New Patient', href: '/onboarding' },
                   { icon: <IconApps />, label: 'Integrations', href: '/integrations' },
+                  { icon: <IconBuildingHospital />, label: 'Directory', href: '/directory' },
                   ...(hasBilling
                     ? [{ icon: <IconReceipt2 />, label: 'Billing Settings', href: '/Settings/Billing' }]
                     : []),
@@ -319,6 +322,10 @@ export function App(): JSX.Element | null {
               {/* The Lyfe per-clinic integrations settings page replaces the stock
                   marketing-style directory. `IntegrationsPage` is left in place, unrouted. */}
               <Route path="/integrations" element={<LyfeIntegrationsPage />} />
+              {/* Providers and offices pulled from DrChrono, each switchable on or
+                  off. A switched-off office contributes no appointments to any
+                  import. */}
+              <Route path="/directory" element={<LyfeDirectoryPage />} />
               {/* DrChrono's OAuth redirect target. A Medplum bot cannot serve one,
                   so the SPA lands the grant and hands the code to the bot. */}
               <Route path="/integrations/drchrono/callback" element={<DrChronoCallbackPage />} />

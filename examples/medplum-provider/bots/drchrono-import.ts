@@ -77,6 +77,7 @@ import { clearTimeout as nodeClearTimeout, setTimeout as nodeSetTimeout } from '
 import type { BatchResult, UpsertEntry } from './shared/batch.ts';
 import { sleep, upsertBatch, withMedplum429Retry } from './shared/batch.ts';
 import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/credentials.ts';
+import { mergeEnabled, readDirectoryState } from './shared/directory.ts';
 import type { DrChronoClient } from './shared/drchrono.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
@@ -115,12 +116,34 @@ if (typeof sandboxGlobals.Buffer !== 'function') {
 
 // ─── Input / output ──────────────────────────────────────────────────────────
 
-/** The one action this bot supports. */
-export interface ImportInput {
-  /** Discriminator. Only `'import'` is accepted. */
+/** Import one patient's chart. */
+export interface ImportChartInput {
+  /** Discriminator. */
   action: 'import';
   /** DrChrono's numeric patient id, as a string. */
   drchronoPatientId: string;
+}
+
+/**
+ * Refresh the practice directory (providers and offices) without importing
+ * any chart. This is what the Directory page's "Pull from DrChrono" calls.
+ */
+export interface SyncDirectoryInput {
+  /** Discriminator. */
+  action: 'syncDirectory';
+}
+
+/** Everything this bot accepts. */
+export type ImportInput = ImportChartInput | SyncDirectoryInput;
+
+/** Returned by the `syncDirectory` action. */
+export interface DirectorySyncSuccess {
+  ok: true;
+  action: 'syncDirectory';
+  /** Providers written, and how many of them are switched off. */
+  practitioners: { wrote: number; disabled: number };
+  /** Offices written, and how many of them are switched off. */
+  locations: { wrote: number; disabled: number };
 }
 
 /** How many resources of each kind were written, per import run. */
@@ -439,6 +462,8 @@ interface DrDoctor {
   email?: string;
   office_phone?: string;
   cell_phone?: string;
+  /** DrChrono's own retirement flag for a provider. */
+  is_account_suspended?: boolean;
 }
 
 interface DrOffice {
@@ -450,6 +475,8 @@ interface DrOffice {
   zip_code?: string;
   phone_number?: string;
   fax_number?: string;
+  /** DrChrono's own retirement flag for an office. */
+  archived?: boolean;
 }
 
 interface DrInsurance {
@@ -1234,9 +1261,10 @@ function mapPatient(p: DrPatient, organization: Reference<Organization>): Patien
  * Map a DrChrono doctor onto a Practitioner.
  * @param d - The DrChrono doctor payload.
  * @param organization - The calling clinic.
+ * @param enabled - Whether this clinic has the provider switched on.
  * @returns The Practitioner resource.
  */
-function mapPractitioner(d: DrDoctor, organization: Reference<Organization>): Practitioner {
+function mapPractitioner(d: DrDoctor, organization: Reference<Organization>, enabled: boolean): Practitioner {
   const telecom: Practitioner['telecom'] = [];
   if (d.cell_phone) {
     telecom.push({ system: 'phone', value: d.cell_phone, use: 'mobile' });
@@ -1256,7 +1284,7 @@ function mapPractitioner(d: DrDoctor, organization: Reference<Organization>): Pr
       { system: IDENTIFIER_SYSTEMS.practitioner, value: String(d.id) },
       ...(npi ? [{ system: 'http://hl7.org/fhir/sid/us-npi', value: npi }] : []),
     ],
-    active: !d.suffix?.toLowerCase().includes('inactive'),
+    active: enabled,
     name: [{ use: 'official', family: d.last_name, given: [d.first_name], suffix: d.suffix ? [d.suffix] : undefined }],
     telecom: telecom.length > 0 ? telecom : undefined,
     qualification: d.specialty ? [{ code: { text: d.specialty } }] : undefined,
@@ -1267,9 +1295,10 @@ function mapPractitioner(d: DrDoctor, organization: Reference<Organization>): Pr
  * Map a DrChrono office onto a Location.
  * @param o - The DrChrono office payload.
  * @param organization - The calling clinic.
+ * @param enabled - Whether this clinic has the office switched on.
  * @returns The Location resource.
  */
-function mapLocation(o: DrOffice, organization: Reference<Organization>): Location {
+function mapLocation(o: DrOffice, organization: Reference<Organization>, enabled: boolean): Location {
   const telecom: Location['telecom'] = [];
   if (o.phone_number) {
     telecom.push({ system: 'phone', value: o.phone_number, use: 'work' });
@@ -1281,7 +1310,7 @@ function mapLocation(o: DrOffice, organization: Reference<Organization>): Locati
     resourceType: 'Location',
     meta: buildMeta(organization),
     identifier: [{ system: IDENTIFIER_SYSTEMS.location, value: String(o.id) }],
-    status: 'active',
+    status: enabled ? 'active' : 'suspended',
     name: o.name,
     telecom: telecom.length > 0 ? telecom : undefined,
     address: o.address
@@ -2747,6 +2776,10 @@ interface ImportContext {
   practitioners: Map<number, Reference<Practitioner>>;
   /** DrChrono office id to Location reference. */
   locations: Map<number, Reference<Location>>;
+  /** DrChrono office ids the clinic has switched off. */
+  disabledOffices: Set<number>;
+  /** DrChrono provider ids the clinic has switched off. */
+  disabledDoctors: Set<number>;
   /** DrChrono appointment id to Encounter reference. */
   encounters: Map<number, Reference<Encounter>>;
   /** DrChrono lab order id to ServiceRequest reference. */
@@ -2789,50 +2822,138 @@ function log(message: string): void {
  * @param ctx - The import context.
  */
 async function importPractice(ctx: ImportContext): Promise<void> {
-  const doctors = await drchronoOptional<DrDoctor>(ctx.client, '/doctors');
+  const result = await syncDirectoryResources(ctx.medplum, ctx.client, ctx.organization);
+
+  for (const [drId, ref] of result.practitionerRefs) {
+    ctx.practitioners.set(drId, ref);
+  }
+  ctx.counts.practitioners = result.practitionerWrote;
+  trackRefs(ctx, 'Practitioner', result.practitionerIds);
+
+  for (const [drId, ref] of result.locationRefs) {
+    ctx.locations.set(drId, ref);
+  }
+  ctx.counts.locations = result.locationWrote;
+  trackRefs(ctx, 'Location', result.locationIds);
+
+  ctx.disabledOffices = result.disabledOfficeIds;
+  ctx.disabledDoctors = result.disabledDoctorIds;
+}
+
+/** What one directory sync wrote, and the references it resolved. */
+interface DirectorySyncResult {
+  practitionerWrote: number;
+  locationWrote: number;
+  practitionerIds: (string | null)[];
+  locationIds: (string | null)[];
+  practitionerRefs: Map<number, Reference<Practitioner>>;
+  locationRefs: Map<number, Reference<Location>>;
+  /** How many of each are switched off, for the caller to report. */
+  disabledPractitioners: number;
+  disabledLocations: number;
+  /** The switched-off DrChrono ids themselves, for filtering appointments. */
+  disabledOfficeIds: Set<number>;
+  disabledDoctorIds: Set<number>;
+}
+
+/**
+ * Pull the practice directory from DrChrono and upsert it into Medplum.
+ *
+ * Shared by the chart importer (which needs the references to attribute
+ * encounters) and by the `syncDirectory` action (which the Directory page
+ * calls to refresh the list). Both must go through here, because both write
+ * the same resources by conditional PUT and so both can destroy an operator's
+ * enable/disable choices.
+ *
+ * Enablement is read back before writing and merged in `mergeEnabled`, so a
+ * re-pull leaves every toggle exactly where the operator left it. Getting this
+ * wrong is not a visible failure: the import succeeds, and a disabled office
+ * quietly starts pulling appointments again.
+ * @param medplum - Bot-scoped Medplum client.
+ * @param client - Clinic-scoped DrChrono client.
+ * @param organization - The calling clinic.
+ * @returns What was written, plus resolved references by DrChrono id.
+ */
+async function syncDirectoryResources(
+  medplum: MedplumClient,
+  client: DrChronoClient,
+  organization: Reference<Organization>
+): Promise<DirectorySyncResult> {
+  log('directory: reading current enablement');
+  const existing = await readDirectoryState(medplum, organization);
+  log(`directory: ${existing.practitioners.size} known providers, ${existing.locations.size} known offices`);
+
+  const doctors = await drchronoOptional<DrDoctor>(client, '/doctors');
   log(`${doctors.length} doctors fetched`);
+  const doctorEnabled = doctors.map((d) =>
+    mergeEnabled({
+      retiredUpstream: d.is_account_suspended === true,
+      existing: existing.practitioners.get(String(d.id)),
+    })
+  );
   const doctorResult = await write(
-    ctx.medplum,
-    doctors.map((d) => ({
+    medplum,
+    doctors.map((d, i) => ({
       resourceType: 'Practitioner',
-      resource: mapPractitioner(d, ctx.organization),
+      resource: mapPractitioner(d, organization, doctorEnabled[i]),
       system: IDENTIFIER_SYSTEMS.practitioner,
       value: String(d.id),
     })),
     'practitioners'
   );
+
+  const practitionerRefs = new Map<number, Reference<Practitioner>>();
   for (let i = 0; i < doctors.length; i++) {
     const id = doctorResult.ids[i];
     if (id) {
-      ctx.practitioners.set(doctors[i].id, {
+      practitionerRefs.set(doctors[i].id, {
         reference: `Practitioner/${id}`,
         display: `${doctors[i].first_name} ${doctors[i].last_name}`.trim(),
       });
     }
   }
-  ctx.counts.practitioners = doctorResult.wrote;
-  trackRefs(ctx, 'Practitioner', doctorResult.ids);
 
-  const offices = await drchronoOptional<DrOffice>(ctx.client, '/offices');
+  log('directory: providers written');
+  const offices = await drchronoOptional<DrOffice>(client, '/offices');
   log(`${offices.length} offices fetched`);
+  const officeEnabled = offices.map((o) =>
+    mergeEnabled({
+      retiredUpstream: o.archived === true,
+      existing: existing.locations.get(String(o.id)),
+    })
+  );
   const officeResult = await write(
-    ctx.medplum,
-    offices.map((o) => ({
+    medplum,
+    offices.map((o, i) => ({
       resourceType: 'Location',
-      resource: mapLocation(o, ctx.organization),
+      resource: mapLocation(o, organization, officeEnabled[i]),
       system: IDENTIFIER_SYSTEMS.location,
       value: String(o.id),
     })),
     'locations'
   );
+
+  const locationRefs = new Map<number, Reference<Location>>();
   for (let i = 0; i < offices.length; i++) {
     const id = officeResult.ids[i];
     if (id) {
-      ctx.locations.set(offices[i].id, { reference: `Location/${id}`, display: offices[i].name });
+      locationRefs.set(offices[i].id, { reference: `Location/${id}`, display: offices[i].name });
     }
   }
-  ctx.counts.locations = officeResult.wrote;
-  trackRefs(ctx, 'Location', officeResult.ids);
+
+  log('directory: offices written');
+  return {
+    practitionerWrote: doctorResult.wrote,
+    locationWrote: officeResult.wrote,
+    practitionerIds: doctorResult.ids,
+    locationIds: officeResult.ids,
+    practitionerRefs,
+    locationRefs,
+    disabledPractitioners: doctorEnabled.filter((e) => !e).length,
+    disabledLocations: officeEnabled.filter((e) => !e).length,
+    disabledOfficeIds: new Set(offices.filter((_, i) => !officeEnabled[i]).map((o) => o.id)),
+    disabledDoctorIds: new Set(doctors.filter((_, i) => !doctorEnabled[i]).map((d) => d.id)),
+  };
 }
 
 /**
@@ -2994,8 +3115,33 @@ async function fetchAppointments(ctx: ImportContext, drPatient: DrPatient): Prom
     }
   }
 
-  log(`${byId.size} appointments across ${isoDate(start)}..${isoDate(ceiling)}`);
-  return [...byId.values()];
+  // A switched-off office or provider contributes no visits at all, even when
+  // the patient themselves is being imported deliberately. Filtering here
+  // rather than at the write keeps it off every downstream surface at once:
+  // no Encounter, no Appointment, no Slot, no vitals, no clinical note.
+  const visible = [...byId.values()].filter(
+    (a) => !isDirectoryDisabled(a.office, ctx.disabledOffices) && !isDirectoryDisabled(a.doctor, ctx.disabledDoctors)
+  );
+  const hidden = byId.size - visible.length;
+  log(
+    `${visible.length} appointments across ${isoDate(start)}..${isoDate(ceiling)}` +
+      (hidden > 0 ? ` (${hidden} skipped: disabled office or provider)` : '')
+  );
+  return visible;
+}
+
+/**
+ * Whether a DrChrono office or provider id has been switched off.
+ *
+ * An id that is not in the set is allowed. Absence means the directory has
+ * never seen it — an office added upstream since the last sync — and nobody
+ * has switched it off.
+ * @param id - The id from the appointment.
+ * @param disabled - The switched-off ids.
+ * @returns True when the appointment must be skipped.
+ */
+function isDirectoryDisabled(id: number | undefined, disabled: Set<number>): boolean {
+  return typeof id === 'number' && disabled.has(id);
 }
 
 /**
@@ -3574,7 +3720,7 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
 export async function handler(
   medplum: MedplumClient,
   event: BotEvent<ImportInput>
-): Promise<ImportSuccess | ImportFailure> {
+): Promise<ImportSuccess | DirectorySyncSuccess | ImportFailure> {
   try {
     return await run(medplum, event);
   } catch (err) {
@@ -3588,14 +3734,14 @@ export async function handler(
  * @param event - Carries the input, the requester and the project secrets.
  * @returns The import result, or a described failure.
  */
-async function run(medplum: MedplumClient, event: BotEvent<ImportInput>): Promise<ImportSuccess | ImportFailure> {
+async function run(
+  medplum: MedplumClient,
+  event: BotEvent<ImportInput>
+): Promise<ImportSuccess | DirectorySyncSuccess | ImportFailure> {
   const input = event.input;
-  if (input?.action !== 'import') {
-    throw new Error(`Unknown action: ${JSON.stringify((input as { action?: string } | undefined)?.action)}`);
-  }
-  const drchronoPatientId = String(input.drchronoPatientId ?? '').trim();
-  if (!drchronoPatientId) {
-    throw new Error('drchronoPatientId is required');
+  const action = input?.action;
+  if (action !== 'import' && action !== 'syncDirectory') {
+    throw new Error(`Unknown action: ${JSON.stringify(action)}`);
   }
 
   const material = event.secrets[ENCRYPTION_KEY_SECRET_NAME]?.valueString;
@@ -3608,6 +3754,21 @@ async function run(medplum: MedplumClient, event: BotEvent<ImportInput>): Promis
   // tenant, which is the IDOR class this rewrite exists to close.
   const organization = await resolveCallerOrganization({ medplum, requester: event.requester });
   const client = await createDrChronoClient({ medplum, organization, key: deriveEncryptionKey({ material }) });
+
+  if (action === 'syncDirectory') {
+    const result = await syncDirectoryResources(medplum, client, organization);
+    return {
+      ok: true,
+      action: 'syncDirectory',
+      practitioners: { wrote: result.practitionerWrote, disabled: result.disabledPractitioners },
+      locations: { wrote: result.locationWrote, disabled: result.disabledLocations },
+    };
+  }
+
+  const drchronoPatientId = String(input.drchronoPatientId ?? '').trim();
+  if (!drchronoPatientId) {
+    throw new Error('drchronoPatientId is required');
+  }
 
   return importChart(medplum, client, organization, drchronoPatientId);
 }
@@ -3659,6 +3820,8 @@ async function importChart(
     counts,
     practitioners: new Map(),
     locations: new Map(),
+    disabledOffices: new Set(),
+    disabledDoctors: new Set(),
     encounters: new Map(),
     labOrders: new Map(),
     refsByType: new Map(),
