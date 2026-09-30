@@ -4,13 +4,20 @@ import { describe, expect, test } from 'vitest';
 import { getDownloadReason, getPreviewKind } from './preview-kind';
 
 describe('choosing a preview', () => {
-  test('renders what the browser renders', () => {
+  test('only PDF goes in the iframe', () => {
     expect(getPreviewKind('application/pdf')).toBe('framed');
-    expect(getPreviewKind('text/plain')).toBe('framed');
-    expect(getPreviewKind('text/csv')).toBe('framed');
-    expect(getPreviewKind('application/json')).toBe('framed');
     expect(getPreviewKind('image/png')).toBe('image');
     expect(getPreviewKind('image/jpeg')).toBe('image');
+  });
+
+  test('text is drawn as text, never framed', () => {
+    // Chrome downloads a text/* iframe rather than displaying it, so framing
+    // these rendered an empty panel with no error — which is what an HL7
+    // result and a CSV both did.
+    expect(getPreviewKind('text/plain')).toBe('text');
+    expect(getPreviewKind('application/json')).toBe('text');
+    expect(getPreviewKind('text/html')).toBe('text');
+    expect(getPreviewKind('text/csv')).toBe('csv');
   });
 
   test('reads a C-CDA as a document, not as source', () => {
@@ -36,7 +43,7 @@ describe('choosing a preview', () => {
   test('a content type with parameters is still matched', () => {
     // Servers routinely send `text/plain; charset=utf-8`; matching on the whole
     // string would send it to the download card.
-    expect(getPreviewKind('text/plain; charset=utf-8')).toBe('framed');
+    expect(getPreviewKind('text/plain; charset=utf-8')).toBe('text');
     expect(getPreviewKind('APPLICATION/PDF')).toBe('framed');
   });
 

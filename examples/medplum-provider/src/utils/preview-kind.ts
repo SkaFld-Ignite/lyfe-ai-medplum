@@ -13,10 +13,16 @@ import { isXmlContentType } from './cda';
  * The split is by what the *browser* can do, because that is the real
  * constraint:
  *
- * - `framed`    PDF, plain text, JSON — the browser renders these itself.
+ * - `framed`    PDF — the browser renders it itself, in an iframe.
+ * - `text`      plain text, JSON, HL7 — drawn as text rather than framed.
+ *               Chrome *downloads* a `text/csv` or `text/plain` iframe instead
+ *               of displaying it, so framing these renders an empty panel.
+ * - `csv`       drawn as a table, since that is what it is.
  * - `xml`       C-CDA and friends, rendered as a readable document rather than
  *               as source, which is what a clinician actually wants from a CCD.
  * - `image`     formats a browser decodes natively.
+ * - `video`     played inline with native controls.
+ * - `audio`     played inline with native controls.
  * - `tiff`      it does not decode TIFF — no browser does — but medical imaging
  *               and fax gateways emit it constantly, so it is decoded in the
  *               page instead of being written off as unsupported.
@@ -27,7 +33,8 @@ import { isXmlContentType } from './cda';
  * - `download`  everything left: legacy `.doc`, archives, unknown bytes.
  *               Honest about it rather than showing a broken frame.
  */
-export type PreviewKind = 'framed' | 'xml' | 'image' | 'tiff' | 'docx' | 'spreadsheet' | 'download';
+export type PreviewKind =
+  'framed' | 'xml' | 'text' | 'csv' | 'image' | 'tiff' | 'video' | 'audio' | 'docx' | 'spreadsheet' | 'download';
 
 /** Formats a browser decodes without help. `image/tiff` is deliberately absent. */
 const NATIVE_IMAGE_TYPES = new Set([
@@ -66,14 +73,28 @@ export function getPreviewKind(contentType: string | undefined): PreviewKind {
   if (isXmlContentType(type)) {
     return 'xml';
   }
-  if (type === 'application/pdf' || type === 'application/json' || type.startsWith('text/')) {
+  if (type === 'application/pdf') {
     return 'framed';
+  }
+  if (type === 'text/csv' || type === 'application/csv') {
+    return 'csv';
+  }
+  // Deliberately not framed: Chrome downloads a text/* iframe rather than
+  // showing it, which renders as an empty panel with no error.
+  if (type === 'application/json' || type === 'application/rtf' || type.startsWith('text/')) {
+    return 'text';
   }
   if (type === 'image/tiff' || type === 'image/tif') {
     return 'tiff';
   }
   if (NATIVE_IMAGE_TYPES.has(type)) {
     return 'image';
+  }
+  if (type.startsWith('video/')) {
+    return 'video';
+  }
+  if (type.startsWith('audio/')) {
+    return 'audio';
   }
   if (DOCX_TYPES.has(type)) {
     return 'docx';

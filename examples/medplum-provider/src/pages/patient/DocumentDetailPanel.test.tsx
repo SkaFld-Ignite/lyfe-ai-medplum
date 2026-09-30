@@ -162,10 +162,13 @@ describe('DocumentDetailPanel', () => {
       expect(iframe).toHaveAttribute('src', `${PDF_URL}#navpanes=0`);
     });
 
-    test.each(['application/json', 'text/plain'])('Renders %s in the pdf-style iframe', (contentType) => {
+    test.each(['application/json', 'text/plain'])('Draws %s as text rather than framing it', (contentType) => {
+      // Chrome downloads a text/* iframe instead of displaying it, so these
+      // used to render an empty panel with no error at all. They are read as
+      // text now, and must not go back into the frame.
       setup(withAttachment({ contentType, url: PDF_URL }));
 
-      expect(screen.getByTitle('Attachment')).toBeInTheDocument();
+      expect(screen.queryByTitle('Attachment')).not.toBeInTheDocument();
     });
 
     test('Renders an image preview titled by the attachment', () => {
@@ -205,9 +208,10 @@ describe('DocumentDetailPanel', () => {
     test('Reports an unsupported file type for a non-previewable attachment', () => {
       setup(withAttachment({ contentType: 'application/zip', url: 'http://example.com/binary/archive.zip' }));
 
-      expect(screen.getByText('No preview available for this file type')).toBeInTheDocument();
+      // Named, and offered — never a blank frame.
+      expect(screen.getByText(/application\/zip cannot be displayed in a browser/)).toBeInTheDocument();
       const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
-      fireEvent.click(screen.getByRole('button', { name: /Open file/ }));
+      fireEvent.click(screen.getByRole('button', { name: /Download file/ }));
       expect(openSpy).toHaveBeenCalledWith('http://example.com/binary/archive.zip', '_blank', 'noopener,noreferrer');
     });
 
@@ -281,8 +285,8 @@ describe('DocumentDetailPanel', () => {
     test('Offers to open a file whose type cannot be determined', () => {
       setup(withAttachment({ url: 'http://example.com/binary/unknown', title: 'MONARCH ELIGIBILITY' }));
 
-      expect(screen.getByText("This file type can't be previewed here")).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Open file/ })).toBeInTheDocument();
+      expect(screen.getByText(/arrived without a type/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Download file/ })).toBeInTheDocument();
     });
   });
 

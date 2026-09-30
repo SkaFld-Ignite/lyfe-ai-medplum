@@ -67,3 +67,37 @@ export function getAttachmentContentType(
     contentTypeFromName(attachment.url)
   );
 }
+
+/** MIME type to the extension a saved file should carry. */
+const TYPE_EXTENSIONS: Record<string, string> = Object.entries(EXTENSION_TYPES).reduce<Record<string, string>>(
+  (acc, [ext, type]) => {
+    // First extension wins, so `jpg` is preferred over `jpeg` and `tif` over `tiff`.
+    acc[type] ??= ext;
+    return acc;
+  },
+  {}
+);
+
+/**
+ * A file name that will actually open once saved.
+ *
+ * A document titled "Untitled document" downloads with no extension, and an
+ * operating system then has nothing to open it with — the file is on disk and
+ * useless. The title is kept when it already ends in the right extension, so a
+ * document called "LABCORP RESULTS.pdf" is not saved as "LABCORP RESULTS.pdf.pdf".
+ * @param title - The document or attachment title.
+ * @param contentType - The file's content type.
+ * @returns A file name carrying the right extension where one is known.
+ */
+export function downloadFileName(title: string | undefined, contentType: string | undefined): string {
+  const base =
+    (title ?? 'document')
+      .trim()
+      .replace(/[\\/:*?"<>|\r\n]+/g, ' ')
+      .trim() || 'document';
+  const extension = contentType ? TYPE_EXTENSIONS[contentType.split(';')[0].trim().toLowerCase()] : undefined;
+  if (!extension) {
+    return base;
+  }
+  return base.toLowerCase().endsWith(`.${extension}`) ? base : `${base}.${extension}`;
+}

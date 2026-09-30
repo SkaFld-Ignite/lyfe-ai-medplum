@@ -5,6 +5,7 @@ import { useMedplum } from '@medplum/react';
 import { IconDownload, IconEye, IconFile, IconFileText, IconFileTypePdf, IconPhoto } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useState } from 'react';
+import { downloadFileName } from '../../utils/document-file-type';
 import { showErrorNotification } from '../../utils/notifications';
 import { openAttachment } from '../../utils/open-attachment';
 import type { DocumentFileKind, DocumentRow } from '../../utils/patient-documents';
@@ -109,7 +110,7 @@ export function DocumentRowItem(props: DocumentRowItemProps): JSX.Element {
                 openAttachment(medplum, url, {
                   download: true,
                   contentType: row.contentType,
-                  filename: row.attachment?.title ?? row.title,
+                  filename: downloadFileName(row.attachment?.title ?? row.title, row.contentType),
                 }).catch(showErrorNotification)
               }
             >

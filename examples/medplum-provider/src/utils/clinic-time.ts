@@ -293,3 +293,21 @@ export function fhirDayKey(value: string | undefined, timeZone: string): string 
   const at = new Date(value);
   return Number.isNaN(at.getTime()) ? undefined : toClinicIsoDate(at, timeZone);
 }
+
+/**
+ * The calendar day a `Date` already represents, as `YYYY-MM-DD`.
+ *
+ * For a `Date` that was **built from calendar parts** — `new Date(1987, 7, 17)`
+ * — the day is whatever those parts said, and reading it back with the local
+ * getters returns exactly that. What must not happen is a round-trip through
+ * `toISOString()`: that reinterprets local midnight as an instant and renders
+ * it in UTC, which west of UTC is the previous day. A C-CDA birth date of
+ * `19870817` displayed as "8/16/1987" is that round-trip, not a parsing bug.
+ * @param date - A date built from calendar parts.
+ * @returns The `YYYY-MM-DD` day it represents.
+ */
+export function toCalendarDayKey(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}

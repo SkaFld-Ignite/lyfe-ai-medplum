@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { DocumentReference } from '@medplum/fhirtypes';
 import { describe, expect, test } from 'vitest';
-import { contentTypeFromName, getAttachmentContentType } from './document-file-type';
+import { contentTypeFromName, downloadFileName, getAttachmentContentType } from './document-file-type';
 
 const doc = (description?: string): DocumentReference => ({
   resourceType: 'DocumentReference',
@@ -39,5 +39,30 @@ describe('getAttachmentContentType', () => {
   test('returns undefined when nothing identifies the file', () => {
     expect(getAttachmentContentType(doc('MONARCH ELIGIBILITY'), { url: 'https://h/abc' })).toBeUndefined();
     expect(getAttachmentContentType(doc('x.pdf'), undefined)).toBeUndefined();
+  });
+});
+
+describe('downloadFileName', () => {
+  test('adds the extension a saved file needs to open', () => {
+    // A document titled "Untitled document" saved with no extension is on disk
+    // and useless: the OS has nothing to open it with.
+    expect(downloadFileName('Untitled document', 'application/pdf')).toBe('Untitled document.pdf');
+    expect(downloadFileName('Scan', 'image/tiff')).toBe('Scan.tif');
+    expect(downloadFileName(undefined, 'text/csv')).toBe('document.csv');
+  });
+
+  test('does not double up an extension the title already has', () => {
+    expect(downloadFileName('LABCORP RESULTS.pdf', 'application/pdf')).toBe('LABCORP RESULTS.pdf');
+    expect(downloadFileName('REPORT.PDF', 'application/pdf')).toBe('REPORT.PDF');
+  });
+
+  test('strips characters a file name cannot hold', () => {
+    // DrChrono titles arrive with embedded newlines, e.g. "99204 AUTH\r\nEXP".
+    expect(downloadFileName('99204 AUTH\r\nEXP 10/19/24', 'application/pdf')).toBe('99204 AUTH EXP 10 19 24.pdf');
+  });
+
+  test('leaves the name alone when the type is unknown', () => {
+    expect(downloadFileName('mystery', undefined)).toBe('mystery');
+    expect(downloadFileName('mystery', 'application/x-weird')).toBe('mystery');
   });
 });

@@ -6,9 +6,11 @@ import {
   addClinicDays,
   clinicDayStart,
   DEFAULT_CLINIC_TIME_ZONE,
+  formatDayKey,
   formatDayKeyLong,
   getLocationTimeZone,
   resolveClinicTimeZone,
+  toCalendarDayKey,
   toClinicIsoDate,
   weekdayForDayKey,
 } from './clinic-time';
@@ -95,5 +97,22 @@ describe('formatting a day key', () => {
 
   test('leaves a malformed key alone', () => {
     expect(weekdayForDayKey('not-a-day')).toBe('not-a-day');
+  });
+});
+
+describe('a calendar date that came from parts', () => {
+  test('keeps its day instead of rolling back through UTC', () => {
+    // A C-CDA birth date of 19870817 is parsed into local calendar parts. The
+    // bug this guards: `.toISOString()` reinterprets that local midnight as an
+    // instant, so west of UTC it renders as 16 August — which is exactly what
+    // the chart showed for a patient born on the 17th.
+    const fromParts = new Date(1987, 7, 17);
+    expect(toCalendarDayKey(fromParts)).toBe('1987-08-17');
+    expect(formatDayKey(toCalendarDayKey(fromParts), { dateStyle: 'medium' })).toContain('1987');
+  });
+
+  test('holds for the first of a month, where the roll-back changes the month too', () => {
+    expect(toCalendarDayKey(new Date(2026, 0, 1))).toBe('2026-01-01');
+    expect(toCalendarDayKey(new Date(2026, 3, 1))).toBe('2026-04-01');
   });
 });

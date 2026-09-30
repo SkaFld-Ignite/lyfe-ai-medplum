@@ -11,9 +11,11 @@ import { useState } from 'react';
 import { XmlDocumentPreview } from '../../components/cda/XmlDocumentPreview';
 import { SendFaxModal } from '../../components/fax/SendFaxModal';
 import {
+  CsvPreview,
   DocxPreview,
   DownloadOnlyPreview,
   SpreadsheetPreview,
+  TextPreview,
   TiffPreview,
 } from '../../components/patient-documents/RichFilePreview';
 import { useAttachmentBlob } from '../../hooks/useAttachmentBlob';
@@ -264,16 +266,28 @@ function DecodedPreview(props: {
   if (props.kind === 'spreadsheet') {
     return <SpreadsheetPreview blob={blob} onDownload={props.onOpen} />;
   }
+  if (props.kind === 'text') {
+    return <TextPreview blob={blob} onDownload={props.onOpen} />;
+  }
+  if (props.kind === 'csv') {
+    return <CsvPreview blob={blob} onDownload={props.onOpen} />;
+  }
   return <TiffPreview blob={blob} onDownload={props.onOpen} />;
 }
 
+/**
+ * Whether this file goes in the big framed viewer at the top of the panel.
+ *
+ * Only PDF. Text, JSON and CSV used to be framed too, and rendered as an empty
+ * panel: Chrome *downloads* a `text/*` iframe rather than displaying it, so
+ * there was nothing to see and no error to explain it. They are drawn as text
+ * and as tables instead — see `getPreviewKind`, which this defers to so the two
+ * cannot disagree about what a file is.
+ * @param attachment - The attachment.
+ * @returns True for files the framed viewer can actually show.
+ */
 function isPdfLike(attachment: Attachment | undefined): boolean {
-  const ct = attachment?.contentType;
-  if (!ct) {
-    return false;
-  }
-  // XML (e.g. C-CDA) is rendered as a readable document rather than framed as source.
-  return ct === 'application/pdf' || ct === 'application/json' || (ct.startsWith('text/') && !isXmlContentType(ct));
+  return getPreviewKind(attachment?.contentType) === 'framed';
 }
 
 function getAuthor(doc: DocumentReference): string | undefined {
@@ -376,7 +390,14 @@ function AttachmentPreview({ attachment, url, onOpen }: AttachmentPreviewProps):
 
   // Word, Excel and TIFF are decoded in the page, so they need the bytes rather
   // than a URL. Everything else below renders straight from the URL.
-  if (kind === 'docx' || kind === 'spreadsheet' || kind === 'tiff' || kind === 'download') {
+  if (
+    kind === 'docx' ||
+    kind === 'spreadsheet' ||
+    kind === 'tiff' ||
+    kind === 'text' ||
+    kind === 'csv' ||
+    kind === 'download'
+  ) {
     return <DecodedPreview kind={kind} url={url} contentType={contentType} onOpen={onOpen} />;
   }
 
@@ -404,7 +425,7 @@ function AttachmentPreview({ attachment, url, onOpen }: AttachmentPreviewProps):
     );
   }
 
-  if (contentType?.startsWith('video/')) {
+  if (kind === 'video' || kind === 'audio') {
     return (
       <Box style={{ width: '100%', maxWidth: '100%', position: 'relative', borderRadius: 4, overflow: 'hidden' }}>
         <video style={{ width: '100%', maxWidth: '100%', height: 'auto', display: 'block' }} controls={true}>

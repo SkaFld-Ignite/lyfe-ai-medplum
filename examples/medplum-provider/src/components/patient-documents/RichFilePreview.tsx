@@ -269,16 +269,25 @@ function cellText(value: unknown): string {
   }
   // Only primitives reach here: objects are handled above, so this cannot
   // produce "[object Object]".
-  return typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+  return typeof value === 'string' ? value : (JSON.stringify(value) ?? '');
 }
+
+/** Cap on TIFF pages drawn, so a long fax cannot lock the tab. */
+const MAX_TIFF_PAGES = 20;
 
 /**
  * A TIFF, decoded in the page and drawn to a canvas.
  *
  * No browser decodes TIFF, but fax gateways and imaging systems emit it
  * constantly, so these turn up in real charts — two of them in the first pilot
- * patient's record. Multi-page TIFFs are common from fax, so every page is
- * drawn, not just the first.
+ * patient's record. Multi-page TIFFs are what fax produces, so every page is
+ * drawn rather than just the first.
+ *
+ * The canvases are created imperatively into a plain `div` rather than rendered
+ * as JSX. A decoded page is raw pixel data, and putImageData needs the real
+ * canvas element; the container is a plain `div` on purpose, because a
+ * component that does not forward its ref leaves this silently drawing into
+ * nothing.
  * @param props - The preview inputs.
  * @param props.blob - The file.
  * @param props.onDownload - Saves the original.
@@ -292,30 +301,45 @@ export function TiffPreview(props: { blob: Blob; onDownload: () => void }): JSX.
     let active = true;
     (async () => {
       const UTIF = (await import('utif')).default;
-      const buffer = new Uint8Array(await props.blob.arrayBuffer());
-      const ifds = UTIF.decode(buffer);
-      const host = containerRef.current;
-      if (!active || !host || ifds.length === 0) {
+      const bytes = new Uint8Array(await props.blob.arrayBuffer());
+      const ifds = UTIF.decode(bytes);
+      if (!active) {
+        return;
+      }
+      if (ifds.length === 0) {
         setState({ error: 'This TIFF has no readable pages.' });
         return;
       }
+      const host = containerRef.current;
+      if (!host) {
+        setState({ error: 'The preview could not be drawn. Download the file to open it.' });
+        return;
+      }
+
       host.replaceChildren();
-      for (const ifd of ifds) {
-        UTIF.decodeImage(buffer, ifd);
+      let drawn = 0;
+      for (const ifd of ifds.slice(0, MAX_TIFF_PAGES)) {
+        UTIF.decodeImage(bytes, ifd);
         const rgba = UTIF.toRGBA8(ifd);
+        if (rgba.length === 0 || !ifd.width || !ifd.height) {
+          continue;
+        }
         const canvas = document.createElement('canvas');
         canvas.width = ifd.width;
         canvas.height = ifd.height;
         canvas.style.maxWidth = '100%';
         canvas.style.height = 'auto';
         canvas.style.display = 'block';
+        canvas.style.marginBottom = '12px';
         const context = canvas.getContext('2d');
         context?.putImageData(new ImageData(new Uint8ClampedArray(rgba), ifd.width, ifd.height), 0, 0);
         host.appendChild(canvas);
+        drawn++;
       }
-      if (active) {
-        setState({ pages: ifds.length });
+      if (!active) {
+        return;
       }
+      setState(drawn > 0 ? { pages: ifds.length } : { error: 'This TIFF has no readable pages.' });
     })().catch(() => {
       if (active) {
         setState({ error: 'This TIFF could not be decoded. It may use an uncommon compression.' });
@@ -333,14 +357,179 @@ export function TiffPreview(props: { blob: Blob; onDownload: () => void }): JSX.
       ) : (
         <>
           {state.pages === undefined && <Working />}
-          <Stack gap="sm" ref={containerRef} />
+          <div ref={containerRef} />
           {state.pages !== undefined && state.pages > 1 && (
             <Text size="xs" c="dimmed">
-              {state.pages} pages
+              {state.pages > MAX_TIFF_PAGES
+                ? `Showing the first ${MAX_TIFF_PAGES} of ${state.pages} pages. Download the file for the rest.`
+                : `${state.pages} pages`}
             </Text>
           )}
         </>
       )}
     </Stack>
+  );
+}
+
+/** Cap on characters rendered from a text file, so a huge export cannot lock the tab. */
+const MAX_TEXT_CHARS = 200_000;
+
+/**
+ * A text file, drawn as text.
+ *
+ * Deliberately not an iframe. Chrome *downloads* a `text/plain` or `text/csv`
+ * iframe rather than displaying it, so the framed path renders an empty panel
+ * with no error at all — which is what an HL7 result and a CSV both did.
+ * @param props - The preview inputs.
+ * @param props.blob - The file.
+ * @param props.onDownload - Saves the original.
+ * @returns The rendered text.
+ */
+export function TextPreview(props: { blob: Blob; onDownload: () => void }): JSX.Element {
+  const [text, setText] = useState<string>();
+
+  useEffect(() => {
+    let active = true;
+    props.blob
+      .text()
+      .then((value) => {
+        if (active) {
+          setText(value.slice(0, MAX_TEXT_CHARS));
+        }
+        return value;
+      })
+      .catch(() => {
+        if (active) {
+          setText('');
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [props.blob]);
+
+  if (text === undefined) {
+    return <Working />;
+  }
+  if (text === '') {
+    return <PreviewFailed message="This file is empty." onDownload={props.onDownload} />;
+  }
+  return (
+    <Box p="md" mih={PREVIEW_MIN_HEIGHT}>
+      <Text
+        component="pre"
+        fz="xs"
+        ff="monospace"
+        style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}
+      >
+        {text}
+      </Text>
+    </Box>
+  );
+}
+
+/**
+ * Split one line of CSV into fields.
+ *
+ * Quoted fields can contain commas, newlines and escaped quotes, so splitting
+ * on `,` mangles any real export. This handles quoting; embedded newlines are
+ * the one case it does not, which would need a streaming parser for a preview
+ * that does not warrant one.
+ * @param line - One line of CSV.
+ * @returns The fields.
+ */
+function splitCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ',') {
+      fields.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  fields.push(current);
+  return fields;
+}
+
+/** Cap on CSV rows rendered. */
+const MAX_CSV_ROWS = 500;
+
+/**
+ * A CSV, drawn as the table it is.
+ * @param props - The preview inputs.
+ * @param props.blob - The file.
+ * @param props.onDownload - Saves the original.
+ * @returns The rendered table.
+ */
+export function CsvPreview(props: { blob: Blob; onDownload: () => void }): JSX.Element {
+  const [rows, setRows] = useState<string[][]>();
+
+  useEffect(() => {
+    let active = true;
+    props.blob
+      .text()
+      .then((value) => {
+        const lines = value.split(/\r?\n/).filter((l) => l.trim().length > 0);
+        if (active) {
+          setRows(lines.slice(0, MAX_CSV_ROWS).map(splitCsvLine));
+        }
+        return value;
+      })
+      .catch(() => {
+        if (active) {
+          setRows([]);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [props.blob]);
+
+  if (rows === undefined) {
+    return <Working />;
+  }
+  if (rows.length === 0) {
+    return <PreviewFailed message="This file has no readable rows." onDownload={props.onDownload} />;
+  }
+
+  const [header, ...body] = rows;
+  return (
+    <Box p="md" mih={PREVIEW_MIN_HEIGHT} style={{ overflowX: 'auto' }}>
+      <Table striped withTableBorder withColumnBorders fz="xs">
+        <Table.Thead>
+          <Table.Tr>
+            {header.map((cell, i) => (
+              <Table.Th key={i}>{cell}</Table.Th>
+            ))}
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {body.map((row, r) => (
+            <Table.Tr key={r}>
+              {row.map((cell, c) => (
+                <Table.Td key={c}>{cell}</Table.Td>
+              ))}
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Box>
   );
 }

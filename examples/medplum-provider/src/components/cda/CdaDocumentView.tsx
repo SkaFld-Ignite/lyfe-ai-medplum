@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { Badge, Box, Group, Paper, Stack, Text, Title, UnstyledButton } from '@mantine/core';
-import { formatDate } from '@medplum/core';
 import type { JSX } from 'react';
 import { useId } from 'react';
 import type { CdaDocument, CdaSection } from '../../utils/cda';
+import { formatDayKey, toCalendarDayKey } from '../../utils/clinic-time';
 import classes from './CdaDocumentView.module.css';
 import { CdaNarrative } from './CdaNarrative';
 
@@ -54,7 +54,10 @@ export function CdaDocumentView({ document }: { document: CdaDocument }): JSX.El
   const patientLine = [
     patient?.name,
     patient?.gender,
-    patient?.birthDate && `born ${formatDate(patient.birthDate.toISOString())}`,
+    // Formatted from the calendar parts the CDA gave us. `toISOString()` here
+    // would reinterpret that day as an instant and render it in UTC, turning
+    // a birth date of 19870817 into "8/16/1987" for every viewer west of UTC.
+    patient?.birthDate && `born ${formatDayKey(toCalendarDayKey(patient.birthDate), { dateStyle: 'medium' })}`,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -70,7 +73,10 @@ export function CdaDocumentView({ document }: { document: CdaDocument }): JSX.El
           {document.title}
         </Title>
         <Group gap="xl" mt="sm" align="flex-start">
-          <Meta label="Date" value={document.date && formatDate(document.date.toISOString())} />
+          <Meta
+            label="Date"
+            value={document.date && formatDayKey(toCalendarDayKey(document.date), { dateStyle: 'medium' })}
+          />
           <Meta label="Patient" value={patientLine || undefined} />
           <Meta label="Author" value={document.authors.join(', ') || undefined} />
           <Meta label="Source" value={document.custodian} />
