@@ -108,6 +108,14 @@ export function BulkImportPanel(): JSX.Element {
       .finally(() => setLoading(false));
   }, [medplum, start, end]);
 
+  // An end date before the start date is a silent no-op against DrChrono: the
+  // chunk loop simply never runs and the preview reports zero appointments,
+  // which reads as "that day is empty" rather than "those dates are the wrong
+  // way round". Catch it here, and again in the bot, so neither a typo nor a
+  // caller that skips this form can ask for an impossible range.
+  const rangeInverted = Boolean(end) && end < start;
+  const canPreview = Boolean(start) && !rangeInverted;
+
   const newCount = preview ? preview.candidates.filter((c) => !preview.existing.has(String(c.id))).length : 0;
 
   /**
@@ -184,23 +192,42 @@ export function BulkImportPanel(): JSX.Element {
           Appointment Date Range
         </Text>
         <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
-          <TextInput label="Start Date" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-          <TextInput label="End Date (Optional)" type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+          <TextInput
+            label="Start Date"
+            type="date"
+            value={start}
+            max={end || undefined}
+            onChange={(e) => setStart(e.target.value)}
+          />
+          <TextInput
+            label="End Date (Optional)"
+            type="date"
+            value={end}
+            min={start || undefined}
+            error={rangeInverted ? 'Must be on or after the start date' : undefined}
+            onChange={(e) => setEnd(e.target.value)}
+          />
           <Box style={{ display: 'flex', alignItems: 'flex-end' }}>
             <Button
               fullWidth
               leftSection={<IconSearch size={16} />}
               loading={loading}
-              disabled={!start}
+              disabled={!canPreview}
               onClick={runPreview}
             >
               Preview
             </Button>
           </Box>
         </SimpleGrid>
-        <Text size="xs" c="gray.5" mt={6}>
-          Fetch appointments from {start}
-          {end && end !== start ? ` to ${end}` : ''} (excluding Cancelled/Rescheduled/No Show)
+        <Text size="xs" c={rangeInverted ? 'red.7' : 'gray.5'} mt={6}>
+          {rangeInverted ? (
+            `${end} is before ${start} — no appointments could fall in that range.`
+          ) : (
+            <>
+              Fetch appointments from {start}
+              {end && end !== start ? ` to ${end}` : ''} (excluding Cancelled/Rescheduled/No Show)
+            </>
+          )}
         </Text>
       </Box>
 
