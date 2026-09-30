@@ -58,7 +58,6 @@ export interface ReciprocityReport {
 export interface ZusPushConnection {
   readonly fhirUrl: string;
   readonly token: string;
-  readonly builderId?: string;
 }
 
 /**
@@ -132,8 +131,14 @@ async function pushOne(props: {
     // Zus's conditional create. Without it a retry duplicates the record on
     // their side, where we cannot clean it up.
     ...(token ? { 'If-None-Exist': `identifier=${token}` } : {}),
-    ...(props.zus.builderId ? { 'Zus-Account': props.zus.builderId } : {}),
   };
+
+  // Deliberately no `Zus-Account`. That header asks Zus to act AS the named
+  // builder, which a write is not entitled to do: sending our own builder id
+  // came back `403 "User is not authorized to impersonate builder …"` on every
+  // resource. Zus's own reads take it and their writes do not, which is what
+  // lyfe-provider-ui does too — its `makeAuthenticatedRequest` sends only the
+  // bearer token on a POST.
 
   const res = await fetch(`${props.zus.fhirUrl}/${props.resource.resourceType}`, {
     method: 'POST',

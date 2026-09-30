@@ -8,23 +8,26 @@ import { upsertBatch, withMedplum429Retry } from './batch.ts';
  * Turn the payer *names* on imported Coverage into real `Organization`
  * resources, and point the Coverage at them.
  *
- * Zus sends a payer as a display string — `payor: [{ display: "Cal Optima
- * Health Plan" }]` — with no reference. That is legal FHIR and completely
- * useless to a reader: `Coverage.payor` is typed as a reference to an
- * Organization, so every client resolves it rather than reading the display.
- * Medplum's own `CoverageItem` calls `useResource(payor)` and takes `.name`
- * off what comes back; with nothing to resolve it renders the string
- * "Unknown Payor". Sixteen real payers — Cal Optima, Medi Cal, OPTUM CARE
- * NETWORK, MONARCH FAMILY HEALTHCARE — all displayed as unknown for want of
- * the resource they name.
+ * Zus sends a payer with a real name and a reference to *its own*
+ * Organization — `{ display: "Cal Optima Health Plan", reference:
+ * "Organization/8383a420-…" }` — and the importer mirrors that reference
+ * verbatim. The id means nothing here, so the reference dangles: reading it
+ * returns 404.
  *
- * So this creates the missing half of the reference rather than patching the
- * UI to read `display`. An `Organization` per payer is what FHIR intends,
- * what the admin UI can show, and what anything else querying this project
- * will expect.
+ * That is why the chart says "Unknown Payor" for sixteen payers it clearly
+ * knows the names of. `Coverage.payor` is typed as a reference, so every
+ * client resolves it rather than reading `display` — Medplum's own
+ * `CoverageItem` calls `useResource(payor)` and takes `.name` off whatever
+ * comes back. A dangling reference resolves to nothing and falls through to
+ * the placeholder.
  *
- * The display text is kept on the reference alongside the new `reference`, so
- * a reader that never resolves it still sees the payer's name.
+ * A missing reference and an unresolvable one therefore look identical to a
+ * reader, and both are repaired the same way: mint the `Organization` the
+ * payer name implies and point the Coverage at that. A reference that already
+ * resolves inside this project is left alone.
+ *
+ * The display text is kept alongside the new reference, so a reader that
+ * never resolves it still sees the payer's name.
  */
 
 /** Identifier system for payers we mint from a name. */
@@ -65,12 +68,54 @@ export async function linkCoveragePayors(props: {
   organization: Reference<Organization>;
   coverages: Coverage[];
 }): Promise<{ payers: number; linked: number }> {
-  // 1. Every distinct payer name that still needs an Organization.
+  // 1. Which referenced Organizations actually exist here? Anything Zus sent
+  //    points at an id in *their* project, so most of these resolve to
+  //    nothing — but a reference we minted on a previous run does resolve and
+  //    must not be rewritten.
+  const referencedIds = new Set<string>();
+  for (const coverage of props.coverages) {
+    for (const payor of coverage.payor ?? []) {
+      const id = payor.reference?.startsWith('Organization/')
+        ? payor.reference.slice('Organization/'.length)
+        : undefined;
+      if (id) {
+        referencedIds.add(id);
+      }
+    }
+  }
+  const resolvable = new Set<string>();
+  if (referencedIds.size > 0) {
+    const found = await props.medplum.searchResources('Organization', {
+      _id: [...referencedIds].join(','),
+      _count: String(referencedIds.size),
+    });
+    for (const org of found) {
+      if (org.id) {
+        resolvable.add(org.id);
+      }
+    }
+  }
+
+  /**
+   * Whether this payor still needs an Organization of ours.
+   * @param payor - One `Coverage.payor` entry.
+   * @param payor.reference - Its current reference, if any.
+   * @returns True when the reference is absent or does not resolve here.
+   */
+  const needsLink = (payor: { reference?: string }): boolean => {
+    if (!payor.reference) {
+      return true;
+    }
+    const id = payor.reference.startsWith('Organization/') ? payor.reference.slice('Organization/'.length) : undefined;
+    return !id || !resolvable.has(id);
+  };
+
+  // 2. Every distinct payer name that still needs one.
   const names = new Map<string, string>();
   for (const coverage of props.coverages) {
     for (const payor of coverage.payor ?? []) {
       const display = payor.display?.trim();
-      if (display && !payor.reference) {
+      if (display && needsLink(payor)) {
         names.set(payerKey(display), display);
       }
     }
@@ -79,7 +124,7 @@ export async function linkCoveragePayors(props: {
     return { payers: 0, linked: 0 };
   }
 
-  // 2. Upsert one Organization per payer, keyed by the folded name so the same
+  // 3. Upsert one Organization per payer, keyed by the folded name so the same
   //    payer arriving from two networks converges on one resource.
   const entries = [...names.entries()].map(([key, display]) => ({
     resourceType: 'Organization' as const,
@@ -112,7 +157,7 @@ export async function linkCoveragePayors(props: {
     }
   });
 
-  // 3. Point each Coverage at its payer, keeping the display text so a reader
+  // 4. Point each Coverage at its payer, keeping the display text so a reader
   //    that does not resolve the reference still sees a name.
   let linked = 0;
   for (const coverage of props.coverages) {
@@ -122,7 +167,7 @@ export async function linkCoveragePayors(props: {
     let changed = false;
     const payor = (coverage.payor ?? []).map((p) => {
       const display = p.display?.trim();
-      if (!display || p.reference) {
+      if (!display || !needsLink(p)) {
         return p;
       }
       const id = byKey.get(payerKey(display));
