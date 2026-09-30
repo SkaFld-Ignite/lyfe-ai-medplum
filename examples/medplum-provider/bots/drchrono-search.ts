@@ -219,7 +219,6 @@ async function previewAppointments(
   results: PatientSummary[];
   skippedByDirectory: number;
   excludedByStatus: number;
-  excludedNoPatient: number;
 }> {
   const iso = (d: Date): string => d.toISOString().slice(0, 10);
   const startDate = new Date(`${start}T00:00:00Z`);
@@ -228,11 +227,10 @@ async function previewAppointments(
   const counts = new Map<number, number>();
   let scanned = 0;
   let skippedByDirectory = 0;
-  // Counted separately so the caller can explain the gap between "rows looked
-  // at" and "patients found" rather than leaving the reader to guess whether
+  // Counted separately so the caller can explain the gap between appointments
+  // and patients found rather than leaving the reader to guess whether
   // somebody was booked twice.
   let excludedByStatus = 0;
-  let excludedNoPatient = 0;
 
   for (let from = startDate; from <= endDate; from = new Date(from.getTime() + CHUNK_DAYS * DAY_MS)) {
     const to = new Date(Math.min(from.getTime() + (CHUNK_DAYS - 1) * DAY_MS, endDate.getTime()));
@@ -245,16 +243,17 @@ async function previewAppointments(
       }
       const body = (await res.json()) as { results?: DrChronoAppointment[]; next?: string | null };
       for (const appt of body.results ?? []) {
+        // Blocked time, breaks and admin holds occupy a slot with no patient
+        // on it. They are not appointments and are dropped before anything is
+        // counted: including them made a day look like it held 171
+        // appointments when it held 145, and invited the reader to wonder
+        // which patients had gone missing.
+        if (typeof appt.patient !== 'number') {
+          continue;
+        }
         scanned++;
         if (SKIP_STATUSES.has(appt.status ?? '')) {
           excludedByStatus++;
-          continue;
-        }
-        // Blocked time, breaks and admin holds occupy a slot with no patient
-        // on it. They are a large share of a real day and are not a patient
-        // anybody failed to import.
-        if (typeof appt.patient !== 'number') {
-          excludedNoPatient++;
           continue;
         }
         // An id we have never seen is allowed through: it belongs to an office
@@ -279,7 +278,7 @@ async function previewAppointments(
     })
   );
 
-  return { scannedAppointments: scanned, results, skippedByDirectory, excludedByStatus, excludedNoPatient };
+  return { scannedAppointments: scanned, results, skippedByDirectory, excludedByStatus };
 }
 
 /**

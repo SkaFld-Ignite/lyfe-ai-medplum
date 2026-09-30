@@ -53,9 +53,6 @@ function describeExclusions(preview: PreviewState): string {
   if (preview.excludedByStatus > 0) {
     parts.push(`${preview.excludedByStatus} were cancelled, rescheduled or no-shows`);
   }
-  if (preview.excludedNoPatient > 0) {
-    parts.push(`${preview.excludedNoPatient} were blocked time with no patient`);
-  }
   if (preview.skippedByDirectory > 0) {
     parts.push(`${preview.skippedByDirectory} were at a switched-off office or provider`);
   }
@@ -80,7 +77,6 @@ interface PreviewState {
   /** Appointments dropped because their office or provider is switched off. */
   readonly skippedByDirectory: number;
   readonly excludedByStatus: number;
-  readonly excludedNoPatient: number;
   /** DrChrono ids already present in Medplum, so the UI can show what is genuinely new. */
   readonly existing: ReadonlySet<string>;
 }
@@ -208,8 +204,7 @@ export function BulkImportPanel(): JSX.Element {
       </Box>
 
       <Alert variant="light" color="gray" icon={<IconDatabase size={16} />}>
-        Cancelled, rescheduled and no-show appointments are excluded, as is blocked time with no patient on it. Patients
-        already in Medplum are skipped.
+        Cancelled, rescheduled and no-show appointments are excluded. Patients already in Medplum are skipped.
       </Alert>
 
       <Box>
@@ -265,7 +260,7 @@ export function BulkImportPanel(): JSX.Element {
       {preview && (
         <Paper withBorder p="md" radius="md">
           <Group gap="lg" mb="sm">
-            <Stat label="Appointments scanned" value={preview.scannedAppointments} />
+            <Stat label="Appointments" value={preview.scannedAppointments} />
             <Stat label="Patients found" value={preview.candidates.length} />
             <Stat label="New to import" value={newCount} highlight />
             <Stat label="Already in Medplum" value={preview.candidates.length - newCount} />
