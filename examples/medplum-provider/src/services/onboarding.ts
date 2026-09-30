@@ -159,6 +159,44 @@ export interface ImportResult {
 }
 
 /**
+ * Bot ids, looked up once per session.
+ *
+ * A bulk run starts a job per patient, and each start needs the bot's id. A
+ * hundred-odd identical searches for a resource that cannot change mid-run is
+ * latency spent for nothing, right at the point the run is trying to get all
+ * of its work queued quickly.
+ */
+const botIdCache = new Map<string, Promise<string>>();
+
+/**
+ * Resolve a bot's id from its identifier, once.
+ * @param medplum - Authenticated Medplum client.
+ * @param botIdentifier - `system|value` identifier of the bot.
+ * @returns The bot's resource id.
+ */
+async function resolveBotId(medplum: MedplumClient, botIdentifier: string): Promise<string> {
+  const cached = botIdCache.get(botIdentifier);
+  if (cached) {
+    return cached;
+  }
+  const pending = medplum.searchOne('Bot', { identifier: botIdentifier }).then((bot) => {
+    if (!bot?.id) {
+      throw new OnboardingBackendUnavailableError(
+        `No Bot found with identifier ${botIdentifier}. Run "npm run deploy:bots".`
+      );
+    }
+    return bot.id;
+  });
+  // Cached as the promise, not the result, so concurrent starts share one
+  // search rather than racing to issue their own.
+  botIdCache.set(botIdentifier, pending);
+  // A failed lookup must not be remembered: deploying the bots should fix it
+  // without a reload.
+  pending.catch(() => botIdCache.delete(botIdentifier));
+  return pending;
+}
+
+/**
  * Start a bot as a server-side async job and return its id, without waiting.
  *
  * Splitting "start" from "wait" is what makes a bulk run parallel. While the
@@ -180,12 +218,7 @@ async function startBotJob(
   botIdentifier: string,
   input: Record<string, string>
 ): Promise<string> {
-  const bot = await medplum.searchOne('Bot', { identifier: botIdentifier });
-  if (!bot?.id) {
-    throw new OnboardingBackendUnavailableError(
-      `No Bot found with identifier ${botIdentifier}. Run "npm run deploy:bots".`
-    );
-  }
+  const botId = await resolveBotId(medplum, botIdentifier);
 
   // Deliberately async, not a plain executeBot.
   //
@@ -194,7 +227,7 @@ async function startBotJob(
   // RETRIES it, which starts a SECOND concurrent import of the same patient
   // while the first is still running server-side. The async pattern returns
   // immediately with a job to poll, and has no such ceiling.
-  const accepted = await medplum.startAsyncRequest<OperationOutcome>(`fhir/R4/Bot/${bot.id}/$execute`, {
+  const accepted = await medplum.startAsyncRequest<OperationOutcome>(`fhir/R4/Bot/${botId}/$execute`, {
     body: JSON.stringify(input),
     headers: { 'Content-Type': 'application/json' },
   });

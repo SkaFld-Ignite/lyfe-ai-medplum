@@ -40,13 +40,21 @@ const BOTS: BotDefinition[] = [
     source: 'drchrono-import.ts',
     // Importing a chart is thousands of writes even batched. The 10s default
     // would abort mid-import, leaving a half-written chart behind.
-    timeout: 900,
+    //
+    // 30 minutes rather than 15: a chart import competing with a dozen others
+    // for the same instance is slower than one run alone, and the ceiling has
+    // to clear the worst real chart under load, not the average one idle.
+    timeout: 1800,
   },
   {
     name: 'lyfe-zus-import',
     description: 'Enrol a patient in Zus and pull their longitudinal record into Medplum.',
     source: 'zus-import.ts',
-    timeout: 900,
+    // A full Zus record has taken 19 minutes, which the previous 15-minute
+    // ceiling cut off — the bot was killed mid-pull and the patient looked
+    // like a failure rather than a slow success. 45 minutes leaves room for
+    // that to be slower again under a bulk run.
+    timeout: 2700,
   },
   {
     name: 'lyfe-drchrono-search',

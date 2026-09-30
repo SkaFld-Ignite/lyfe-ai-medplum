@@ -67,15 +67,30 @@ function describeExclusions(preview: PreviewState): string {
 
 /** Per-patient outcome while a bulk run is in flight. */
 /**
- * How many import jobs are *started* at once.
+ * How many patients are imported at once.
  *
- * This paces the starting requests, not the work: a start returns as soon as
- * the job is queued server-side, so all of a day's patients are running within
- * a few seconds either way. Issuing 122 POSTs in one burst is just impolite to
- * the API, and a burst is also the one shape most likely to trip a rate limit
- * before any real work has happened.
+ * Not one, which is what this was — a day's clinic then took as long as all of
+ * its patients added together. Not all of them either, and that is the part
+ * worth explaining, because "start all 122 jobs" looks like the obvious answer.
+ *
+ * Medplum runs an async `$execute` **immediately and in-process**:
+ * `AsyncJobExecutor.start()` invokes the callback and returns, with no queue
+ * and no concurrency limit anywhere in the path. (Medplum does run BullMQ
+ * workers with concurrency caps, but bot execution does not go through them.)
+ * So 122 started jobs are 122 bot executions running at once inside a single
+ * Node process on one Railway instance, each of them also hammering DrChrono
+ * and Zus. The server has no way to push back, and neither do they.
+ *
+ * Bounding it here is therefore the only place the limit can currently live.
+ * It is one number, and raising it is a one-line change once a real day has
+ * been measured; the split between starting a job and waiting for one is what
+ * makes raising it free.
+ *
+ * The cost of bounding it in the page is honest and worth stating: only the
+ * imports already started survive a refresh. Getting durability *and* a
+ * concurrency limit needs a real queue behind the bots — see LYF2-209.
  */
-const START_CONCURRENCY = 6;
+const IMPORT_CONCURRENCY = 6;
 
 /**
  * Run an async mapper over a list with a bounded number of calls in flight.
@@ -193,68 +208,44 @@ export function BulkImportPanel(): JSX.Element {
     const update = (id: string, patch: Partial<RunRow>): void =>
       setRun((prev) => prev?.map((r) => (r.drchronoId === id ? { ...r, ...patch } : r)));
 
-    // Every chart import is started up front, as its own server-side job.
-    //
-    // This used to be a `for` loop that awaited each patient in turn, which
-    // made a day's clinic take as long as all of its patients added together —
-    // hours for a hundred-odd charts — and abandoned every patient that had not
-    // been reached yet if the tab was closed, because the loop driving them
-    // lived in the page.
-    //
-    // Starting them all first inverts that. The work belongs to the server
-    // immediately, so the run survives a refresh and the patients proceed
-    // concurrently; the page is only watching. Starts are issued a few at a
-    // time rather than as one burst of 122 requests, which is about politeness
-    // to the API, not about pacing the work — a start returns as soon as the
-    // job is queued.
-    const started = await mapWithConcurrency(todo, START_CONCURRENCY, async (candidate) => {
+    // Each patient is a server-side job, run a bounded number at a time. See
+    // IMPORT_CONCURRENCY for why this is bounded rather than started all at
+    // once — Medplum runs an async $execute immediately and in-process, so
+    // "all at once" means 122 bot executions inside one Node process.
+    await mapWithConcurrency(todo, IMPORT_CONCURRENCY, async (candidate) => {
       const id = String(candidate.id);
+      update(id, { status: 'importing', detail: 'starting…' });
       try {
+        // Started and awaited separately so the lane count above is the only
+        // thing deciding concurrency, rather than a function that could hold
+        // only one import open at a time.
         const jobId = await startDrChronoImport(medplum, id);
-        update(id, { status: 'importing', detail: 'queued' });
-        return { id, jobId };
-      } catch (err) {
-        update(id, { status: 'failed', detail: err instanceof Error ? err.message : String(err) });
-        return { id, jobId: undefined };
-      }
-    });
-
-    // Then watch them. Each patient's Zus pull is chained onto its own chart
-    // import rather than waiting for the whole batch, so a fast patient is not
-    // held up behind a slow one.
-    await Promise.all(
-      started.map(async ({ id, jobId }) => {
-        if (!jobId) {
+        const result = await awaitDrChronoImport(medplum, jobId, (status) => update(id, { detail: status }));
+        if (!result.ok || !result.medplumPatientId) {
+          update(id, { status: 'failed', detail: result.error ?? 'import failed' });
           return;
         }
-        try {
-          const result = await awaitDrChronoImport(medplum, jobId, (status) => update(id, { detail: status }));
-          if (!result.ok || !result.medplumPatientId) {
-            update(id, { status: 'failed', detail: result.error ?? 'import failed' });
-            return;
-          }
 
-          if (!withZus) {
-            update(id, { status: 'done', detail: 'chart imported' });
-            return;
-          }
-
-          update(id, { status: 'zus', detail: 'enrolling…' });
-          const zusJob = await startZusImport(medplum, result.medplumPatientId);
-          const zus = await awaitZusImport(medplum, zusJob, (status) => update(id, { detail: status }));
-          if (zus.ok) {
-            const total = Object.values(zus.counts ?? {}).reduce((sum, n) => sum + n, 0);
-            update(id, { status: 'done', detail: `chart + ${total} Zus resources` });
-          } else {
-            // Not a failure of the run: the office may simply not be enrolled in
-            // Zus, which is a configuration choice rather than an error.
-            update(id, { status: 'skipped', detail: zus.error ?? 'Zus skipped' });
-          }
-        } catch (err) {
-          update(id, { status: 'failed', detail: err instanceof Error ? err.message : String(err) });
+        if (!withZus) {
+          update(id, { status: 'done', detail: 'chart imported' });
+          return;
         }
-      })
-    );
+
+        update(id, { status: 'zus', detail: 'enrolling…' });
+        const zusJob = await startZusImport(medplum, result.medplumPatientId);
+        const zus = await awaitZusImport(medplum, zusJob, (status) => update(id, { detail: status }));
+        if (zus.ok) {
+          const total = Object.values(zus.counts ?? {}).reduce((sum, n) => sum + n, 0);
+          update(id, { status: 'done', detail: `chart + ${total} Zus resources` });
+        } else {
+          // Not a failure of the run: the office may simply not be enrolled in
+          // Zus, which is a configuration choice rather than an error.
+          update(id, { status: 'skipped', detail: zus.error ?? 'Zus skipped' });
+        }
+      } catch (err) {
+        update(id, { status: 'failed', detail: err instanceof Error ? err.message : String(err) });
+      }
+    });
 
     setRunning(false);
   }, [medplum, preview, withZus]);
