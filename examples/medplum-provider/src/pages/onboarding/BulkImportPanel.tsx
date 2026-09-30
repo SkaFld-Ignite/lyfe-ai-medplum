@@ -22,11 +22,13 @@ import { useCallback, useState } from 'react';
 import { Link } from 'react-router';
 import type { BulkImportCandidate } from '../../services/onboarding';
 import {
+  awaitDrChronoImport,
+  awaitZusImport,
   DRCHRONO_IDENTIFIER_SYSTEM,
   formatDrChronoName,
-  importDrChronoPatient,
-  importZusRecord,
   previewBulkImport,
+  startDrChronoImport,
+  startZusImport,
 } from '../../services/onboarding';
 
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -64,6 +66,38 @@ function describeExclusions(preview: PreviewState): string {
 }
 
 /** Per-patient outcome while a bulk run is in flight. */
+/**
+ * How many import jobs are *started* at once.
+ *
+ * This paces the starting requests, not the work: a start returns as soon as
+ * the job is queued server-side, so all of a day's patients are running within
+ * a few seconds either way. Issuing 122 POSTs in one burst is just impolite to
+ * the API, and a burst is also the one shape most likely to trip a rate limit
+ * before any real work has happened.
+ */
+const START_CONCURRENCY = 6;
+
+/**
+ * Run an async mapper over a list with a bounded number of calls in flight.
+ * @param items - What to process.
+ * @param limit - Maximum concurrent calls.
+ * @param worker - Applied to each item.
+ * @returns Results, index-aligned to `items`.
+ */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const runner = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor++;
+      out[index] = await worker(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => runner()));
+  return out;
+}
+
 interface RunRow {
   readonly drchronoId: string;
   readonly name: string;
@@ -159,35 +193,68 @@ export function BulkImportPanel(): JSX.Element {
     const update = (id: string, patch: Partial<RunRow>): void =>
       setRun((prev) => prev?.map((r) => (r.drchronoId === id ? { ...r, ...patch } : r)));
 
-    for (const candidate of todo) {
+    // Every chart import is started up front, as its own server-side job.
+    //
+    // This used to be a `for` loop that awaited each patient in turn, which
+    // made a day's clinic take as long as all of its patients added together —
+    // hours for a hundred-odd charts — and abandoned every patient that had not
+    // been reached yet if the tab was closed, because the loop driving them
+    // lived in the page.
+    //
+    // Starting them all first inverts that. The work belongs to the server
+    // immediately, so the run survives a refresh and the patients proceed
+    // concurrently; the page is only watching. Starts are issued a few at a
+    // time rather than as one burst of 122 requests, which is about politeness
+    // to the API, not about pacing the work — a start returns as soon as the
+    // job is queued.
+    const started = await mapWithConcurrency(todo, START_CONCURRENCY, async (candidate) => {
       const id = String(candidate.id);
-      update(id, { status: 'importing', detail: undefined });
       try {
-        const result = await importDrChronoPatient(medplum, id, (status) => update(id, { detail: status }));
-        if (!result.ok || !result.medplumPatientId) {
-          update(id, { status: 'failed', detail: result.error ?? 'import failed' });
-          continue;
-        }
-
-        if (!withZus) {
-          update(id, { status: 'done', detail: 'chart imported' });
-          continue;
-        }
-
-        update(id, { status: 'zus', detail: 'enrolling…' });
-        const zus = await importZusRecord(medplum, result.medplumPatientId, (status) => update(id, { detail: status }));
-        if (zus.ok) {
-          const total = Object.values(zus.counts ?? {}).reduce((sum, n) => sum + n, 0);
-          update(id, { status: 'done', detail: `chart + ${total} Zus resources` });
-        } else {
-          // Not a failure of the run: the office may simply not be enrolled in
-          // Zus, which is a configuration choice rather than an error.
-          update(id, { status: 'skipped', detail: zus.error ?? 'Zus skipped' });
-        }
+        const jobId = await startDrChronoImport(medplum, id);
+        update(id, { status: 'importing', detail: 'queued' });
+        return { id, jobId };
       } catch (err) {
         update(id, { status: 'failed', detail: err instanceof Error ? err.message : String(err) });
+        return { id, jobId: undefined };
       }
-    }
+    });
+
+    // Then watch them. Each patient's Zus pull is chained onto its own chart
+    // import rather than waiting for the whole batch, so a fast patient is not
+    // held up behind a slow one.
+    await Promise.all(
+      started.map(async ({ id, jobId }) => {
+        if (!jobId) {
+          return;
+        }
+        try {
+          const result = await awaitDrChronoImport(medplum, jobId, (status) => update(id, { detail: status }));
+          if (!result.ok || !result.medplumPatientId) {
+            update(id, { status: 'failed', detail: result.error ?? 'import failed' });
+            return;
+          }
+
+          if (!withZus) {
+            update(id, { status: 'done', detail: 'chart imported' });
+            return;
+          }
+
+          update(id, { status: 'zus', detail: 'enrolling…' });
+          const zusJob = await startZusImport(medplum, result.medplumPatientId);
+          const zus = await awaitZusImport(medplum, zusJob, (status) => update(id, { detail: status }));
+          if (zus.ok) {
+            const total = Object.values(zus.counts ?? {}).reduce((sum, n) => sum + n, 0);
+            update(id, { status: 'done', detail: `chart + ${total} Zus resources` });
+          } else {
+            // Not a failure of the run: the office may simply not be enrolled in
+            // Zus, which is a configuration choice rather than an error.
+            update(id, { status: 'skipped', detail: zus.error ?? 'Zus skipped' });
+          }
+        } catch (err) {
+          update(id, { status: 'failed', detail: err instanceof Error ? err.message : String(err) });
+        }
+      })
+    );
 
     setRunning(false);
   }, [medplum, preview, withZus]);
