@@ -8,8 +8,10 @@ import { useCachedBinaryUrl, useMedplum } from '@medplum/react-hooks';
 import { IconBrowserShare, IconEditCircle, IconExternalLink, IconPrinter } from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
 import { useState } from 'react';
+import { XmlDocumentPreview } from '../../components/cda/XmlDocumentPreview';
 import { SendFaxModal } from '../../components/fax/SendFaxModal';
 import { useAttachmentPreviewUrl } from '../../hooks/useAttachmentPreviewUrl';
+import { isXmlContentType } from '../../utils/cda';
 import { getAttachmentContentType } from '../../utils/document-file-type';
 import { showErrorNotification } from '../../utils/notifications';
 import { openAttachment } from '../../utils/open-attachment';
@@ -216,7 +218,8 @@ function isPdfLike(attachment: Attachment | undefined): boolean {
   if (!ct) {
     return false;
   }
-  return ct === 'application/pdf' || ct === 'application/json' || ct.startsWith('text/');
+  // XML (e.g. C-CDA) is rendered as a readable document rather than framed as source.
+  return ct === 'application/pdf' || ct === 'application/json' || (ct.startsWith('text/') && !isXmlContentType(ct));
 }
 
 function getAuthor(doc: DocumentReference): string | undefined {
@@ -301,6 +304,11 @@ interface AttachmentPreviewProps {
 
 function AttachmentPreview({ attachment, url, onOpen }: AttachmentPreviewProps): JSX.Element {
   const contentType = attachment.contentType;
+
+  // XML can also arrive inline as `data`, so it is handled before the url check.
+  if (isXmlContentType(contentType)) {
+    return <XmlDocumentPreview attachment={attachment} url={url} onOpen={onOpen} />;
+  }
 
   if (!url) {
     return (

@@ -230,6 +230,35 @@ describe('DocumentDetailPanel', () => {
       ).toBeInTheDocument();
     });
 
+    test('Renders a C-CDA document as readable sections', async () => {
+      const xml =
+        '<ClinicalDocument xmlns="urn:hl7-org:v3"><title>Progress Notes</title><component><structuredBody>' +
+        '<component><section><title>Plan</title><text><paragraph>Repeat LFTs<script>alert(1)</script></paragraph></text></section></component>' +
+        '</structuredBody></component></ClinicalDocument>';
+      const { container } = setup(withAttachment({ contentType: 'application/xml', data: btoa(xml) }));
+
+      expect(await screen.findByRole('heading', { name: 'Progress Notes' })).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Plan' })).toHaveTextContent('Repeat LFTs');
+      expect(container.querySelector('script')).toBeNull();
+    });
+
+    test('Loads a Medplum-hosted XML file and shows non-CDA XML as source', async () => {
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('<note>hello</note>'));
+      setup(withAttachment({ contentType: 'text/xml', url: 'Binary/xml' }));
+
+      expect(await screen.findByText('<note>hello</note>')).toBeInTheDocument();
+      expect(screen.getByText(/not a C-CDA clinical document/)).toBeInTheDocument();
+    });
+
+    test('Explains an XML file that was never copied into Medplum', async () => {
+      vi.spyOn(medplum, 'downloadResponse').mockResolvedValue(new Response('{}', { status: 404 }));
+      setup(withAttachment({ contentType: 'application/xml', url: 'Binary/zus-only' }));
+
+      expect(
+        await screen.findByText("This file hasn't been copied into Lyfe yet. Re-import the patient to fetch it.")
+      ).toBeInTheDocument();
+    });
+
     // Documents imported before the importer typed its files carry only a link and a name.
     test('Previews an untyped PDF named by its document description', () => {
       const url = 'http://example.com/binary/abc123';
