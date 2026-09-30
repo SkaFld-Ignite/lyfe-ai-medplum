@@ -83,6 +83,7 @@ function toRun(task: Task): ImportRun | undefined {
   const incomplete: Record<string, string> = {};
   let durationMs: number | undefined;
   let errorMessage: string | undefined;
+  let outputPatientId: string | undefined;
 
   for (const entry of task.output ?? []) {
     const label = entry.type?.text;
@@ -108,8 +109,10 @@ function toRun(task: Task): ImportRun | undefined {
       errorMessage = String(value);
     } else if (label.startsWith('incomplete:')) {
       incomplete[label.slice('incomplete:'.length)] = String(value);
-    } else if (label === 'total' || label === 'medplumPatientId') {
-      // `total` is recomputed below; the patient id is carried on Task.for.
+    } else if (label === 'medplumPatientId') {
+      outputPatientId = String(value);
+    } else if (label === 'total') {
+      // Recomputed below from the per-type counts.
       continue;
     } else if (typeof value === 'number') {
       counts[label] = value;
@@ -124,12 +127,18 @@ function toRun(task: Task): ImportRun | undefined {
 
   const errorCoding = task.statusReason?.coding?.find((c) => c.system === IMPORT_ERROR_SYSTEM);
 
+  // `Task.for` is the right place for this and is what current runs set. The
+  // output fallback exists for runs written before the chart importer kept
+  // `for` through its closing update — they still recorded the patient id in
+  // their output, so the name is recoverable without rewriting history.
+  const patientReference = task.for?.reference ?? (outputPatientId ? `Patient/${outputPatientId}` : undefined);
+
   return {
     id: task.id,
     source,
     status: task.status,
     phase: task.businessStatus?.text,
-    patientReference: task.for?.reference,
+    patientReference,
     patientName: task.for?.display,
     startedAt: start,
     endedAt: end,

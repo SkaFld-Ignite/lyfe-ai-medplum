@@ -237,8 +237,8 @@ function RunRows(props: RunRowsProps): JSX.Element {
               <Progress value={(step.current / step.total) * 100} size="xs" radius="xl" />
             </Stack>
           ) : (
-            <Text size="sm" c="dimmed">
-              {run.status === 'failed' ? (run.errorReason ?? 'failed') : (run.phase ?? '—')}
+            <Text size="sm" c="dimmed" lineClamp={1}>
+              {run.status === 'failed' ? describeFailure(run) : (run.phase ?? '—')}
             </Text>
           )}
         </Table.Td>
@@ -424,6 +424,23 @@ function CountCell(props: { value: number }): JSX.Element {
 }
 
 const BADGE = { textTransform: 'none', fontWeight: 500 } as const;
+
+/**
+ * Short failure description for the list.
+ *
+ * Prefers the coded reason, which is what the newer runs carry and what reads
+ * as an action. Runs from before the taxonomy existed have only a message, so
+ * that is shown rather than the word "failed", which the status column
+ * already says.
+ * @param run - The failed run.
+ * @returns A one-line description.
+ */
+function describeFailure(run: ImportRun): string {
+  if (run.errorReason) {
+    return run.errorReason;
+  }
+  return run.errorMessage?.split('\n')[0].slice(0, 120) ?? 'failed';
+}
 
 /**
  * Split a phase string like "6 of 11 · allergies" into its parts.
