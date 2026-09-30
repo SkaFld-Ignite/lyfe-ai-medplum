@@ -62,9 +62,11 @@ import {
   readCredentialRecord,
 } from './shared/credentials.ts';
 import { readZusEnabledLocationRefs } from './shared/directory.ts';
+import { linkPatientCoveragePayors } from './shared/payers.ts';
 import { ImportProgress, buildStatusReason } from './shared/progress.ts';
 import { ZUS_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
+import { pushReciprocity } from './shared/zus-push.ts';
 
 /**
  * Give the bot sandbox the Node globals it does not have.
@@ -368,7 +370,8 @@ async function run(props: {
     await linkZusIdentifiers({ medplum, patient, input: resolved });
 
     // Two setup phases (enrolment, identifiers) then one per resource type.
-    const progress = new ImportProgress({ medplum, task, totalPhases: RESOURCE_TYPES.length + 2 });
+    // Two setup phases, one per resource type, then payer linking and reciprocity.
+    const progress = new ImportProgress({ medplum, task, totalPhases: RESOURCE_TYPES.length + 4 });
     await progress.phase('enrolment');
     await progress.phase('linking Zus identifiers');
 
@@ -403,6 +406,43 @@ async function run(props: {
         incomplete[resourceType] = err instanceof Error ? err.message : String(err);
         log(`${resourceType} failed: ${incomplete[resourceType]}`);
       }
+    }
+
+    // Payers arrive from Zus as display strings with no reference, which
+    // renders as "Unknown Payor" everywhere. Mint the Organizations they name
+    // and point the Coverages at them.
+    await progress.phase('linking payers');
+    try {
+      const payers = await linkPatientCoveragePayors({ medplum, organization, patientId: input.medplumPatientId });
+      if (payers.linked > 0) {
+        log(`linked ${payers.linked} Coverage(s) to ${payers.payers} payer organization(s)`);
+      }
+    } catch (err) {
+      incomplete.payers = err instanceof Error ? err.message : String(err);
+    }
+
+    // Reciprocity: publish what we authored back to the network we just read
+    // from. Carequality and CommonWell expect contribution in exchange for
+    // query, so this is part of the pull, not an optional extra.
+    await progress.phase('publishing to Zus (reciprocity)');
+    try {
+      const pushed = await pushReciprocity({
+        medplum,
+        zus,
+        patient,
+        zusPatientId: resolved.zusPatientId as string,
+        upid: resolved.zusUniversalId as string,
+        log,
+      });
+      counts['reciprocity:published'] = pushed.total;
+      if (pushed.errors.length > 0) {
+        incomplete.reciprocity = pushed.errors.join('; ').slice(0, 400);
+      }
+      log(`reciprocity: published ${pushed.total} resource(s) to Zus`);
+    } catch (err) {
+      // Failing to contribute must not discard a successful pull.
+      incomplete.reciprocity = err instanceof Error ? err.message : String(err);
+      log(`reciprocity failed: ${incomplete.reciprocity}`);
     }
 
     const durationMs = Date.now() - startedAt;

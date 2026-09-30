@@ -7,7 +7,12 @@ import type { JSX } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LyfePageHeader } from '../../components/brand/LyfePageHeader';
 import type { DrChronoPatientSummary } from '../../services/onboarding';
-import { formatDrChronoName, importDrChronoPatient, searchDrChronoPatients } from '../../services/onboarding';
+import {
+  formatDrChronoName,
+  importDrChronoPatient,
+  importZusRecord,
+  searchDrChronoPatients,
+} from '../../services/onboarding';
 import { BulkImportPanel } from './BulkImportPanel';
 
 const MIN_QUERY_LENGTH = 2;
@@ -33,7 +38,9 @@ export function LyfeOnboardingPage(): JSX.Element {
   // Keyed by DrChrono patient id so each row reports its own progress; a single
   // shared flag would blank every other row's outcome the moment one is clicked.
   const [importing, setImporting] = useState<Record<string, boolean>>({});
-  const [imported, setImported] = useState<Record<string, { ok: boolean; detail: string }>>({});
+  const [imported, setImported] = useState<Record<string, { ok: boolean; detail: string; medplumId?: string }>>({});
+  const [zusRunning, setZusRunning] = useState<Record<string, boolean>>({});
+  const [zusResult, setZusResult] = useState<Record<string, string>>({});
 
   const runImport = useCallback(
     (patient: DrChronoPatientSummary): void => {
@@ -44,11 +51,38 @@ export function LyfeOnboardingPage(): JSX.Element {
           const total = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
           setImported((m) => ({
             ...m,
-            [id]: r.ok ? { ok: true, detail: `${total} resources` } : { ok: false, detail: r.error ?? 'Import failed' },
+            [id]: r.ok
+              ? { ok: true, detail: `${total} resources`, medplumId: r.medplumPatientId }
+              : { ok: false, detail: r.error ?? 'Import failed' },
           }));
         })
         .catch((err: Error) => setImported((m) => ({ ...m, [id]: { ok: false, detail: err.message } })))
         .finally(() => setImporting((m) => ({ ...m, [id]: false })));
+    },
+    [medplum]
+  );
+
+  /**
+   * Pull (and publish back) this patient's Zus record.
+   *
+   * Separate from the chart import on purpose. A patient already in Medplum
+   * has no reason to re-import their DrChrono chart just to refresh Zus, and
+   * before this there was no way to run the Zus leg on its own at all.
+   */
+  const runZus = useCallback(
+    (drchronoId: string, medplumPatientId: string): void => {
+      setZusRunning((m) => ({ ...m, [drchronoId]: true }));
+      setZusResult((m) => ({ ...m, [drchronoId]: 'starting…' }));
+      importZusRecord(medplum, medplumPatientId, (status) => setZusResult((m) => ({ ...m, [drchronoId]: status })))
+        .then((r) => {
+          const total = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
+          setZusResult((m) => ({
+            ...m,
+            [drchronoId]: r.ok ? `Zus — ${total} resources` : (r.error ?? 'Zus failed'),
+          }));
+        })
+        .catch((err: Error) => setZusResult((m) => ({ ...m, [drchronoId]: err.message })))
+        .finally(() => setZusRunning((m) => ({ ...m, [drchronoId]: false })));
     },
     [medplum]
   );
@@ -183,10 +217,31 @@ export function LyfeOnboardingPage(): JSX.Element {
                         </Table.Td>
                         <Table.Td ta="right">
                           {imported[String(patient.id)] ? (
-                            <Text size="xs" c={imported[String(patient.id)].ok ? 'teal.7' : 'red.7'}>
-                              {imported[String(patient.id)].ok ? 'Imported — ' : ''}
-                              {imported[String(patient.id)].detail}
-                            </Text>
+                            <Stack gap={4} align="flex-end">
+                              <Text size="xs" c={imported[String(patient.id)].ok ? 'teal.7' : 'red.7'}>
+                                {imported[String(patient.id)].ok ? 'Imported — ' : ''}
+                                {imported[String(patient.id)].detail}
+                              </Text>
+                              {imported[String(patient.id)].medplumId && (
+                                <Button
+                                  size="compact-xs"
+                                  variant="light"
+                                  color="cyan"
+                                  radius="md"
+                                  loading={zusRunning[String(patient.id)]}
+                                  onClick={() =>
+                                    runZus(String(patient.id), imported[String(patient.id)].medplumId as string)
+                                  }
+                                >
+                                  Pull from Zus
+                                </Button>
+                              )}
+                              {zusResult[String(patient.id)] && (
+                                <Text size="xs" c="gray.6">
+                                  {zusResult[String(patient.id)]}
+                                </Text>
+                              )}
+                            </Stack>
                           ) : (
                             <Button
                               size="xs"

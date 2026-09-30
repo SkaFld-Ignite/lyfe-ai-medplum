@@ -1854,6 +1854,17 @@ function mapEncounter(
     appointment: appointmentRef ? [appointmentRef] : undefined,
     period: start ? { start, end: addMinutes(start, minutes) } : undefined,
     length: { value: minutes, unit: 'min', system: 'http://unitsofmeasure.org', code: 'min' },
+    // `type` as well as `reasonCode`, from the same DrChrono `reason`.
+    //
+    // They answer different questions in FHIR — type is "what kind of visit",
+    // reasonCode is "why" — and DrChrono has only the one free-text field for
+    // both. Writing it to reasonCode alone is more literally correct and was
+    // what this did, but every reader that names a visit reads `type` first:
+    // Medplum's own visit list falls back to the literal word "Visit" without
+    // it, so a chart of "fatty liver" and "EGD procedure results" visits
+    // rendered as eleven rows all called "Visit". Populating both keeps the
+    // precise meaning and gives every reader something to title the row with.
+    type: a.reason ? [{ text: a.reason }] : undefined,
     reasonCode: a.reason ? [{ text: a.reason }] : undefined,
     participant: practitioner
       ? [
