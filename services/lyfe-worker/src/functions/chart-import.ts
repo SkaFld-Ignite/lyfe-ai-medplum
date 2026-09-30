@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { NonRetriableError } from 'inngest';
 import { handler as drchronoHandler } from '../../../../examples/medplum-provider/bots/drchrono-import.ts';
+import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
 import { completeTask, failTask, setPhase, startTask } from '../task.ts';
@@ -28,7 +29,7 @@ export const chartImport = inngest.createFunction(
   },
   { event: 'lyfe/chart.import.requested' },
   async ({ event, step, runId, logger }) => {
-    const { organizationId, drchronoPatientId, withZus, batchId } = event.data;
+    const { organizationId, requester, drchronoPatientId, withZus, batchId } = event.data;
     const medplum = await getMedplum();
     const organization = { reference: `Organization/${organizationId}` };
 
@@ -39,12 +40,7 @@ export const chartImport = inngest.createFunction(
     // patient-keyed rather than DrChrono-keyed.
     const result = await step.run('import-chart', async () => {
       logger.info('importing chart', { drchronoPatientId, organizationId });
-      return drchronoHandler(medplum, {
-        bot: { reference: 'Bot/inngest' },
-        contentType: 'application/json',
-        secrets: {},
-        input: { action: 'import', drchronoPatientId },
-      } as never);
+      return drchronoHandler(medplum, botEvent(requester, { action: 'import', drchronoPatientId }));
     });
 
     if (!result.ok) {
@@ -90,7 +86,7 @@ export const chartImport = inngest.createFunction(
     if (withZus) {
       await step.sendEvent('request-zus', {
         name: 'lyfe/zus.import.requested',
-        data: { organizationId, medplumPatientId: patientId, batchId },
+        data: { organizationId, requester, medplumPatientId: patientId, batchId },
       });
     }
 

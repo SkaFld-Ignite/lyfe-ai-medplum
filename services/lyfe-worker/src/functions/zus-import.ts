@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { handler as zusHandler } from '../../../../examples/medplum-provider/bots/zus-import.ts';
+import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
 import { completeTask, failTask, setPhase, startTask } from '../task.ts';
@@ -39,7 +40,7 @@ export const zusImport = inngest.createFunction(
   },
   { event: 'lyfe/zus.import.requested' },
   async ({ event, step, runId, logger }) => {
-    const { organizationId, medplumPatientId, batchId } = event.data;
+    const { organizationId, requester, medplumPatientId, batchId } = event.data;
     const medplum = await getMedplum();
     const organization = { reference: `Organization/${organizationId}` };
 
@@ -60,12 +61,7 @@ export const zusImport = inngest.createFunction(
       // and the waits below never happen.
       let result = await step.run('pull-record', async () => {
         await setPhase(medplum, taskId, 'pulling Zus record');
-        return zusHandler(medplum, {
-          bot: { reference: 'Bot/inngest' },
-          contentType: 'application/json',
-          secrets: {},
-          input: { action: 'import', medplumPatientId },
-        } as never);
+        return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
       });
 
       // A fresh enrolment comes back successful but nearly empty, because the
@@ -80,12 +76,7 @@ export const zusImport = inngest.createFunction(
         await step.sleep(`await-networks-${attempt}`, wait);
         result = await step.run(`re-pull-${attempt}`, async () => {
           await setPhase(medplum, taskId, `pulling Zus record (attempt ${attempt + 2})`);
-          return zusHandler(medplum, {
-            bot: { reference: 'Bot/inngest' },
-            contentType: 'application/json',
-            secrets: {},
-            input: { action: 'import', medplumPatientId },
-          } as never);
+          return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
         });
       }
 
