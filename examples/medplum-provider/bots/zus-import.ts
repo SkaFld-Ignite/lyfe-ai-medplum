@@ -102,13 +102,18 @@ export interface ZusImportInput {
   /**
    * Builder-scoped Zus Patient resource id — the one the data subscription API
    * enrols. NOT the universal id; see the note at the top of this file.
+   *
+   * Optional. When omitted the bot resolves it from the Medplum Patient's own
+   * Zus identifiers, and registers the patient with Zus if they are not there
+   * yet. That is what makes an unattended bulk run possible: the caller has a
+   * Medplum patient id and nothing else.
    */
-  zusPatientId: string;
+  zusPatientId?: string;
   /**
    * Zus universal patient id (`upid`) — the one the FHIR search parameter of
-   * that name takes.
+   * that name takes. Optional, resolved alongside `zusPatientId`.
    */
-  zusUniversalId: string;
+  zusUniversalId?: string;
   /** The Medplum Patient every imported resource is re-anchored to. */
   medplumPatientId: string;
 }
@@ -290,8 +295,6 @@ async function run(props: {
   if (input?.action !== 'import') {
     throw new Error(`Unknown action ${JSON.stringify(input?.action)}. Expected "import".`);
   }
-  requireId({ value: input.zusPatientId, name: 'zusPatientId' });
-  requireId({ value: input.zusUniversalId, name: 'zusUniversalId' });
   requireId({ value: input.medplumPatientId, name: 'medplumPatientId' });
 
   const material = event.secrets[ENCRYPTION_KEY_SECRET_NAME]?.valueString;
@@ -340,14 +343,20 @@ async function run(props: {
 
   const zus = await connectToZus({ medplum, organization, key: deriveEncryptionKey({ material }) });
 
-  const task = await createTask({ medplum, organization, input });
+  // Resolve the two Zus ids the rest of this run needs. Supplied ids win, so a
+  // caller that already knows them pays for nothing extra; otherwise they come
+  // off the Patient, and failing that the patient is registered with Zus.
+  const ids = await resolveZusPatientIds({ medplum, zus, patient, input });
+  const resolved: ZusImportInput = { ...input, ...ids };
+
+  const task = await createTask({ medplum, organization, input: resolved });
   log(`task ${task.id} opened for Patient/${input.medplumPatientId}`);
 
   const counts: Record<string, number> = {};
   const incomplete: Record<string, string> = {};
 
   try {
-    const enrolment = await ensureEnrolment({ zus, builderScopedPatientId: input.zusPatientId });
+    const enrolment = await ensureEnrolment({ zus, builderScopedPatientId: resolved.zusPatientId as string });
     log(`enrolment ${enrolment.status}${enrolment.alreadyEnrolled ? ' (pre-existing)' : ''}`);
     if (enrolment.status !== 'active') {
       // Not fatal: Zus keeps aggregating in the background and a later run picks
@@ -355,7 +364,7 @@ async function run(props: {
       incomplete.enrolment = `Zus enrolment is "${enrolment.status}", not "active" — the record may be partial`;
     }
 
-    await linkZusIdentifiers({ medplum, patient, input });
+    await linkZusIdentifiers({ medplum, patient, input: resolved });
 
     const patientRef: Reference<Patient> = { reference: `Patient/${input.medplumPatientId}` };
     // Zus reference ("Encounter/<zus id>") to Medplum reference, fed forward
@@ -368,7 +377,7 @@ async function run(props: {
           medplum,
           zus,
           resourceType,
-          upid: input.zusUniversalId,
+          upid: resolved.zusUniversalId as string,
           patientRef,
           organization,
           referenceMap,
@@ -629,6 +638,127 @@ async function zusFetch(props: {
     await sleep(ZUS_5XX_BACKOFFS_MS[attempt]);
   }
   throw lastError instanceof Error ? lastError : new Error(`${props.label}: retries exhausted`);
+}
+
+/**
+ * Resolve the two Zus ids for a patient, registering them with Zus if needed.
+ *
+ * Zus uses two different ids and they are not interchangeable — the
+ * builder-scoped `Patient.id` is what the subscription API enrols, while the
+ * universal id (`upid`) is what the FHIR search parameter takes. Passing the
+ * wrong one fails quietly: the search returns HTTP 200 with an empty bundle.
+ * See the note at the top of this file.
+ *
+ * Resolution order:
+ *   1. ids supplied by the caller, so an existing caller is unaffected
+ *   2. the Zus identifiers already on the Medplum Patient, written by a
+ *      previous run's `linkZusIdentifiers`
+ *   3. registering the patient with Zus, which returns both
+ *
+ * Step 3 is the only one that writes anything outward, and it is reached only
+ * for a patient Zus has never seen.
+ * @param props - The lookup inputs.
+ * @param props.medplum - Bot-scoped Medplum client.
+ * @param props.zus - Authenticated Zus connection.
+ * @param props.patient - The Medplum Patient being imported onto.
+ * @param props.input - The caller's input, whose ids win when present.
+ * @returns Both Zus ids.
+ */
+async function resolveZusPatientIds(props: {
+  medplum: MedplumClient;
+  zus: ZusConnection;
+  patient: Patient;
+  input: ZusImportInput;
+}): Promise<{ zusPatientId: string; zusUniversalId: string }> {
+  const supplied = {
+    zusPatientId: props.input.zusPatientId?.trim(),
+    zusUniversalId: props.input.zusUniversalId?.trim(),
+  };
+  if (supplied.zusPatientId && supplied.zusUniversalId) {
+    return { zusPatientId: supplied.zusPatientId, zusUniversalId: supplied.zusUniversalId };
+  }
+
+  const identifiers = props.patient.identifier ?? [];
+  const stored = {
+    zusPatientId: identifiers.find((i) => i.system === `${ZUS_IDENTIFIER_BASE}/Patient`)?.value,
+    zusUniversalId: identifiers.find((i) => i.system === ZUS_UNIVERSAL_ID_SYSTEM)?.value,
+  };
+  const zusPatientId = supplied.zusPatientId ?? stored.zusPatientId;
+  const zusUniversalId = supplied.zusUniversalId ?? stored.zusUniversalId;
+  if (zusPatientId && zusUniversalId) {
+    log(`resolved Zus ids from Patient/${props.patient.id}`);
+    return { zusPatientId, zusUniversalId };
+  }
+
+  return registerPatientWithZus({ zus: props.zus, patient: props.patient });
+}
+
+/**
+ * Register a patient with Zus and return the ids Zus assigns.
+ *
+ * Zus requires a name and date of birth to match a person to its network; a
+ * record without them would be registered but never aggregate anything, so
+ * this refuses rather than creating an inert patient.
+ * @param props - The registration inputs.
+ * @param props.zus - Authenticated Zus connection.
+ * @param props.patient - The Medplum Patient to mirror into Zus.
+ * @returns Both Zus ids.
+ */
+async function registerPatientWithZus(props: {
+  zus: ZusConnection;
+  patient: Patient;
+}): Promise<{ zusPatientId: string; zusUniversalId: string }> {
+  const name = props.patient.name?.[0];
+  const family = name?.family?.trim();
+  const given = name?.given?.filter(Boolean).join(' ').trim();
+  const birthDate = props.patient.birthDate;
+  if (!family || !given || !birthDate) {
+    throw new Error(
+      `Patient/${props.patient.id} cannot be registered with Zus: a given name, family name and date of birth are all required ` +
+        `(given=${given || 'missing'}, family=${family || 'missing'}, birthDate=${birthDate || 'missing'})`
+    );
+  }
+
+  const body = {
+    resourceType: 'Patient',
+    active: true,
+    name: [{ use: 'official', family, given: given.split(' ') }],
+    birthDate,
+    ...(props.patient.gender ? { gender: props.patient.gender } : {}),
+    ...(props.patient.telecom?.length ? { telecom: props.patient.telecom } : {}),
+    ...(props.patient.address?.length ? { address: props.patient.address } : {}),
+  };
+
+  const res = await zusFetch({
+    connection: props.zus,
+    url: `${props.zus.fhirUrl}/Patient`,
+    label: 'Zus patient registration',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/fhir+json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Zus refused to register Patient/${props.patient.id} (${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  let created: { id?: string; identifier?: Identifier[] };
+  try {
+    created = JSON.parse(text) as { id?: string; identifier?: Identifier[] };
+  } catch {
+    throw new Error(`Zus returned a non-JSON response registering Patient/${props.patient.id}: ${text.slice(0, 200)}`);
+  }
+
+  const zusPatientId = created.id;
+  const zusUniversalId = created.identifier?.find((i) => i.system === ZUS_UNIVERSAL_ID_SYSTEM)?.value;
+  if (!zusPatientId || !zusUniversalId) {
+    throw new Error(
+      `Zus registered Patient/${props.patient.id} but did not return both ids ` +
+        `(id=${zusPatientId ?? 'missing'}, upid=${zusUniversalId ?? 'missing'})`
+    );
+  }
+  log(`registered Patient/${props.patient.id} with Zus (upid ${zusUniversalId})`);
+  return { zusPatientId, zusUniversalId };
 }
 
 /**

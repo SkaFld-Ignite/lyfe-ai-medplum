@@ -6,6 +6,7 @@ import {
   Badge,
   Box,
   Button,
+  Checkbox,
   Group,
   Paper,
   SimpleGrid,
@@ -20,9 +21,35 @@ import type { JSX } from 'react';
 import { useCallback, useState } from 'react';
 import { Link } from 'react-router';
 import type { BulkImportCandidate } from '../../services/onboarding';
-import { DRCHRONO_IDENTIFIER_SYSTEM, formatDrChronoName, previewBulkImport } from '../../services/onboarding';
+import {
+  DRCHRONO_IDENTIFIER_SYSTEM,
+  formatDrChronoName,
+  importDrChronoPatient,
+  importZusRecord,
+  previewBulkImport,
+} from '../../services/onboarding';
 
 const today = (): string => new Date().toISOString().slice(0, 10);
+
+/** Badge colour per run state. */
+const RUN_STATUS_COLOR: Record<RunRow['status'], string> = {
+  pending: 'gray',
+  importing: 'blue',
+  zus: 'cyan',
+  done: 'teal',
+  skipped: 'yellow',
+  failed: 'red',
+};
+
+const RUN_BADGE = { textTransform: 'none', fontWeight: 500 } as const;
+
+/** Per-patient outcome while a bulk run is in flight. */
+interface RunRow {
+  readonly drchronoId: string;
+  readonly name: string;
+  status: 'pending' | 'importing' | 'zus' | 'done' | 'failed' | 'skipped';
+  detail?: string;
+}
 
 interface PreviewState {
   readonly scannedAppointments: number;
@@ -48,6 +75,9 @@ export function BulkImportPanel(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [preview, setPreview] = useState<PreviewState>();
+  const [run, setRun] = useState<RunRow[]>();
+  const [running, setRunning] = useState(false);
+  const [withZus, setWithZus] = useState(true);
 
   const runPreview = useCallback(() => {
     setLoading(true);
@@ -79,6 +109,59 @@ export function BulkImportPanel(): JSX.Element {
   }, [medplum, start, end]);
 
   const newCount = preview ? preview.candidates.filter((c) => !preview.existing.has(String(c.id))).length : 0;
+
+  /**
+   * Import every new patient on the previewed day, one at a time.
+   *
+   * Sequential on purpose. Each chart is thousands of writes and Medplum's
+   * rate limiter is per-project, so running these concurrently makes them all
+   * fail together rather than finishing sooner. One patient's failure is
+   * recorded and the run continues: a bad chart in the middle of a day's
+   * schedule should not cost the rest of the day.
+   */
+  const startRun = useCallback(async (): Promise<void> => {
+    if (!preview) {
+      return;
+    }
+    const todo = preview.candidates.filter((c) => !preview.existing.has(String(c.id)));
+    setRunning(true);
+    setRun(todo.map((c) => ({ drchronoId: String(c.id), name: formatDrChronoName(c), status: 'pending' as const })));
+
+    const update = (id: string, patch: Partial<RunRow>): void =>
+      setRun((prev) => prev?.map((r) => (r.drchronoId === id ? { ...r, ...patch } : r)));
+
+    for (const candidate of todo) {
+      const id = String(candidate.id);
+      update(id, { status: 'importing', detail: undefined });
+      try {
+        const result = await importDrChronoPatient(medplum, id, (status) => update(id, { detail: status }));
+        if (!result.ok || !result.medplumPatientId) {
+          update(id, { status: 'failed', detail: result.error ?? 'import failed' });
+          continue;
+        }
+
+        if (!withZus) {
+          update(id, { status: 'done', detail: 'chart imported' });
+          continue;
+        }
+
+        update(id, { status: 'zus', detail: 'enrolling…' });
+        const zus = await importZusRecord(medplum, result.medplumPatientId, (status) => update(id, { detail: status }));
+        if (zus.ok) {
+          const total = Object.values(zus.counts ?? {}).reduce((sum, n) => sum + n, 0);
+          update(id, { status: 'done', detail: `chart + ${total} Zus resources` });
+        } else {
+          // Not a failure of the run: the office may simply not be enrolled in
+          // Zus, which is a configuration choice rather than an error.
+          update(id, { status: 'skipped', detail: zus.error ?? 'Zus skipped' });
+        }
+      } catch (err) {
+        update(id, { status: 'failed', detail: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    setRunning(false);
+  }, [medplum, preview, withZus]);
 
   return (
     <Stack gap="md">
@@ -196,11 +279,67 @@ export function BulkImportPanel(): JSX.Element {
             </Table>
           )}
 
-          <Group justify="flex-end" mt="md">
-            <Button disabled title="Import runs as a Medplum Bot — not yet enabled on this project">
+          <Group justify="space-between" mt="md">
+            <Checkbox
+              checked={withZus}
+              disabled={running}
+              onChange={(e) => setWithZus(e.target.checked)}
+              label="Also pull each patient's Zus record"
+              description="Only offices with Zus enrolment switched on in the Directory are sent to Zus."
+            />
+            <Button
+              loading={running}
+              disabled={newCount === 0}
+              onClick={() => {
+                startRun().catch(() => undefined);
+              }}
+            >
               Start Bulk Import ({newCount})
             </Button>
           </Group>
+
+          {run && run.length > 0 && (
+            <Paper withBorder p="md" radius="md" mt="md">
+              <Group justify="space-between" mb="sm">
+                <Text fw={600} size="sm">
+                  Import progress
+                </Text>
+                <Text size="sm" c="dimmed">
+                  {run.filter((r) => r.status === 'done').length} done ·{' '}
+                  {run.filter((r) => r.status === 'skipped').length} Zus skipped ·{' '}
+                  {run.filter((r) => r.status === 'failed').length} failed · {run.length} total
+                </Text>
+              </Group>
+              <Table verticalSpacing="xs">
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Patient</Table.Th>
+                    <Table.Th>State</Table.Th>
+                    <Table.Th>Detail</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {run.map((r) => (
+                    <Table.Tr key={r.drchronoId}>
+                      <Table.Td>
+                        <Text size="sm">{r.name}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Badge variant="light" radius="sm" color={RUN_STATUS_COLOR[r.status]} style={RUN_BADGE}>
+                          {r.status}
+                        </Badge>
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="sm" c="dimmed">
+                          {r.detail ?? '—'}
+                        </Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Paper>
+          )}
         </Paper>
       )}
     </Stack>

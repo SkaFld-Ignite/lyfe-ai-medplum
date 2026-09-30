@@ -213,3 +213,74 @@ export async function importDrChronoPatient(
   }
   return { ok: false, error: 'Import is still running after 20 minutes; check the Task.' };
 }
+
+/** Identifier of the bot that mirrors a patient's Zus record into Medplum. */
+const ZUS_BOT_IDENTIFIER = 'https://lyfe.health/bots|lyfe-zus-import';
+
+export interface ZusImportResult {
+  readonly ok: boolean;
+  readonly counts?: Record<string, number>;
+  readonly incomplete?: Record<string, string>;
+  readonly error?: string;
+}
+
+/**
+ * Pull a patient's Zus record into Medplum.
+ *
+ * Takes only the Medplum patient id: the bot resolves the two Zus ids itself,
+ * reading them off the Patient and registering with Zus when they are not
+ * there yet. That is what lets a bulk run chain straight from the DrChrono
+ * import without a human pasting ids.
+ *
+ * Whether the patient is eligible at all is decided server-side from the
+ * office their encounters are at — see the Directory page's Zus column. An
+ * ineligible patient comes back `ok: false` with the reason, having cost
+ * nothing.
+ * @param medplum - Authenticated Medplum client.
+ * @param medplumPatientId - The Medplum Patient to import onto.
+ * @param onProgress - Called with a human-readable status while the job runs.
+ * @returns The bot's result.
+ */
+export async function importZusRecord(
+  medplum: MedplumClient,
+  medplumPatientId: string,
+  onProgress?: (status: string) => void
+): Promise<ZusImportResult> {
+  const bot = await medplum.searchOne('Bot', { identifier: ZUS_BOT_IDENTIFIER });
+  if (!bot?.id) {
+    throw new OnboardingBackendUnavailableError(
+      `No Bot found with identifier ${ZUS_BOT_IDENTIFIER}. Run "npm run deploy:bots".`
+    );
+  }
+
+  // Async for the same reason the DrChrono import is: a Zus-sized pull runs
+  // well past Railway's 300s request ceiling.
+  const accepted = await medplum.startAsyncRequest<OperationOutcome>(`fhir/R4/Bot/${bot.id}/$execute`, {
+    body: JSON.stringify({ action: 'import', medplumPatientId }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const statusUrl = accepted.issue?.[0]?.diagnostics ?? '';
+  const jobId = /\/job\/([0-9a-f-]+)\/status/.exec(statusUrl)?.[1];
+  if (!jobId) {
+    throw new Error(`Zus import did not start: ${statusUrl || 'no job id in response'}`);
+  }
+
+  const POLL_MS = 5000;
+  const MAX_POLLS = 300; // 25 minutes; a full Zus record took 19
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((resolve) => {
+      setTimeout(resolve, POLL_MS);
+    });
+    const job = await medplum.readResource('AsyncJob', jobId);
+    if (job.status === 'completed') {
+      const raw = job.output?.parameter?.find((p) => p.name === 'responseBody')?.valueString;
+      return raw ? (JSON.parse(raw) as ZusImportResult) : { ok: true };
+    }
+    if (job.status === 'error') {
+      return { ok: false, error: 'Zus import failed — see the Task for details.' };
+    }
+    onProgress?.(`Zus… ${Math.round(((i + 1) * POLL_MS) / 1000)}s`);
+  }
+  return { ok: false, error: 'Zus import is still running after 25 minutes; check the Task.' };
+}
