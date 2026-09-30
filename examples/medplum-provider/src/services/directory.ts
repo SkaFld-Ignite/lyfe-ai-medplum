@@ -18,6 +18,15 @@
 import type { MedplumClient } from '@medplum/core';
 import type { Location, Practitioner } from '@medplum/fhirtypes';
 
+/**
+ * Marks an office whose patients may be enrolled in Zus.
+ *
+ * Separate from `Location.status` on purpose. Importing an office's charts and
+ * enrolling its patients with a third party are different decisions with
+ * different costs, so the Directory asks them separately.
+ */
+export const ZUS_ENROLMENT_EXTENSION = 'https://lyfe.health/fhir/StructureDefinition/zus-enrolment';
+
 /** Identifier systems the DrChrono importer stamps on directory resources. */
 export const DIRECTORY_SYSTEMS = {
   practitioner: 'https://drchrono.com/doctors',
@@ -40,6 +49,8 @@ export interface DirectoryRow {
   /** Speciality for a provider, address for an office. */
   readonly detail?: string;
   readonly enabled: boolean;
+  /** Offices only: whether patients seen here may be enrolled in Zus. */
+  readonly zusEnabled: boolean;
 }
 
 /** Both halves of the directory. */
@@ -122,6 +133,8 @@ export async function loadDirectory(medplum: MedplumClient): Promise<Directory> 
         detail: p.qualification?.[0]?.code?.text,
         // `active` is optional in FHIR, so only an explicit false is "off".
         enabled: p.active !== false,
+        // Zus enrolment is an office-level decision; providers never carry it.
+        zusEnabled: false,
       }))
       .sort(byName),
     locations: locations
@@ -132,6 +145,7 @@ export async function loadDirectory(medplum: MedplumClient): Promise<Directory> 
         name: l.name ?? l.id,
         detail: locationAddress(l),
         enabled: (l.status ?? 'active') === 'active',
+        zusEnabled: l.extension?.find((e) => e.url === ZUS_ENROLMENT_EXTENSION)?.valueBoolean === true,
       }))
       .sort(byName),
   };
@@ -164,6 +178,24 @@ export async function setLocationEnabled(medplum: MedplumClient, id: string, ena
   await medplum.patchResource('Location', id, [
     { op: 'add', path: '/status', value: enabled ? 'active' : 'suspended' },
   ]);
+}
+
+/**
+ * Switch Zus enrolment on or off for an office.
+ *
+ * Written as a whole-extension replace rather than a patch to one array index,
+ * because the index is not stable and a Location may carry other extensions.
+ * @param medplum - Authenticated Medplum client.
+ * @param id - Location resource id.
+ * @param zusEnabled - The new state.
+ */
+export async function setLocationZusEnabled(medplum: MedplumClient, id: string, zusEnabled: boolean): Promise<void> {
+  const location = await medplum.readResource('Location', id);
+  const others = (location.extension ?? []).filter((e) => e.url !== ZUS_ENROLMENT_EXTENSION);
+  await medplum.updateResource<Location>({
+    ...location,
+    extension: [...others, { url: ZUS_ENROLMENT_EXTENSION, valueBoolean: zusEnabled }],
+  });
 }
 
 /** What one DrChrono directory refresh wrote. */

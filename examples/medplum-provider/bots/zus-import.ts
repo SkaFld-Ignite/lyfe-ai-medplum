@@ -61,6 +61,7 @@ import {
   getCredentialValues,
   readCredentialRecord,
 } from './shared/credentials.ts';
+import { readZusEnabledLocationRefs } from './shared/directory.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
 /**
@@ -317,6 +318,24 @@ async function run(props: {
     'read Patient'
   );
   assertSameOrganization({ patient, organization });
+
+  // Zus enrolment is gated per office, separately from whether that office's
+  // charts are imported at all. The clinic imports appointments from every
+  // office it operates, but only some of those offices' patients should be
+  // sent to Zus — enrolment is an outward call to a third party and is billed
+  // per patient. Which offices qualify is configuration, set on the Directory
+  // page, not a constant in this file.
+  //
+  // Checked here, before connectToZus, so an ineligible patient costs nothing:
+  // no credentials read, no enrolment POST, no Task opened.
+  const eligibility = await withMedplum429Retry(
+    () => resolveZusEligibility({ medplum, organization, medplumPatientId: input.medplumPatientId }),
+    'resolve Zus eligibility'
+  );
+  if (!eligibility.eligible) {
+    return { ok: false, error: eligibility.reason, durationMs: Date.now() - startedAt };
+  }
+  log(`Zus-eligible via ${eligibility.via}`);
 
   const zus = await connectToZus({ medplum, organization, key: deriveEncryptionKey({ material }) });
 
@@ -609,6 +628,63 @@ async function zusFetch(props: {
     await sleep(ZUS_5XX_BACKOFFS_MS[attempt]);
   }
   throw lastError instanceof Error ? lastError : new Error(`${props.label}: retries exhausted`);
+}
+
+/**
+ * Decide whether this patient may be enrolled in Zus.
+ *
+ * A patient qualifies when any of their encounters happened at an office whose
+ * Zus-enrolment flag is on. Encounter is the only thing tying a patient to an
+ * office, and it is already written by the DrChrono importer, so this needs no
+ * new field on Patient and no second list to keep in step.
+ *
+ * The consequence worth knowing: a patient with no encounters yet — imported
+ * before their first visit, or whose visits were all at offices switched off
+ * in the Directory — is not eligible. That is the intended reading of an
+ * office-based rule, but it makes "nothing happened" explicable rather than
+ * mysterious, which is why the refusal names the cause.
+ * @param props - The lookup inputs.
+ * @param props.medplum - Bot-scoped Medplum client.
+ * @param props.organization - The calling clinic.
+ * @param props.medplumPatientId - The patient being considered.
+ * @returns Whether to proceed, and why not when refusing.
+ */
+async function resolveZusEligibility(props: {
+  medplum: MedplumClient;
+  organization: Reference<Organization>;
+  medplumPatientId: string;
+}): Promise<{ eligible: true; via: string } | { eligible: false; reason: string }> {
+  const enabled = await readZusEnabledLocationRefs(props.medplum, props.organization);
+  if (enabled.size === 0) {
+    return {
+      eligible: false,
+      reason:
+        'No office has Zus enrolment switched on, so no patient can be enrolled. ' +
+        'Turn it on for the relevant offices on the Directory page.',
+    };
+  }
+
+  const encounters = await props.medplum.searchResources('Encounter', {
+    patient: `Patient/${props.medplumPatientId}`,
+    _count: '1000',
+  });
+
+  for (const encounter of encounters) {
+    for (const entry of encounter.location ?? []) {
+      const reference = entry.location?.reference;
+      if (reference && enabled.has(reference)) {
+        return { eligible: true, via: entry.location?.display ?? reference };
+      }
+    }
+  }
+
+  return {
+    eligible: false,
+    reason:
+      `Patient/${props.medplumPatientId} has no encounter at an office with Zus enrolment switched on ` +
+      `(${encounters.length} encounter(s) checked against ${enabled.size} enabled office(s)). ` +
+      'Zus enrolment is configured per office on the Directory page.',
+  };
 }
 
 /**

@@ -21,6 +21,24 @@ import type { Location, Organization, Practitioner, Reference } from '@medplum/f
  * clobber a decision an operator made here.
  */
 
+/**
+ * Marks an office whose patients may be enrolled in Zus.
+ *
+ * Deliberately separate from `Location.status`. A clinic imports charts and
+ * appointments from every office it operates, but Zus enrolment is a narrower,
+ * outward-facing decision: it sends the patient to a third party, costs money
+ * per enrolment, and is not something to switch on for a surgery centre the
+ * practice merely bills through. Lyfe expressed this by syncing only two
+ * offices at all; here the two questions are asked separately, so the wider
+ * import no longer forces the wider enrolment.
+ *
+ * An extension rather than a new resource type or a parallel config table:
+ * extensions are FHIR's sanctioned way to carry exactly this kind of local
+ * business flag, and keeping it on the Location means it cannot drift from the
+ * office it describes.
+ */
+export const ZUS_ENROLMENT_EXTENSION = 'https://lyfe.health/fhir/StructureDefinition/zus-enrolment';
+
 /** Identifier systems the DrChrono importer stamps on directory resources. */
 export const DIRECTORY_SYSTEMS = {
   practitioner: 'https://drchrono.com/doctors',
@@ -33,6 +51,8 @@ export interface DirectoryEntry {
   readonly id: string;
   /** Whether this clinic currently has it switched on. */
   readonly enabled: boolean;
+  /** Offices only: whether patients seen here may be enrolled in Zus. */
+  readonly zusEnabled: boolean;
 }
 
 /** Current enablement for both halves of the directory, by DrChrono id. */
@@ -65,6 +85,19 @@ export function isLocationEnabled(location: Location): boolean {
  */
 export function isPractitionerEnabled(practitioner: Practitioner): boolean {
   return practitioner.active !== false;
+}
+
+/**
+ * Whether patients seen at this office may be enrolled in Zus.
+ *
+ * Absent means no. Enrolment is an outward call to a third party, so a new
+ * office nobody has made a decision about must not start enrolling patients
+ * simply by appearing in DrChrono.
+ * @param location - The office.
+ * @returns True when Zus enrolment is permitted for this office.
+ */
+export function isZusEnabled(location: Location): boolean {
+  return location.extension?.find((e) => e.url === ZUS_ENROLMENT_EXTENSION)?.valueBoolean === true;
 }
 
 /**
@@ -122,7 +155,7 @@ export async function readDirectoryState(
     if (!key || !p.id || !belongsTo(p.meta?.account?.reference, orgRef)) {
       continue;
     }
-    practitionerMap.set(key, { id: p.id, enabled: isPractitionerEnabled(p) });
+    practitionerMap.set(key, { id: p.id, enabled: isPractitionerEnabled(p), zusEnabled: false });
   }
 
   const locationMap = new Map<string, DirectoryEntry>();
@@ -131,7 +164,7 @@ export async function readDirectoryState(
     if (!key || !l.id || !belongsTo(l.meta?.account?.reference, orgRef)) {
       continue;
     }
-    locationMap.set(key, { id: l.id, enabled: isLocationEnabled(l) });
+    locationMap.set(key, { id: l.id, enabled: isLocationEnabled(l), zusEnabled: isZusEnabled(l) });
   }
 
   return { practitioners: practitionerMap, locations: locationMap };
@@ -175,6 +208,40 @@ export function mergeEnabled(args: { retiredUpstream: boolean; existing: Directo
     return false;
   }
   return args.existing?.enabled ?? true;
+}
+
+/**
+ * Decide the Zus-enrolment flag a Location should be written with.
+ *
+ * Same hazard as {@link mergeEnabled}: a re-pull replaces the resource, so
+ * without carrying the current value forward every chart import would switch
+ * Zus enrolment back off for every office. There is no upstream equivalent in
+ * DrChrono, so this is purely the operator's decision to preserve.
+ * @param existing - The directory row we already hold, when there is one.
+ * @returns True when the office should be written as Zus-enabled.
+ */
+export function mergeZusEnabled(existing: DirectoryEntry | undefined): boolean {
+  return existing?.zusEnabled ?? false;
+}
+
+/**
+ * The Medplum references of offices whose patients may be enrolled in Zus.
+ * @param medplum - Medplum client.
+ * @param organization - The clinic whose directory to read.
+ * @returns References of the form `Location/{id}`.
+ */
+export async function readZusEnabledLocationRefs(
+  medplum: MedplumClient,
+  organization: Reference<Organization>
+): Promise<Set<string>> {
+  const state = await readDirectoryState(medplum, organization);
+  const refs = new Set<string>();
+  for (const entry of state.locations.values()) {
+    if (entry.zusEnabled) {
+      refs.add(`Location/${entry.id}`);
+    }
+  }
+  return refs;
 }
 
 /**

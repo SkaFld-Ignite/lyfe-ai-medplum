@@ -77,7 +77,7 @@ import { clearTimeout as nodeClearTimeout, setTimeout as nodeSetTimeout } from '
 import type { BatchResult, UpsertEntry } from './shared/batch.ts';
 import { sleep, upsertBatch, withMedplum429Retry } from './shared/batch.ts';
 import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/credentials.ts';
-import { mergeEnabled, readDirectoryState } from './shared/directory.ts';
+import { ZUS_ENROLMENT_EXTENSION, mergeEnabled, mergeZusEnabled, readDirectoryState } from './shared/directory.ts';
 import type { DrChronoClient } from './shared/drchrono.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
@@ -1296,9 +1296,15 @@ function mapPractitioner(d: DrDoctor, organization: Reference<Organization>, ena
  * @param o - The DrChrono office payload.
  * @param organization - The calling clinic.
  * @param enabled - Whether this clinic has the office switched on.
+ * @param zusEnabled - Whether patients seen here may be enrolled in Zus.
  * @returns The Location resource.
  */
-function mapLocation(o: DrOffice, organization: Reference<Organization>, enabled: boolean): Location {
+function mapLocation(
+  o: DrOffice,
+  organization: Reference<Organization>,
+  enabled: boolean,
+  zusEnabled: boolean
+): Location {
   const telecom: Location['telecom'] = [];
   if (o.phone_number) {
     telecom.push({ system: 'phone', value: o.phone_number, use: 'work' });
@@ -1311,6 +1317,10 @@ function mapLocation(o: DrOffice, organization: Reference<Organization>, enabled
     meta: buildMeta(organization),
     identifier: [{ system: IDENTIFIER_SYSTEMS.location, value: String(o.id) }],
     status: enabled ? 'active' : 'suspended',
+    // Always written, never omitted when false: an absent extension and an
+    // explicit `false` must not be distinguishable, or a re-pull would look
+    // like a change and the value would drift.
+    extension: [{ url: ZUS_ENROLMENT_EXTENSION, valueBoolean: zusEnabled }],
     name: o.name,
     telecom: telecom.length > 0 ? telecom : undefined,
     address: o.address
@@ -2922,11 +2932,12 @@ async function syncDirectoryResources(
       existing: existing.locations.get(String(o.id)),
     })
   );
+  const officeZus = offices.map((o) => mergeZusEnabled(existing.locations.get(String(o.id))));
   const officeResult = await write(
     medplum,
     offices.map((o, i) => ({
       resourceType: 'Location',
-      resource: mapLocation(o, organization, officeEnabled[i]),
+      resource: mapLocation(o, organization, officeEnabled[i], officeZus[i]),
       system: IDENTIFIER_SYSTEMS.location,
       value: String(o.id),
     })),

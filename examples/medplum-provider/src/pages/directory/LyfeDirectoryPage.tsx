@@ -24,6 +24,7 @@ import {
   DirectoryBackendUnavailableError,
   loadDirectory,
   setLocationEnabled,
+  setLocationZusEnabled,
   setPractitionerEnabled,
   syncDirectoryFromDrChrono,
 } from '../../services/directory';
@@ -39,6 +40,9 @@ const MICRO_LABEL = {
 
 /** Which half of the directory a section renders. */
 type Section = 'practitioners' | 'locations';
+
+/** Which switch on a row was operated. */
+type Field = 'enabled' | 'zusEnabled';
 
 /**
  * Providers and offices pulled from DrChrono, each switchable on or off.
@@ -109,22 +113,24 @@ export function LyfeDirectoryPage(): JSX.Element {
   }, [medplum, refresh]);
 
   const onToggle = useCallback(
-    async (section: Section, row: DirectoryRow, enabled: boolean): Promise<void> => {
-      const key = `${section}:${row.id}`;
+    async (section: Section, field: Field, row: DirectoryRow, value: boolean): Promise<void> => {
+      const key = `${section}:${field}:${row.id}`;
       setPending((prev) => new Set(prev).add(key));
 
       // Move the switch immediately and roll it back on failure. Waiting for
       // the round trip makes the control feel broken on a slow connection.
-      setDirectory((prev) => (prev ? patchRow(prev, section, row.id, enabled) : prev));
+      setDirectory((prev) => (prev ? patchRow(prev, section, field, row.id, value) : prev));
 
       try {
-        if (section === 'practitioners') {
-          await setPractitionerEnabled(medplum, row.id, enabled);
+        if (field === 'zusEnabled') {
+          await setLocationZusEnabled(medplum, row.id, value);
+        } else if (section === 'practitioners') {
+          await setPractitionerEnabled(medplum, row.id, value);
         } else {
-          await setLocationEnabled(medplum, row.id, enabled);
+          await setLocationEnabled(medplum, row.id, value);
         }
       } catch (err) {
-        setDirectory((prev) => (prev ? patchRow(prev, section, row.id, !enabled) : prev));
+        setDirectory((prev) => (prev ? patchRow(prev, section, field, row.id, !value) : prev));
         showErrorNotification(`Could not update ${row.name}: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         setPending((prev) => {
@@ -216,10 +222,12 @@ export function LyfeDirectoryPage(): JSX.Element {
         title="Offices"
         emptyHint="No offices yet. Use “Pull from DrChrono” to load them."
         detailHeading="Address"
+        hint="Import controls whether appointments are pulled at all. Zus enrolment is separate: only patients seen at a Zus office are sent to Zus."
         loading={!directory}
         rows={locations}
         pending={pending}
         section="locations"
+        showZusColumn
         onToggle={onToggle}
       />
     </Stack>
@@ -231,11 +239,15 @@ interface DirectorySectionProps {
   readonly title: string;
   readonly emptyHint: string;
   readonly detailHeading: string;
+  /** Optional line under the heading explaining the columns. */
+  readonly hint?: string;
   readonly loading: boolean;
   readonly rows: DirectoryRow[];
   readonly pending: ReadonlySet<string>;
   readonly section: Section;
-  readonly onToggle: (section: Section, row: DirectoryRow, enabled: boolean) => Promise<void>;
+  /** Offices only: render the second, Zus-enrolment switch. */
+  readonly showZusColumn?: boolean;
+  readonly onToggle: (section: Section, field: Field, row: DirectoryRow, value: boolean) => Promise<void>;
 }
 
 /**
@@ -245,6 +257,7 @@ interface DirectorySectionProps {
  */
 function DirectorySection(props: DirectorySectionProps): JSX.Element {
   const enabledCount = props.rows.filter((r) => r.enabled).length;
+  const zusCount = props.rows.filter((r) => r.zusEnabled).length;
 
   return (
     <Paper withBorder radius="md" p="md">
@@ -256,11 +269,22 @@ function DirectorySection(props: DirectorySectionProps): JSX.Element {
           <Text fw={600}>{props.title}</Text>
           {!props.loading && (
             <Badge variant="light" radius="sm">
-              {enabledCount} of {props.rows.length} on
+              {enabledCount} of {props.rows.length} importing
+            </Badge>
+          )}
+          {!props.loading && props.showZusColumn && (
+            <Badge variant="light" color="teal" radius="sm">
+              {zusCount} enrolling in Zus
             </Badge>
           )}
         </Group>
       </Group>
+
+      {props.hint && (
+        <Text size="xs" c="dimmed" mb="sm">
+          {props.hint}
+        </Text>
+      )}
 
       {props.loading && (
         <Stack gap="xs">
@@ -283,7 +307,8 @@ function DirectorySection(props: DirectorySectionProps): JSX.Element {
               <Table.Th style={MICRO_LABEL}>Name</Table.Th>
               <Table.Th style={MICRO_LABEL}>{props.detailHeading}</Table.Th>
               <Table.Th style={MICRO_LABEL}>DrChrono ID</Table.Th>
-              <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>Enabled</Table.Th>
+              <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>Import</Table.Th>
+              {props.showZusColumn && <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>Zus enrolment</Table.Th>}
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -307,14 +332,31 @@ function DirectorySection(props: DirectorySectionProps): JSX.Element {
                 <Table.Td style={{ textAlign: 'right' }}>
                   <Switch
                     checked={row.enabled}
-                    disabled={props.pending.has(`${props.section}:${row.id}`)}
-                    aria-label={`Enable ${row.name}`}
+                    disabled={props.pending.has(`${props.section}:enabled:${row.id}`)}
+                    aria-label={`Import from ${row.name}`}
                     onChange={(e) => {
-                      props.onToggle(props.section, row, e.target.checked).catch(() => undefined);
+                      props.onToggle(props.section, 'enabled', row, e.target.checked).catch(() => undefined);
                     }}
                     style={{ display: 'inline-flex' }}
                   />
                 </Table.Td>
+                {props.showZusColumn && (
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Switch
+                      color="teal"
+                      checked={row.zusEnabled}
+                      // An office we do not import from cannot produce the
+                      // encounters that make its patients Zus-eligible, so
+                      // offering the switch there would promise nothing.
+                      disabled={!row.enabled || props.pending.has(`${props.section}:zusEnabled:${row.id}`)}
+                      aria-label={`Enrol ${row.name} patients in Zus`}
+                      onChange={(e) => {
+                        props.onToggle(props.section, 'zusEnabled', row, e.target.checked).catch(() => undefined);
+                      }}
+                      style={{ display: 'inline-flex' }}
+                    />
+                  </Table.Td>
+                )}
               </Table.Tr>
             ))}
           </Table.Tbody>
@@ -328,12 +370,14 @@ function DirectorySection(props: DirectorySectionProps): JSX.Element {
  * Replace one row's enabled state without mutating the directory in place.
  * @param directory - Current directory.
  * @param section - Which half the row is in.
+ * @param field - Which switch was operated.
  * @param id - Resource id of the row to change.
- * @param enabled - The new state.
+ * @param value - The new state.
  * @returns A new directory with that row updated.
  */
-function patchRow(directory: Directory, section: Section, id: string, enabled: boolean): Directory {
-  const update = (rows: DirectoryRow[]): DirectoryRow[] => rows.map((r) => (r.id === id ? { ...r, enabled } : r));
+function patchRow(directory: Directory, section: Section, field: Field, id: string, value: boolean): Directory {
+  const update = (rows: DirectoryRow[]): DirectoryRow[] =>
+    rows.map((r) => (r.id === id ? { ...r, [field]: value } : r));
   return section === 'practitioners'
     ? { ...directory, practitioners: update(directory.practitioners) }
     : { ...directory, locations: update(directory.locations) };
