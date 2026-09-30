@@ -10,11 +10,20 @@ import type { JSX, ReactNode } from 'react';
 import { useState } from 'react';
 import { XmlDocumentPreview } from '../../components/cda/XmlDocumentPreview';
 import { SendFaxModal } from '../../components/fax/SendFaxModal';
+import {
+  DocxPreview,
+  DownloadOnlyPreview,
+  SpreadsheetPreview,
+  TiffPreview,
+} from '../../components/patient-documents/RichFilePreview';
+import { useAttachmentBlob } from '../../hooks/useAttachmentBlob';
 import { useAttachmentPreviewUrl } from '../../hooks/useAttachmentPreviewUrl';
 import { isXmlContentType } from '../../utils/cda';
 import { getAttachmentContentType } from '../../utils/document-file-type';
 import { showErrorNotification } from '../../utils/notifications';
-import { openAttachment } from '../../utils/open-attachment';
+import { FILE_NOT_COPIED_MESSAGE, openAttachment } from '../../utils/open-attachment';
+import type { PreviewKind } from '../../utils/preview-kind';
+import { getPreviewKind } from '../../utils/preview-kind';
 import { getDocumentTypeDisplay } from './DocumentReference.utils';
 import { EditDocumentDetailsModal } from './EditDocumentDetailsModal';
 
@@ -213,6 +222,51 @@ function getAttachment(doc: DocumentReference): Attachment | undefined {
   return doc.content?.[0]?.attachment;
 }
 
+/**
+ * Preview for a file whose bytes have to be decoded in the page.
+ *
+ * Downloading is deliberately a step of its own: the decoders are loaded only
+ * once a file that needs them is opened, and a download that fails still leaves
+ * the file reachable rather than showing an empty frame.
+ * @param props - The preview inputs.
+ * @param props.kind - Which decoder to use.
+ * @param props.url - The attachment URL.
+ * @param props.contentType - The file's content type.
+ * @param props.onOpen - Opens or saves the original file.
+ * @returns The rendered preview.
+ */
+function DecodedPreview(props: {
+  kind: PreviewKind;
+  url: string;
+  contentType: string | undefined;
+  onOpen: () => void;
+}): JSX.Element {
+  // A file we will not render needs no download at all.
+  const needsBytes = props.kind !== 'download';
+  const { blob, loading, error } = useAttachmentBlob(needsBytes ? props.url : undefined);
+
+  if (props.kind === 'download') {
+    return <DownloadOnlyPreview contentType={props.contentType} onDownload={props.onOpen} />;
+  }
+  if (loading) {
+    return (
+      <Flex justify="center" align="center" h={300}>
+        <Loader size="sm" />
+      </Flex>
+    );
+  }
+  if (error || !blob) {
+    return <NoPreview onOpen={props.onOpen} message={FILE_NOT_COPIED_MESSAGE} />;
+  }
+  if (props.kind === 'docx') {
+    return <DocxPreview blob={blob} onDownload={props.onOpen} />;
+  }
+  if (props.kind === 'spreadsheet') {
+    return <SpreadsheetPreview blob={blob} onDownload={props.onOpen} />;
+  }
+  return <TiffPreview blob={blob} onDownload={props.onOpen} />;
+}
+
 function isPdfLike(attachment: Attachment | undefined): boolean {
   const ct = attachment?.contentType;
   if (!ct) {
@@ -318,11 +372,15 @@ function AttachmentPreview({ attachment, url, onOpen }: AttachmentPreviewProps):
     );
   }
 
-  if (!contentType) {
-    return <NoPreview onOpen={onOpen} message="This file type can't be previewed here" />;
+  const kind = getPreviewKind(contentType);
+
+  // Word, Excel and TIFF are decoded in the page, so they need the bytes rather
+  // than a URL. Everything else below renders straight from the URL.
+  if (kind === 'docx' || kind === 'spreadsheet' || kind === 'tiff' || kind === 'download') {
+    return <DecodedPreview kind={kind} url={url} contentType={contentType} onOpen={onOpen} />;
   }
 
-  if (contentType.startsWith('image/')) {
+  if (contentType?.startsWith('image/')) {
     return (
       <Box
         style={{ display: 'block', maxWidth: 'fit-content', position: 'relative', borderRadius: 4, overflow: 'hidden' }}
@@ -346,7 +404,7 @@ function AttachmentPreview({ attachment, url, onOpen }: AttachmentPreviewProps):
     );
   }
 
-  if (contentType.startsWith('video/')) {
+  if (contentType?.startsWith('video/')) {
     return (
       <Box style={{ width: '100%', maxWidth: '100%', position: 'relative', borderRadius: 4, overflow: 'hidden' }}>
         <video style={{ width: '100%', maxWidth: '100%', height: 'auto', display: 'block' }} controls={true}>
