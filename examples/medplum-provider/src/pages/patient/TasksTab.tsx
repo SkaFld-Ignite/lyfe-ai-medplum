@@ -118,6 +118,8 @@ export function TasksTab(): JSX.Element {
         newTaskOpened={isNewTask}
         onNewTaskOpen={onNewTaskOpen}
         onNewTaskClose={onNewTaskClose}
+        stacked
+        backUri={`/Patient/${patientId}/Task${location.search}`}
         myTasksUri={
           myTasksQuery ? `/Patient/${patientId}/Task?${myTasksQuery.substring(1)}` : `/Patient/${patientId}/Task`
         }

@@ -237,6 +237,34 @@ describe('ResourceBoard', () => {
     expect(onSelectFirst).not.toHaveBeenCalled();
   });
 
+  describe('stacked layout', () => {
+    test('shows only the full-width list and does not auto-select', async () => {
+      medplum.search = vi.fn().mockResolvedValue(bundleOf(comm('a', 'Alpha'), comm('b', 'Beta')));
+      const onSelectFirst = vi.fn();
+      await setup({ stacked: true, onSelectFirst, emptyDetail: <div data-testid="empty-detail" /> });
+      await waitFor(() => expect(screen.getByTestId('item-a')).toBeInTheDocument());
+      expect(screen.queryByTestId('detail')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('empty-detail')).not.toBeInTheDocument();
+      expect(onSelectFirst).not.toHaveBeenCalled();
+    });
+
+    test('shows the selected detail in place of the list, with a back link', async () => {
+      medplum.search = vi.fn().mockResolvedValue(bundleOf(comm('a', 'Alpha'), comm('b', 'Beta')));
+      await setup({ stacked: true, selectedId: 'a', backUri: '/Communication', backLabel: 'All messages' });
+      await waitFor(() => expect(screen.getByTestId('detail')).toHaveTextContent('Alpha detail'));
+      expect(screen.queryByTestId('item-b')).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'All messages' })).toHaveAttribute('href', '/Communication');
+    });
+
+    test('shows a loader while the selection resolves', async () => {
+      medplum.search = vi.fn().mockResolvedValue(bundleOf());
+      medplum.readResource = vi.fn().mockImplementation(() => new Promise(() => {}));
+      await setup({ stacked: true, selectedId: 'missing', backUri: '/Communication' });
+      expect(document.querySelector('.mantine-Loader-root')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Back' })).toBeInTheDocument();
+    });
+  });
+
   test('custom loadItems replaces the default search', async () => {
     const loadItems = vi.fn().mockResolvedValue({ items: [comm('x', 'Xylo')], total: 1 });
     await setup({ loadItems });

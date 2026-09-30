@@ -9,7 +9,7 @@ import { normalizeErrorString, Operator, parseSearchRequest } from '@medplum/cor
 import type { Communication, DocumentReference, Patient, Practitioner, Reference } from '@medplum/fhirtypes';
 import { useThreadInbox } from '@medplum/react-hooks';
 import { IconMessageCircle, IconPlus } from '@tabler/icons-react';
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo } from 'react';
 import type { ListWithDetailPaneTab } from '../../ListWithDetailPane/ListWithDetailPane';
 import { ListWithDetailPane } from '../../ListWithDetailPane/ListWithDetailPane';
@@ -37,6 +37,10 @@ import { ThreadListItem } from './ThreadListItem';
  * @param newTopicOpened - Controlled open state for the new topic dialog. When provided, use `onNewTopicOpen` and `onNewTopicClose` to update it.
  * @param onNewTopicOpen - Called when the user clicks the new message button. Required when `newTopicOpened` is provided.
  * @param onNewTopicClose - Called when the new topic dialog is closed. Required when `newTopicOpened` is provided.
+ * @param stacked - Single-column layout: the thread list fills the width and an open thread replaces it, under a
+ * link back to the list; nothing is auto-selected. See ListWithDetailPane.
+ * @param backUri - Stacked layout only: where the back link returns to.
+ * @param backLabel - Stacked layout only: the back link text.
  */
 
 export interface ThreadInboxProps {
@@ -57,6 +61,9 @@ export interface ThreadInboxProps {
   readonly newTopicOpened?: boolean;
   readonly onNewTopicOpen?: () => void;
   readonly onNewTopicClose?: () => void;
+  readonly stacked?: boolean;
+  readonly backUri?: string;
+  readonly backLabel?: ReactNode;
 }
 
 export function ThreadInbox(props: ThreadInboxProps): JSX.Element {
@@ -77,6 +84,9 @@ export function ThreadInbox(props: ThreadInboxProps): JSX.Element {
     allowPatientSelection = false,
     onNewTopicOpen,
     onNewTopicClose,
+    stacked,
+    backUri,
+    backLabel,
   } = props;
 
   const [internalModalOpened, { open: openInternalModal, close: closeInternalModal }] = useDisclosure(false);
@@ -216,6 +226,9 @@ export function ThreadInbox(props: ThreadInboxProps): JSX.Element {
           // /new route with no selection) — selecting would navigate away and close it.
           onSelectFirst={modalOpened ? undefined : onSelectFirst}
           listWidth={380}
+          stacked={stacked}
+          backUri={backUri}
+          backLabel={backLabel}
           tabs={tabs}
           activeTab={status}
           headerActions={headerActions}

@@ -159,6 +159,163 @@ export interface ImportResult {
 }
 
 /**
+ * Start a bot as a server-side async job and return its id, without waiting.
+ *
+ * Splitting "start" from "wait" is what makes a bulk run parallel. While the
+ * two were one function, a caller could only ever hold one import open at a
+ * time, so 122 patients ran strictly one after another — and closing the tab
+ * abandoned every patient that had not been reached yet, because the loop
+ * driving them lived in the page.
+ *
+ * A started job belongs to the server. It survives the tab closing, and the
+ * `Task` it writes is what the Imports page reads, so a run stays inspectable
+ * whether or not anyone is watching it.
+ * @param medplum - Authenticated Medplum client.
+ * @param botIdentifier - `system|value` identifier of the bot to run.
+ * @param input - The bot's input, sent as JSON.
+ * @returns The AsyncJob id.
+ */
+async function startBotJob(
+  medplum: MedplumClient,
+  botIdentifier: string,
+  input: Record<string, string>
+): Promise<string> {
+  const bot = await medplum.searchOne('Bot', { identifier: botIdentifier });
+  if (!bot?.id) {
+    throw new OnboardingBackendUnavailableError(
+      `No Bot found with identifier ${botIdentifier}. Run "npm run deploy:bots".`
+    );
+  }
+
+  // Deliberately async, not a plain executeBot.
+  //
+  // Railway caps any single request at 300s. A synchronous $execute of a real
+  // chart import is killed at that ceiling with a 502 — and MedplumClient
+  // RETRIES it, which starts a SECOND concurrent import of the same patient
+  // while the first is still running server-side. The async pattern returns
+  // immediately with a job to poll, and has no such ceiling.
+  const accepted = await medplum.startAsyncRequest<OperationOutcome>(`fhir/R4/Bot/${bot.id}/$execute`, {
+    body: JSON.stringify(input),
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const statusUrl = accepted.issue?.[0]?.diagnostics ?? '';
+  const jobId = /\/job\/([0-9a-f-]+)\/status/.exec(statusUrl)?.[1];
+  if (!jobId) {
+    throw new Error(`Job did not start: ${statusUrl || 'no job id in response'}`);
+  }
+  return jobId;
+}
+
+/**
+ * Wait for a started job and return whatever the bot responded with.
+ * @param medplum - Authenticated Medplum client.
+ * @param jobId - The AsyncJob to wait on.
+ * @param options - Polling settings.
+ * @param options.maxPolls - How many times to poll before giving up.
+ * @param options.label - Prefix for the progress message, e.g. "importing".
+ * @param options.timeoutMessage - Returned as the error when the job outlives `maxPolls`.
+ * @param options.onProgress - Called with a human-readable status while the job runs.
+ * @returns The bot's parsed response, or a failure describing what went wrong.
+ */
+async function awaitBotJob<T extends { ok: boolean; error?: string }>(
+  medplum: MedplumClient,
+  jobId: string,
+  options: {
+    maxPolls: number;
+    label: string;
+    timeoutMessage: string;
+    onProgress?: (status: string) => void;
+  }
+): Promise<T> {
+  const POLL_MS = 5000;
+  for (let i = 0; i < options.maxPolls; i++) {
+    await new Promise((resolve) => {
+      setTimeout(resolve, POLL_MS);
+    });
+    const job = await medplum.readResource('AsyncJob', jobId);
+    if (job.status === 'completed') {
+      const raw = job.output?.parameter?.find((p) => p.name === 'responseBody')?.valueString;
+      return raw ? (JSON.parse(raw) as T) : ({ ok: true } as T);
+    }
+    if (job.status === 'error') {
+      return { ok: false, error: `${options.label} failed — see the Task for details.` } as T;
+    }
+    options.onProgress?.(`${options.label}… ${Math.round(((i + 1) * POLL_MS) / 1000)}s`);
+  }
+  return { ok: false, error: options.timeoutMessage } as T;
+}
+
+/** How many polls a DrChrono chart import gets: 20 minutes. */
+const DRCHRONO_MAX_POLLS = 240;
+
+/** How many polls a Zus pull gets: 25 minutes; a full record took 19. */
+const ZUS_MAX_POLLS = 300;
+
+/**
+ * Start one DrChrono chart import, without waiting for it.
+ * @param medplum - Authenticated Medplum client.
+ * @param drchronoPatientId - The DrChrono patient id to import.
+ * @returns The AsyncJob id, already running server-side.
+ */
+export async function startDrChronoImport(medplum: MedplumClient, drchronoPatientId: number | string): Promise<string> {
+  return startBotJob(medplum, IMPORT_BOT_IDENTIFIER, {
+    action: 'import',
+    drchronoPatientId: String(drchronoPatientId),
+  });
+}
+
+/**
+ * Wait for a DrChrono chart import started by {@link startDrChronoImport}.
+ * @param medplum - Authenticated Medplum client.
+ * @param jobId - The AsyncJob to wait on.
+ * @param onProgress - Called with a human-readable status while the job runs.
+ * @returns The bot's result, including per-resource-type counts on success.
+ */
+export async function awaitDrChronoImport(
+  medplum: MedplumClient,
+  jobId: string,
+  onProgress?: (status: string) => void
+): Promise<ImportResult> {
+  return awaitBotJob<ImportResult>(medplum, jobId, {
+    maxPolls: DRCHRONO_MAX_POLLS,
+    label: 'importing',
+    timeoutMessage: 'Import is still running after 20 minutes; check the Task.',
+    onProgress,
+  });
+}
+
+/**
+ * Start one Zus pull, without waiting for it.
+ * @param medplum - Authenticated Medplum client.
+ * @param medplumPatientId - The Medplum Patient to import onto.
+ * @returns The AsyncJob id, already running server-side.
+ */
+export async function startZusImport(medplum: MedplumClient, medplumPatientId: string): Promise<string> {
+  return startBotJob(medplum, ZUS_BOT_IDENTIFIER, { action: 'import', medplumPatientId });
+}
+
+/**
+ * Wait for a Zus pull started by {@link startZusImport}.
+ * @param medplum - Authenticated Medplum client.
+ * @param jobId - The AsyncJob to wait on.
+ * @param onProgress - Called with a human-readable status while the job runs.
+ * @returns The bot's result.
+ */
+export async function awaitZusImport(
+  medplum: MedplumClient,
+  jobId: string,
+  onProgress?: (status: string) => void
+): Promise<ZusImportResult> {
+  return awaitBotJob<ZusImportResult>(medplum, jobId, {
+    maxPolls: ZUS_MAX_POLLS,
+    label: 'Zus',
+    timeoutMessage: 'Zus import is still running after 25 minutes; check the Task.',
+    onProgress,
+  });
+}
+
+/**
  * Import one DrChrono patient's chart into Medplum.
  *
  * The bot does the work server-side against the calling clinic's own DrChrono
@@ -174,48 +331,8 @@ export async function importDrChronoPatient(
   drchronoPatientId: number | string,
   onProgress?: (status: string) => void
 ): Promise<ImportResult> {
-  const bot = await medplum.searchOne('Bot', { identifier: IMPORT_BOT_IDENTIFIER });
-  if (!bot?.id) {
-    throw new OnboardingBackendUnavailableError(
-      `No Bot found with identifier ${IMPORT_BOT_IDENTIFIER}. Run "npm run deploy:bots".`
-    );
-  }
-
-  // Deliberately async, not a plain executeBot.
-  //
-  // Railway caps any single request at 300s. A synchronous $execute of a real
-  // chart import is killed at that ceiling with a 502 — and MedplumClient
-  // RETRIES it, which starts a SECOND concurrent import of the same patient
-  // while the first is still running server-side. The async pattern returns
-  // immediately with a job to poll, and has no such ceiling.
-  const accepted = await medplum.startAsyncRequest<OperationOutcome>(`fhir/R4/Bot/${bot.id}/$execute`, {
-    body: JSON.stringify({ action: 'import', drchronoPatientId: String(drchronoPatientId) }),
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  const statusUrl = accepted.issue?.[0]?.diagnostics ?? '';
-  const jobId = /\/job\/([0-9a-f-]+)\/status/.exec(statusUrl)?.[1];
-  if (!jobId) {
-    throw new Error(`Import did not start: ${statusUrl || 'no job id in response'}`);
-  }
-
-  const POLL_MS = 5000;
-  const MAX_POLLS = 240; // 20 minutes; a Zus-sized chart took 19
-  for (let i = 0; i < MAX_POLLS; i++) {
-    await new Promise((resolve) => {
-      setTimeout(resolve, POLL_MS);
-    });
-    const job = await medplum.readResource('AsyncJob', jobId);
-    if (job.status === 'completed') {
-      const raw = job.output?.parameter?.find((p) => p.name === 'responseBody')?.valueString;
-      return raw ? (JSON.parse(raw) as ImportResult) : { ok: true };
-    }
-    if (job.status === 'error') {
-      return { ok: false, error: 'Import failed — see the Task for details.' };
-    }
-    onProgress?.(`importing… ${Math.round(((i + 1) * POLL_MS) / 1000)}s`);
-  }
-  return { ok: false, error: 'Import is still running after 20 minutes; check the Task.' };
+  const jobId = await startDrChronoImport(medplum, drchronoPatientId);
+  return awaitDrChronoImport(medplum, jobId, onProgress);
 }
 
 /** Identifier of the bot that mirrors a patient's Zus record into Medplum. */
@@ -250,41 +367,6 @@ export async function importZusRecord(
   medplumPatientId: string,
   onProgress?: (status: string) => void
 ): Promise<ZusImportResult> {
-  const bot = await medplum.searchOne('Bot', { identifier: ZUS_BOT_IDENTIFIER });
-  if (!bot?.id) {
-    throw new OnboardingBackendUnavailableError(
-      `No Bot found with identifier ${ZUS_BOT_IDENTIFIER}. Run "npm run deploy:bots".`
-    );
-  }
-
-  // Async for the same reason the DrChrono import is: a Zus-sized pull runs
-  // well past Railway's 300s request ceiling.
-  const accepted = await medplum.startAsyncRequest<OperationOutcome>(`fhir/R4/Bot/${bot.id}/$execute`, {
-    body: JSON.stringify({ action: 'import', medplumPatientId }),
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  const statusUrl = accepted.issue?.[0]?.diagnostics ?? '';
-  const jobId = /\/job\/([0-9a-f-]+)\/status/.exec(statusUrl)?.[1];
-  if (!jobId) {
-    throw new Error(`Zus import did not start: ${statusUrl || 'no job id in response'}`);
-  }
-
-  const POLL_MS = 5000;
-  const MAX_POLLS = 300; // 25 minutes; a full Zus record took 19
-  for (let i = 0; i < MAX_POLLS; i++) {
-    await new Promise((resolve) => {
-      setTimeout(resolve, POLL_MS);
-    });
-    const job = await medplum.readResource('AsyncJob', jobId);
-    if (job.status === 'completed') {
-      const raw = job.output?.parameter?.find((p) => p.name === 'responseBody')?.valueString;
-      return raw ? (JSON.parse(raw) as ZusImportResult) : { ok: true };
-    }
-    if (job.status === 'error') {
-      return { ok: false, error: 'Zus import failed — see the Task for details.' };
-    }
-    onProgress?.(`Zus… ${Math.round(((i + 1) * POLL_MS) / 1000)}s`);
-  }
-  return { ok: false, error: 'Zus import is still running after 25 minutes; check the Task.' };
+  const jobId = await startZusImport(medplum, medplumPatientId);
+  return awaitZusImport(medplum, jobId, onProgress);
 }

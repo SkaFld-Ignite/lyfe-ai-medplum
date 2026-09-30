@@ -48,6 +48,10 @@ export type ResourceBoardDetailContext = ListWithDetailPaneDetailContext;
  * (e.g. with history replace).
  * @param onLoad - Fired after every successful load.
  * @param onError - List-load and selection-resolution errors. Default: console.error.
+ * @param stacked - Single-column layout: the list fills the width and a selected resource replaces it, under a link
+ * back to the list; nothing is auto-selected. See ListWithDetailPane.
+ * @param backUri - Stacked layout only: where the back link returns to.
+ * @param backLabel - Stacked layout only: the back link text.
  */
 export interface ResourceBoardProps<T extends Resource = Resource> {
   readonly search: SearchRequest;
@@ -69,6 +73,9 @@ export interface ResourceBoardProps<T extends Resource = Resource> {
   readonly onSelectFirst?: (item: WithId<T>) => void;
   readonly onLoad?: (items: WithId<T>[], total: number | undefined) => void;
   readonly onError?: (error: unknown) => void;
+  readonly stacked?: boolean;
+  readonly backUri?: string;
+  readonly backLabel?: ReactNode;
 }
 
 /**
@@ -100,6 +107,9 @@ export function ResourceBoard<T extends Resource = Resource>(props: ResourceBoar
     onSelectFirst,
     onLoad,
     onError,
+    stacked,
+    backUri,
+    backLabel,
   } = props;
 
   // Hooks
@@ -156,6 +166,9 @@ export function ResourceBoard<T extends Resource = Resource>(props: ResourceBoar
       page={currentPage}
       pageCount={pageCount}
       onPageChange={onChange ? handlePageChange : undefined}
+      stacked={stacked}
+      backUri={backUri}
+      backLabel={backLabel}
     />
   );
 }

@@ -36,3 +36,12 @@
   min-height: 0;
   overflow: auto;
 }
+
+/*
+ * The chart summary is read-only here: clinical data comes from the EHR imports, so the
+ * per-section "Add item" (+) buttons of Medplum's PatientSummary are hidden. The component has no
+ * option to omit them, and this keeps its package untouched.
+ */
+.sidebar :global([aria-label='Add item']) {
+  display: none;
+}
