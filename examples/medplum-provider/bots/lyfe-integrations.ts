@@ -62,6 +62,7 @@ import {
   buildAuthorizeUrl,
   createOAuthState,
   exchangeAuthorizationCode,
+  resolveDrChronoScopes,
 } from './shared/drchrono-oauth.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
@@ -256,6 +257,10 @@ function toView(props: { record: Basic | undefined; integration: IntegrationKey;
   );
   const state = values.state;
   const lastCheckedAt = state.lastTestedAt;
+  // Exposed through `config` rather than as its own field so the existing
+  // tolerant parser carries it without a contract change. Read-only: it is
+  // written by the OAuth exchange, never by a save.
+  values.config.grantedScopes = state.grantedScopes ?? '';
 
   if (values.unreadableSecrets.length > 0) {
     // Deliberately distinct from "not connected". Ciphertext that will not
@@ -505,6 +510,7 @@ async function readDrChronoOAuthSettings(props: { context: TenantContext }): Pro
   clientId: string;
   clientSecret: string;
   redirectUri: string;
+  scopes: string[];
   authUrl?: string;
   tokenUrl?: string;
   state: Record<string, string>;
@@ -541,6 +547,9 @@ async function readDrChronoOAuthSettings(props: { context: TenantContext }): Pro
     clientId,
     clientSecret,
     redirectUri,
+    // Narrowed by the clinic from the Integrations page; falls back to the
+    // default set when unset, and is validated either way.
+    scopes: resolveDrChronoScopes({ stored: values.config.scopes }),
     authUrl: values.config.authUrl || undefined,
     tokenUrl: values.config.tokenUrl || undefined,
     state: values.state,
@@ -575,6 +584,7 @@ async function startDrChronoAuthorization(props: { context: TenantContext }): Pr
     redirectUri: settings.redirectUri,
     state,
     authorizeUrl: settings.authUrl,
+    scopes: settings.scopes,
   });
 }
 
@@ -633,6 +643,11 @@ async function completeDrChronoAuthorization(props: {
     secrets: { accessToken: pair.accessToken, refreshToken: pair.refreshToken },
     state: {
       lastAuthorizedAt: new Date().toISOString(),
+      // What this token can actually DO, as opposed to what is currently
+      // selected. A stored token keeps the scopes it was granted, so these two
+      // drift apart the moment someone edits the selection — and the only way
+      // to tell the screen is stale is to have recorded this.
+      grantedScopes: settings.scopes.join(' '),
       ...(pair.expiresIn ? { accessTokenExpiresAt: new Date(Date.now() + pair.expiresIn * 1000).toISOString() } : {}),
     },
     key: props.context.key,

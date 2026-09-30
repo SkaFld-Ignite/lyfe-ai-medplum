@@ -50,6 +50,19 @@ const COMPARTMENT_SCOPED = [
   'ClinicalImpression',
   'ChargeItem',
   'Provenance',
+  // Written by the Zus importer and invisible without this: a clinic user got
+  // a bare 403 on any chart surface that touched them.
+  'CarePlan',
+  'FamilyMemberHistory',
+  // Nothing writes Goal yet, but Medplum's own PatientSummary searches it, and
+  // that component surfaces a single denied search as "Error loading patient
+  // summary: Forbidden" for the WHOLE panel — so one missing type hides
+  // allergies, problems, medications and insurance at once.
+  'Goal',
+  // The clinic's offices. Compartment-scoped rather than project-readonly
+  // because the Directory page writes `Location.status` to switch an office
+  // off, and that write must not be able to reach another tenant's office.
+  'Location',
 ];
 
 /**
@@ -78,8 +91,23 @@ const PROJECT_SCOPED_READONLY = [
   'UserConfiguration',
 ];
 
-/** Scheduling is clinic-level and must be writable to book anything. */
-const PROJECT_SCOPED_WRITABLE = ['Schedule', 'Slot'];
+/**
+ * Types a clinic user must be able to write.
+ *
+ * Scheduling is clinic-level and must be writable to book anything.
+ *
+ * `AsyncJob` is here rather than in the readonly list above, and the
+ * distinction is load-bearing. Long imports must run with
+ * `Prefer: respond-async`: Railway caps any single request at 300s, so a
+ * synchronous $execute is killed mid-import — and the Medplum client RETRIES
+ * that failure, starting a second concurrent import. Starting an async run
+ * makes the server call `createResource<AsyncJob>` on the CALLER's repository
+ * (`AsyncJobExecutor.init`), so read access is not enough: with AsyncJob
+ * readonly, every async bot execution fails with a bare `Forbidden` before the
+ * bot is ever reached, while synchronous execution of the same bot still
+ * works — which is a genuinely confusing pair of symptoms.
+ */
+const PROJECT_SCOPED_WRITABLE = ['Schedule', 'Slot', 'AsyncJob'];
 
 /**
  * Sleep out a Medplum 429 and retry.
@@ -176,6 +204,17 @@ async function main(): Promise<void> {
         resourceType,
         criteria: `${resourceType}?_compartment=%organization`,
       })),
+      // Practitioner appears twice on purpose. Medplum grants an interaction
+      // when ANY entry matches (`satisfiedAccessPolicy` is a `.find`), so the
+      // project-wide readonly entry above and this compartment-scoped writable
+      // one compose to: read any Practitioner, write only our own.
+      //
+      // Both halves are needed. Reading project-wide is what lets a
+      // Practitioner reference render a name — including the clinic's own
+      // staff logins, which carry no organization account and would otherwise
+      // be invisible to their own owner. Writing must still be confined to the
+      // clinic, because the Directory page toggles `Practitioner.active`.
+      { resourceType: 'Practitioner', criteria: 'Practitioner?_compartment=%organization' },
     ],
   };
 

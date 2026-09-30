@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import type { CalendarRef, EventApi, EventClickInfo, EventInput, EventSourceInput } from '@fullcalendar/react';
+import type {
+  CalendarController,
+  CalendarRef,
+  EventApi,
+  EventClickInfo,
+  EventInput,
+  EventSourceInput,
+} from '@fullcalendar/react';
 import FullCalendar, { useCalendarController } from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/react/daygrid';
 import interactionPlugin from '@fullcalendar/react/interaction';
@@ -108,6 +115,13 @@ export interface CalendarBaseProps extends Omit<
   className?: string;
   availableTime?: HealthcareServiceAvailableTime[];
   loading?: boolean;
+  /**
+   * A controller from `useCalendarController()`, for hosts that render their own navigation
+   * (prev/next/today, view switching) outside the calendar. Defaults to an internal controller.
+   */
+  controller?: CalendarController;
+  /** Hides the built-in toolbar, typically together with `controller`. */
+  hideToolbar?: boolean;
 }
 
 // Some common calendar features:
@@ -116,7 +130,8 @@ export interface CalendarBaseProps extends Omit<
 // - availability overlay input in format of `HealthcareService.availableTime`
 export function CalendarBase(props: CalendarBaseProps): JSX.Element {
   const colorScheme = useComputedColorScheme();
-  const controller = useCalendarController();
+  const internalController = useCalendarController();
+  const controller = props.controller ?? internalController;
 
   const {
     onRangeChange,
@@ -129,6 +144,8 @@ export function CalendarBase(props: CalendarBaseProps): JSX.Element {
     onSelectInterval,
     selection,
     loading,
+    controller: _controller,
+    hideToolbar,
     ...fullCalendarProps
   } = props;
 
@@ -243,35 +260,37 @@ export function CalendarBase(props: CalendarBaseProps): JSX.Element {
 
   return (
     <div data-testid="calendar" className={cx(classes.wrapper, className)}>
-      <Group justify="space-between" pb="sm">
-        <Group gap="md">
-          <Button.Group>
-            <Button variant="default" size="xs" aria-label="Previous" onClick={() => controller.prev()}>
-              <IconChevronLeft size={12} />
-            </Button>
-            <Button variant="default" size="xs" onClick={() => controller.today()}>
-              Today
-            </Button>
-            <Button variant="default" size="xs" aria-label="Next" onClick={() => controller.next()}>
-              <IconChevronRight size={12} />
-            </Button>
-          </Button.Group>
-          <Group>
-            <Title order={4}>{controller.view?.title}</Title>
-            {loading && <Loader size="sm" />}
+      {!hideToolbar && (
+        <Group justify="space-between" pb="sm">
+          <Group gap="md">
+            <Button.Group>
+              <Button variant="default" size="xs" aria-label="Previous" onClick={() => controller.prev()}>
+                <IconChevronLeft size={12} />
+              </Button>
+              <Button variant="default" size="xs" onClick={() => controller.today()}>
+                Today
+              </Button>
+              <Button variant="default" size="xs" aria-label="Next" onClick={() => controller.next()}>
+                <IconChevronRight size={12} />
+              </Button>
+            </Button.Group>
+            <Group>
+              <Title order={4}>{controller.view?.title}</Title>
+              {loading && <Loader size="sm" />}
+            </Group>
           </Group>
+          <SegmentedControl
+            size="xs"
+            value={controller.view?.type}
+            onChange={(newView) => controller.changeView(newView)}
+            data={[
+              { label: 'Month', value: 'dayGridMonth' },
+              { label: 'Week', value: 'timeGridWeek' },
+              { label: 'Day', value: 'timeGridDay' },
+            ]}
+          />
         </Group>
-        <SegmentedControl
-          size="xs"
-          value={controller.view?.type}
-          onChange={(newView) => controller.changeView(newView)}
-          data={[
-            { label: 'Month', value: 'dayGridMonth' },
-            { label: 'Week', value: 'timeGridWeek' },
-            { label: 'Day', value: 'timeGridDay' },
-          ]}
-        />
-      </Group>
+      )}
       <FullCalendar
         height="100%"
         plugins={[timeGridPlugin, dayGridPlugin, themePlugin, interactionPlugin]}

@@ -78,7 +78,7 @@ export interface IntegrationSchema {
  */
 export const INTEGRATION_SCHEMAS: Record<IntegrationKey, IntegrationSchema> = {
   drchrono: {
-    config: ['apiUrl', 'authUrl', 'tokenUrl', 'redirectUri', 'defaultDoctorId', 'environment'],
+    config: ['apiUrl', 'authUrl', 'tokenUrl', 'redirectUri', 'defaultDoctorId', 'environment', 'scopes'],
     // `clientId` is not really a secret, but the Integrations UI posts it in the
     // `secrets` bag alongside the client secret, and a field must live in
     // exactly one bucket. Encrypting it costs nothing; classifying it as config

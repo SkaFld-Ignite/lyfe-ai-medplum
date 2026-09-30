@@ -51,6 +51,7 @@ import {
   testIntegration,
 } from '../../services/integrations';
 import { showErrorNotification, showSuccessNotification } from '../../utils/notifications';
+import { DEFAULT_DRCHRONO_SCOPES, DrChronoScopePicker } from './DrChronoScopePicker';
 
 /** Uppercase micro-label, matching the Lyfe roster's filter labels. */
 const MICRO_LABEL = {
@@ -171,9 +172,37 @@ function StatusBadge(props: StatusBadgeProps): JSX.Element {
   );
 }
 
+/**
+ * Whether the clinic's chosen DrChrono scopes differ from the ones its current
+ * token was actually granted.
+ *
+ * Compared as sets: a save reorders nothing, but hand-editing or a future
+ * default change could, and order carries no meaning to DrChrono.
+ *
+ * Derived from STORED values, never from the modal's edit state, so the warning
+ * survives a reload and stays until the grant is actually refreshed — which is
+ * the whole point. A banner that vanishes on close would let someone change
+ * permissions, see nothing happen, and assume it took effect.
+ * @param status - The integration row from the backend.
+ * @returns True when a Reconnect is needed for the selection to take effect.
+ */
+function needsReconnectForScopes(status: IntegrationStatus): boolean {
+  const granted = (status.config.grantedScopes ?? '').split(/[\s,]+/).filter(Boolean);
+  if (granted.length === 0) {
+    return false; // never connected, or connected before scopes were tracked
+  }
+  const selected = (status.config.scopes ?? '').split(/[\s,]+/).filter(Boolean);
+  const effective = selected.length > 0 ? selected : DEFAULT_DRCHRONO_SCOPES;
+  const a = new Set(effective);
+  const b = new Set(granted);
+  return a.size !== b.size || [...a].some((scope) => !b.has(scope));
+}
+
 interface ConfigRowProps {
   readonly label: string;
   readonly value?: string;
+  /** Computed default, shown when nothing is stored for this setting. */
+  readonly fallback?: string;
 }
 
 /**
@@ -182,14 +211,16 @@ interface ConfigRowProps {
  * @param props - Component props.
  * @param props.label - The setting's display name.
  * @param props.value - The configured value, if any.
+ * @param props.fallback - Computed default shown when nothing is stored.
  * @returns The label/value pair.
  */
 function ConfigRow(props: ConfigRowProps): JSX.Element {
+  const saved = props.value !== undefined && props.value !== '';
   return (
-    <Box style={{ minWidth: 0 }}>
-      <Text style={MICRO_LABEL}>{props.label.toUpperCase()}</Text>
-      <Text size="sm" c={props.value ? 'gray.8' : 'gray.4'} style={{ wordBreak: 'break-all' }}>
-        {props.value ?? 'Not set'}
+    <Box>
+      <Text style={MICRO_LABEL}>{props.label}</Text>
+      <Text size="sm" c={saved ? 'gray.8' : 'gray.5'} style={{ wordBreak: 'break-all' }}>
+        {saved ? props.value : (props.fallback ?? 'Not set')}
       </Text>
     </Box>
   );
@@ -311,8 +342,17 @@ function IntegrationCard(props: IntegrationCardProps): JSX.Element {
         >
           <Stack gap="sm">
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm" verticalSpacing="sm">
+              {/* `e.target`, not `e.currentTarget`. React only populates currentTarget
+              during its own dispatch, so it is null for events fired from outside
+              React — which is exactly what password managers and browser autofill
+              do. Reading `.value` off it then crashes the whole page. */}
               {definition.configFields.map((field) => (
-                <ConfigRow key={field.key} label={field.label} value={status.config[field.key]} />
+                <ConfigRow
+                  key={field.key}
+                  label={field.label}
+                  value={status.config[field.key]}
+                  fallback={field.defaultValue?.()}
+                />
               ))}
             </SimpleGrid>
 
@@ -329,6 +369,18 @@ function IntegrationCard(props: IntegrationCardProps): JSX.Element {
             </Stack>
           </Stack>
         </Box>
+
+        {needsReconnectForScopes(status) && (
+          <Alert variant="light" color="yellow" radius="md" icon={<IconAlertTriangle size={16} />}>
+            <Text size="sm" fw={500}>
+              Permissions changed — reconnect required
+            </Text>
+            <Text size="xs" c="gray.6" style={{ lineHeight: 1.5 }}>
+              The saved permissions no longer match what this connection was granted. The existing credentials keep
+              working with the old permissions until you reconnect.
+            </Text>
+          </Alert>
+        )}
 
         {props.result && (
           <Alert
@@ -410,9 +462,12 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
   const { definition, status } = props;
 
   const [config, setConfig] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      definition.configFields.map((field) => [field.key, status.config[field.key] || field.defaultValue?.() || ''])
-    )
+    Object.fromEntries([
+      ...definition.configFields.map((field) => [field.key, status.config[field.key] || field.defaultValue?.() || '']),
+      // Not a text field, so it has no configFields entry — but it must round
+      // trip through the same state or saving would wipe the clinic's selection.
+      ...(definition.oauth ? [['scopes', status.config.scopes ?? '']] : []),
+    ])
   );
   const [secrets, setSecrets] = useState<Record<string, string>>(() =>
     Object.fromEntries(definition.secretFields.map((field) => [field.key, '']))
@@ -461,10 +516,20 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
               placeholder={field.placeholder}
               radius="md"
               value={config[field.key] ?? ''}
-              onChange={(e) => setConfig((c) => ({ ...c, [field.key]: e.currentTarget.value }))}
+              onChange={(e) => setConfig((c) => ({ ...c, [field.key]: e.target.value }))}
             />
           ))}
         </Stack>
+
+        {definition.oauth && (
+          <>
+            <Divider color="var(--mantine-color-gray-2)" />
+            <DrChronoScopePicker
+              value={config.scopes ?? ''}
+              onChange={(next) => setConfig((c) => ({ ...c, scopes: next }))}
+            />
+          </>
+        )}
 
         <Divider color="var(--mantine-color-gray-2)" />
 
@@ -483,7 +548,7 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
                   : 'Not configured'
               }
               value={secrets[field.key] ?? ''}
-              onChange={(e) => setSecrets((s) => ({ ...s, [field.key]: e.currentTarget.value }))}
+              onChange={(e) => setSecrets((s) => ({ ...s, [field.key]: e.target.value }))}
             />
           ))}
         </Stack>

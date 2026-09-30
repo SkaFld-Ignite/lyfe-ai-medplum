@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { BotEvent, MedplumClient } from '@medplum/core';
 import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/credentials.ts';
+import { readDisabledDirectoryIds } from './shared/directory.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
@@ -10,7 +11,8 @@ import { resolveCallerOrganization } from './shared/tenant.ts';
  *
  * This runs server-side because the DrChrono token must never reach client JS,
  * and DrChrono sends no CORS headers for a browser origin. It deliberately only
- * reads: nothing here writes to Medplum or to DrChrono, so it is safe to call
+ * reads — from DrChrono, and from the clinic's own directory in Medplum to
+ * learn which offices and providers are switched off — so it is safe to call
  * on every keystroke.
  *
  * Credentials are per clinic, read from that Organization's credential record
@@ -63,6 +65,10 @@ interface DrChronoPatient {
 interface DrChronoAppointment {
   patient?: number;
   status?: string;
+  /** DrChrono office id. Present on every appointment. */
+  office?: number;
+  /** DrChrono provider id. Present on every appointment. */
+  doctor?: number;
 }
 
 /** Appointments that never happened should not pull a chart in. */
@@ -79,6 +85,24 @@ const DAY_MS = 86400000;
  * @returns Matching patients, shaped for the onboarding UI.
  */
 export async function handler(medplum: MedplumClient, event: BotEvent<Input>): Promise<unknown> {
+  // Errors are returned, not thrown. An uncaught throw surfaces to the caller as
+  // a bare 500 "Internal Server Error", which hides the one thing worth knowing —
+  // most failures here are configuration ("not scoped to an organization",
+  // "DrChrono is not configured"), and a 500 sends people debugging the server.
+  try {
+    return await run(medplum, event);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * The actual work, wrapped by `handler` so failures come back as messages.
+ * @param medplum - Bot-scoped Medplum client.
+ * @param event - Carries the action, its arguments and project secrets.
+ * @returns Matching patients, shaped for the onboarding UI.
+ */
+async function run(medplum: MedplumClient, event: BotEvent<Input>): Promise<unknown> {
   const material = event.secrets[ENCRYPTION_KEY_SECRET_NAME]?.valueString;
   if (!material) {
     throw new Error(`${ENCRYPTION_KEY_SECRET_NAME} is not set in project secrets`);
@@ -99,7 +123,12 @@ export async function handler(medplum: MedplumClient, event: BotEvent<Input>): P
   }
 
   if (input.action === 'preview') {
-    return previewAppointments(get, input.start, input.end ?? input.start);
+    // Offices and providers the clinic has switched off contribute nothing:
+    // not a greyed-out row, not a count, nothing. That is the whole point of
+    // the toggle, so the filter belongs here at the pull rather than in the UI
+    // where a later caller could skip it.
+    const disabled = await readDisabledDirectoryIds(medplum, organization);
+    return previewAppointments(get, input.start, input.end ?? input.start, disabled);
   }
 
   throw new Error(`Unknown action: ${JSON.stringify((input as { action?: string }).action)}`);
@@ -137,19 +166,24 @@ async function searchPatients(get: (path: string) => Promise<Response>, query: s
  * @param get - Authenticated fetch helper.
  * @param start - First appointment date, YYYY-MM-DD.
  * @param end - Last appointment date, YYYY-MM-DD.
+ * @param disabled - Directory ids whose appointments must be skipped.
+ * @param disabled.offices - Switched-off DrChrono office ids.
+ * @param disabled.doctors - Switched-off DrChrono provider ids.
  * @returns The candidates and how many appointments were examined.
  */
 async function previewAppointments(
   get: (path: string) => Promise<Response>,
   start: string,
-  end: string
-): Promise<{ scannedAppointments: number; results: PatientSummary[] }> {
+  end: string,
+  disabled: { offices: Set<string>; doctors: Set<string> }
+): Promise<{ scannedAppointments: number; results: PatientSummary[]; skippedByDirectory: number }> {
   const iso = (d: Date): string => d.toISOString().slice(0, 10);
   const startDate = new Date(`${start}T00:00:00Z`);
   const endDate = new Date(`${end}T00:00:00Z`);
 
   const counts = new Map<number, number>();
   let scanned = 0;
+  let skippedByDirectory = 0;
 
   for (let from = startDate; from <= endDate; from = new Date(from.getTime() + CHUNK_DAYS * DAY_MS)) {
     const to = new Date(Math.min(from.getTime() + (CHUNK_DAYS - 1) * DAY_MS, endDate.getTime()));
@@ -164,6 +198,13 @@ async function previewAppointments(
       for (const appt of body.results ?? []) {
         scanned++;
         if (SKIP_STATUSES.has(appt.status ?? '') || typeof appt.patient !== 'number') {
+          continue;
+        }
+        // An id we have never seen is allowed through: it belongs to an office
+        // or provider added upstream since the last directory sync, which
+        // nobody has switched off. Only an explicit disable filters.
+        if (isDisabled(appt.office, disabled.offices) || isDisabled(appt.doctor, disabled.doctors)) {
+          skippedByDirectory++;
           continue;
         }
         counts.set(appt.patient, (counts.get(appt.patient) ?? 0) + 1);
@@ -181,7 +222,17 @@ async function previewAppointments(
     })
   );
 
-  return { scannedAppointments: scanned, results };
+  return { scannedAppointments: scanned, results, skippedByDirectory };
+}
+
+/**
+ * Whether a DrChrono id appears in a disabled set.
+ * @param id - The office or provider id from the appointment.
+ * @param disabled - Disabled ids as strings, keyed the way the directory stores them.
+ * @returns True when this appointment must be skipped.
+ */
+function isDisabled(id: number | undefined, disabled: Set<string>): boolean {
+  return typeof id === 'number' && disabled.has(String(id));
 }
 
 /**

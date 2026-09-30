@@ -9,6 +9,7 @@ import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { EncounterChart } from '../../components/encounter/EncounterChart';
+import { DRCHRONO_SOURCE_TAG } from '../../utils/data-source';
 import { showErrorNotification } from '../../utils/notifications';
 import { EncounterListItem } from './EncounterListItem';
 
@@ -27,13 +28,18 @@ export function EncountersPage(): JSX.Element {
   };
 
   // The URL is the source of truth for the search. The patient filter is always rebuilt from
-  // the route path, never trusted from the query string.
+  // the route path, never trusted from the query string. Only DrChrono visits are listed, so the
+  // source tag is pinned the same way (this hides e.g. Zus records and old Lyfe bookings).
   const search = useMemo<SearchRequest>(() => {
     const parsed = parseSearchRequest(`Encounter${location.search}`);
-    const extraFilters = (parsed.filters ?? []).filter((f) => f.code !== 'patient');
+    const extraFilters = (parsed.filters ?? []).filter((f) => f.code !== 'patient' && f.code !== '_tag');
     return {
       resourceType: 'Encounter',
-      filters: [{ code: 'patient', operator: Operator.EQUALS, value: patientId }, ...extraFilters],
+      filters: [
+        { code: 'patient', operator: Operator.EQUALS, value: patientId },
+        { code: '_tag', operator: Operator.EQUALS, value: DRCHRONO_SOURCE_TAG },
+        ...extraFilters,
+      ],
       sortRules:
         parsed.sortRules && parsed.sortRules.length > 0
           ? parsed.sortRules

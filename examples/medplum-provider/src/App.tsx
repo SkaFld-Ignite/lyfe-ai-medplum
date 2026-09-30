@@ -6,8 +6,10 @@ import { useDoseSpotNotifications } from '@medplum/dosespot-react';
 import type { SpotlightLinkAction } from '@medplum/react';
 import { AppShell, Loading, useMedplum, useMedplumProfile } from '@medplum/react';
 import {
+  IconActivity,
   IconApps,
   IconBook2,
+  IconBuildingHospital,
   IconCalendarEvent,
   IconClipboardCheck,
   IconMail,
@@ -30,9 +32,11 @@ import { ScriptSurePracticeProvider } from './scriptsure/ScriptSurePractice';
 const SETUP_DISMISSED_KEY = 'medplum-provider-setup-completed';
 const PROVIDER_HIDE_GET_STARTED_SETTING = 'hideGetStarted';
 
+import { LyfeDirectoryPage } from './pages/directory/LyfeDirectoryPage';
 import { EncountersPage } from './pages/encounter/EncountersPage';
 import { FaxPage } from './pages/fax/FaxPage';
 import { GetStartedPage } from './pages/getstarted/GetStartedPage';
+import { LyfeImportMonitorPage } from './pages/imports/LyfeImportMonitorPage';
 import { DoseSpotFavoritesPage } from './pages/integrations/DoseSpotFavoritesPage';
 import { DoseSpotNotificationsPage } from './pages/integrations/DoseSpotNotificationsPage';
 import { DrChronoCallbackPage } from './pages/integrations/DrChronoCallbackPage';
@@ -65,6 +69,7 @@ import { ResourceSchedulingPage } from './pages/resource/ResourceSchedulingPage'
 import { SchedulePage } from './pages/schedule/SchedulePage';
 import { ScheduleSettingsPage } from './pages/schedule/ScheduleSettingsPage';
 import { InternalSchedulingWorkspacePage } from './pages/scheduling/InternalSchedulingWorkspacePage';
+import { SchedulingOverviewPage } from './pages/scheduling/SchedulingOverviewPage';
 import { SearchPage } from './pages/SearchPage';
 import { BillingSetupPage } from './pages/settings/BillingSetupPage';
 import { SignInPage } from './pages/SignInPage';
@@ -157,7 +162,7 @@ export function App(): JSX.Element | null {
                     label: 'Patients',
                     href: '/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated',
                   },
-                  { icon: <IconCalendarEvent />, label: 'Schedule', href: `/Calendar/Schedule` },
+                  { icon: <IconCalendarEvent />, label: 'Scheduling', href: '/scheduling' },
                   {
                     icon: <IconMail />,
                     label: 'Messages',
@@ -197,6 +202,8 @@ export function App(): JSX.Element | null {
                     : []),
                   { icon: <IconUserPlus />, label: 'New Patient', href: '/onboarding' },
                   { icon: <IconApps />, label: 'Integrations', href: '/integrations' },
+                  { icon: <IconBuildingHospital />, label: 'Directory', href: '/directory' },
+                  { icon: <IconActivity />, label: 'Imports', href: '/imports' },
                   ...(hasBilling
                     ? [{ icon: <IconReceipt2 />, label: 'Billing Settings', href: '/Settings/Billing' }]
                     : []),
@@ -308,6 +315,7 @@ export function App(): JSX.Element | null {
               <Route path="/Calendar/Schedule" element={<SchedulePage />} />
               <Route path="/Calendar/Schedule/:id" element={<SchedulePage />} />
               <Route path="/Calendar/Schedule/:id/settings" element={<ScheduleSettingsPage />} />
+              <Route path="/scheduling" element={<SchedulingOverviewPage />} />
               {/* Internal-only test harness for `SchedulingWorkspace` — intentionally not in `menus` above */}
               <Route path="/internal-scheduling-workspace" element={<InternalSchedulingWorkspacePage />} />
               <Route path="/signin" element={<SignInPage />} />
@@ -317,6 +325,13 @@ export function App(): JSX.Element | null {
               {/* The Lyfe per-clinic integrations settings page replaces the stock
                   marketing-style directory. `IntegrationsPage` is left in place, unrouted. */}
               <Route path="/integrations" element={<LyfeIntegrationsPage />} />
+              {/* Providers and offices pulled from DrChrono, each switchable on or
+                  off. A switched-off office contributes no appointments to any
+                  import. */}
+              <Route path="/directory" element={<LyfeDirectoryPage />} />
+              {/* Live view of every import, read from the Task each one keeps
+                  up to date. */}
+              <Route path="/imports" element={<LyfeImportMonitorPage />} />
               {/* DrChrono's OAuth redirect target. A Medplum bot cannot serve one,
                   so the SPA lands the grant and hands the code to the bot. */}
               <Route path="/integrations/drchrono/callback" element={<DrChronoCallbackPage />} />

@@ -236,7 +236,7 @@ export function LyfePatientListPage(): JSX.Element {
               leftSection={<IconSearch size={16} />}
               rightSection={loading ? <Loader size="xs" /> : undefined}
               value={query}
-              onChange={(e) => setQuery(e.currentTarget.value)}
+              onChange={(e) => setQuery(e.target.value)}
               aria-label="Search patients"
             />
             <Tooltip label={showFilters ? 'Hide filters' : 'Advanced filters'}>
@@ -304,7 +304,7 @@ export function LyfePatientListPage(): JSX.Element {
                   leftSection={<IconCalendar size={14} />}
                   value={dob}
                   onChange={(e) => {
-                    setDob(e.currentTarget.value);
+                    setDob(e.target.value);
                     setPage(1);
                   }}
                   styles={{ label: FILTER_LABEL }}
@@ -323,7 +323,7 @@ export function LyfePatientListPage(): JSX.Element {
                       value={ageMin}
                       disabled={!!dob}
                       onChange={(e) => {
-                        setAgeMin(e.currentTarget.value);
+                        setAgeMin(e.target.value);
                         setPage(1);
                       }}
                     />
@@ -335,7 +335,7 @@ export function LyfePatientListPage(): JSX.Element {
                       value={ageMax}
                       disabled={!!dob}
                       onChange={(e) => {
-                        setAgeMax(e.currentTarget.value);
+                        setAgeMax(e.target.value);
                         setPage(1);
                       }}
                     />

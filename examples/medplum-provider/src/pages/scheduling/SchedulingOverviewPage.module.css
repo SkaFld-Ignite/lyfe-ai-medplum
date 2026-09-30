@@ -1,0 +1,140 @@
+.page {
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-8));
+  min-height: 100vh;
+}
+
+.eyebrow {
+  letter-spacing: 0.06em;
+}
+
+.layout {
+  display: flex;
+  gap: var(--mantine-spacing-md);
+  align-items: stretch;
+  min-height: 0;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+}
+
+.calendarCard {
+  height: calc(100vh - 320px);
+  min-height: 560px;
+  overflow-x: auto;
+}
+
+/*
+ * Calendar theme. FullCalendar v7 generates hashed class names, so this styles it only through
+ * its stable hooks: theme CSS variables, ARIA roles/attributes, and the `appointment <status>`
+ * classes that @medplum/react-scheduling adds to each event.
+ */
+.calendar {
+  --fc-classic-border: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4));
+  --fc-classic-strong-border: light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+  --fc-classic-today: light-dark(var(--mantine-color-blue-0), rgba(34, 139, 230, 0.12));
+  --fc-classic-now: var(--mantine-color-blue-6);
+  --fc-classic-highlight: light-dark(rgba(34, 139, 230, 0.1), rgba(34, 139, 230, 0.18));
+}
+
+/* Weekday header row */
+.calendar :global([role='columnheader']) {
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+  padding-block: 6px;
+}
+
+.calendar :global([role='columnheader'] [aria-hidden='true']) {
+  color: var(--mantine-color-dimmed);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Day numbers: muted, with today's date in a filled blue circle */
+.calendar :global(.dayGridMonth [role='gridcell'] > div:first-child > [aria-hidden='true']) {
+  font-size: 13px;
+  font-weight: 500;
+  color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-1));
+  margin: 4px;
+}
+
+.calendar :global(.dayGridMonth [role='gridcell'][aria-current='date'] > div:first-child > [aria-hidden='true']) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--mantine-color-blue-6);
+  color: var(--mantine-color-white);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.calendar :global(.dayGridMonth [role='gridcell']) {
+  transition: background-color 150ms ease;
+}
+
+.calendar :global(.dayGridMonth [role='gridcell']:hover) {
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+}
+
+/*
+ * Events: a soft tint of the provider color. MultiCalendar draws its own status strip
+ * (blue booked, yellow pending, red cancelled) on the left, so no extra stripe is added here.
+ */
+.calendar :global(.appointment) {
+  background: color-mix(in srgb, var(--fc-event-color) 14%, var(--mantine-color-body)) !important;
+  color: light-dark(
+    color-mix(in srgb, var(--fc-event-color) 72%, black),
+    color-mix(in srgb, var(--fc-event-color) 55%, white)
+  ) !important;
+  border: 1px solid color-mix(in srgb, var(--fc-event-color) 28%, transparent) !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+  transition: filter 150ms ease;
+}
+
+.calendar :global(.appointment:hover) {
+  filter: brightness(0.96);
+}
+
+.calendar :global(.appointment *) {
+  color: inherit !important;
+}
+
+/* Cancelled / no-show appointments stay visible but read as inactive. */
+.calendar :global(.appointment.cancelled),
+.calendar :global(.appointment.noshow) {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+.rail {
+  position: relative;
+  width: 400px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* Fill the rail so the panel matches the calendar's height and scrolls internally. */
+.railInner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The compact day drawer reuses the panel's own header, so float the close button over it. */
+.drawerHeader {
+  position: absolute;
+  top: var(--mantine-spacing-xs);
+  right: var(--mantine-spacing-xs);
+  padding: 0;
+  min-height: 0;
+  background: transparent;
+  z-index: 1;
+}
