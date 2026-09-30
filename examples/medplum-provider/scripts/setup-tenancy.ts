@@ -50,6 +50,15 @@ const COMPARTMENT_SCOPED = [
   'ClinicalImpression',
   'ChargeItem',
   'Provenance',
+  // Written by the Zus importer and invisible without this: a clinic user got
+  // a bare 403 on any chart surface that touched them.
+  'CarePlan',
+  'FamilyMemberHistory',
+  // Nothing writes Goal yet, but Medplum's own PatientSummary searches it, and
+  // that component surfaces a single denied search as "Error loading patient
+  // summary: Forbidden" for the WHOLE panel — so one missing type hides
+  // allergies, problems, medications and insurance at once.
+  'Goal',
   // The clinic's offices. Compartment-scoped rather than project-readonly
   // because the Directory page writes `Location.status` to switch an office
   // off, and that write must not be able to reach another tenant's office.
