@@ -336,8 +336,9 @@ describe('LabsPage', () => {
     setup(`/Patient/${HomerSimpson.id}/DiagnosticReport/${completedReport.id}`);
 
     await waitFor(() => {
-      // Appears in both the list row and the detail pane.
-      expect(screen.getAllByText('Lipid Panel').length).toBeGreaterThan(1);
+      // The open report fills the page, in place of the list, with a way back.
+      expect(screen.getAllByText('Lipid Panel').length).toBeGreaterThan(0);
+      expect(screen.getByRole('link', { name: 'All orders' })).toBeInTheDocument();
       // The detail pane header shows the issued date and the status badge.
       expect(screen.getByText(/Issued/)).toBeInTheDocument();
       expect(screen.getByText('Final')).toBeInTheDocument();

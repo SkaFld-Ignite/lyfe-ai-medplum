@@ -243,9 +243,8 @@ describe('TasksTab', () => {
       entry: [],
     } as any);
 
-    setup(
-      '/Patient/patient-123/Task/task-123?_sort=-_lastUpdated&_count=20&_total=accurate&patient=Patient%2Fpatient-123'
-    );
+    // The new-task button is in the task list header, shown when no task is open.
+    setup('/Patient/patient-123/Task?_sort=-_lastUpdated&_count=20&_total=accurate&patient=Patient%2Fpatient-123');
 
     await waitFor(() => {
       expect(screen.getByText('My Tasks')).toBeInTheDocument();
@@ -255,7 +254,7 @@ describe('TasksTab', () => {
     expect(plusButton).toBeDefined();
     await user.click(plusButton as HTMLElement);
 
-    expect(navigateSpy).toHaveBeenCalledWith(expect.stringMatching(/^\/Patient\/patient-123\/Task\/task-123\/new\?/));
+    expect(navigateSpy).toHaveBeenCalledWith(expect.stringMatching(/^\/Patient\/patient-123\/Task\/new\?/));
   });
 
   test('shows empty state when no tasks found', async () => {

@@ -120,11 +120,25 @@ describe('EncountersPage', () => {
     expect(screen.getByText('Details & Billing')).toBeInTheDocument();
   });
 
-  test('Auto-selects the first encounter and opens its chart', async () => {
+  test('Shows the visits as one full-width list without opening one', async () => {
     await createVisit(patient);
     setup();
 
+    expect(await screen.findByText('Office Visit')).toBeInTheDocument();
+    expect(screen.queryByText('Note & Tasks')).not.toBeInTheDocument();
+  });
+
+  test('Opens a visit in place of the list, with a link back to all visits', async () => {
+    const encounter = await createVisit(patient);
+    setup(encounter.id);
+
     expect(await screen.findByText('Note & Tasks')).toBeInTheDocument();
+    // The list is not shown beside the open visit.
+    expect(screen.queryByText('Visits')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'All visits' })).toHaveAttribute(
+      'href',
+      expect.stringMatching(new RegExp(`^/Patient/${patient.id}/Encounter\\?`))
+    );
   });
 
   test('Shows the empty state when the patient has no encounters', async () => {
@@ -185,17 +199,14 @@ describe('EncountersPage', () => {
     const encounter = await createVisit(patient);
     setup(encounter.id);
 
-    // Status renders on both the list row badge and the chart header button.
+    // The open visit fills the page, so its status shows once, on the chart header button.
     expect(await screen.findByRole('button', { name: 'In Progress' })).toBeInTheDocument();
-    expect(screen.getAllByText('In Progress')).toHaveLength(2);
 
     await user.click(screen.getByRole('button', { name: 'In Progress' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Finished' }));
+    expect(await screen.findByRole('button', { name: 'Finished' })).toBeInTheDocument();
 
-    // The chart header and the refreshed list row both show the new status.
-    await waitFor(() => {
-      expect(screen.getAllByText('Finished')).toHaveLength(2);
-    });
-    expect(screen.queryByText('In Progress')).not.toBeInTheDocument();
+    // The change is saved, so the list shows it when the user goes back.
+    await waitFor(async () => expect((await medplum.readResource('Encounter', encounter.id)).status).toBe('finished'));
   });
 });

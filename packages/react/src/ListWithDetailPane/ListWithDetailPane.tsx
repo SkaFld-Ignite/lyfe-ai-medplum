@@ -1,8 +1,22 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Box, Center, Divider, Flex, Group, Pagination, ScrollArea, Stack, Tabs, Text } from '@mantine/core';
+import {
+  Anchor,
+  Box,
+  Center,
+  Divider,
+  Flex,
+  Group,
+  Loader,
+  Pagination,
+  ScrollArea,
+  Stack,
+  Tabs,
+  Text,
+} from '@mantine/core';
 import type { Resource } from '@medplum/fhirtypes';
 import { useStabilizedCallback } from '@medplum/react-hooks';
+import { IconArrowLeft } from '@tabler/icons-react';
 import cx from 'clsx';
 import type { JSX, ReactNode } from 'react';
 import { useEffect } from 'react';
@@ -48,6 +62,10 @@ export interface ListWithDetailPaneDetailContext {
  * @param page - Current 1-based page. Pagination is hidden unless this, `pageCount`, and `onPageChange` are set.
  * @param pageCount - Total number of pages. Pagination is hidden when this is less than or equal to 1.
  * @param onPageChange - Fired by the built-in pagination with the new 1-based page.
+ * @param stacked - Single-column layout: the list fills the width, and a selected item replaces it with its
+ * detail, under a link back to the list. Nothing is auto-selected, so `onSelectFirst` is not fired. Default false.
+ * @param backUri - Stacked layout only: where the back link returns to, typically the list route.
+ * @param backLabel - Stacked layout only: the back link text. Default "Back".
  */
 export interface ListWithDetailPanePropsBase<T extends { id?: string } = Resource> {
   readonly items: T[];
@@ -66,6 +84,9 @@ export interface ListWithDetailPanePropsBase<T extends { id?: string } = Resourc
   readonly page?: number;
   readonly pageCount?: number;
   readonly onPageChange?: (page: number) => void;
+  readonly stacked?: boolean;
+  readonly backUri?: string;
+  readonly backLabel?: ReactNode;
 }
 
 /**
@@ -132,6 +153,9 @@ export function ListWithDetailPane<T extends { id?: string } = Resource>(
     page,
     pageCount,
     onPageChange,
+    stacked = false,
+    backUri,
+    backLabel = 'Back',
   } = props;
 
   // Consumers routinely pass onSelectFirst as an inline arrow, and a changing identity must not
@@ -141,10 +165,10 @@ export function ListWithDetailPane<T extends { id?: string } = Resource>(
 
   // Auto-select the first item when a load settles with items and no selection intended.
   useEffect(() => {
-    if (!loading && selectedKey === undefined && items.length > 0) {
+    if (!stacked && !loading && selectedKey === undefined && items.length > 0) {
       selectFirst(items[0]);
     }
-  }, [loading, selectedKey, items, selectFirst]);
+  }, [stacked, loading, selectedKey, items, selectFirst]);
 
   let headerLeft: ReactNode = <span />;
   if (tabs) {
@@ -176,9 +200,48 @@ export function ListWithDetailPane<T extends { id?: string } = Resource>(
     headerLeft = <Text className={classes.headerText}>{headerText}</Text>;
   }
 
+  if (stacked && selectedKey !== undefined) {
+    return (
+      <Flex direction="column" h="100%" w="100%" className={classes.container}>
+        {backUri !== undefined && (
+          <>
+            <Group h={44} px="md" className={classes.backBar}>
+              <Anchor component={MedplumLink} to={backUri} size="sm" fw={500} className={classes.backLink}>
+                <IconArrowLeft size={16} />
+                {backLabel}
+              </Anchor>
+            </Group>
+            <Divider />
+          </>
+        )}
+        <Flex flex={1} mih={0} w="100%">
+          {selected === undefined ? (
+            <Center flex={1}>
+              <Loader size="sm" />
+            </Center>
+          ) : (
+            renderDetail(selected, { refresh })
+          )}
+        </Flex>
+      </Flex>
+    );
+  }
+
+  let detailPane: ReactNode = null;
+  if (!stacked) {
+    detailPane =
+      selected === undefined ? (
+        <Box flex={1} h="100%">
+          {emptyDetail ?? <DefaultEmptyDetail />}
+        </Box>
+      ) : (
+        renderDetail(selected, { refresh })
+      );
+  }
+
   return (
     <Flex direction="row" h="100%" w="100%" className={classes.container}>
-      <Flex direction="column" w={listWidth} h="100%" className={classes.shell}>
+      <Flex direction="column" w={stacked ? '100%' : listWidth} h="100%" className={classes.shell}>
         {(tabs || headerActions || headerText) && (
           <>
             <Flex h={HEADER_HEIGHT} align="center" justify="space-between" p="md">
@@ -210,13 +273,7 @@ export function ListWithDetailPane<T extends { id?: string } = Resource>(
           </div>
         )}
       </Flex>
-      {selected === undefined ? (
-        <Box flex={1} h="100%">
-          {emptyDetail ?? <DefaultEmptyDetail />}
-        </Box>
-      ) : (
-        renderDetail(selected, { refresh })
-      )}
+      {detailPane}
     </Flex>
   );
 }
