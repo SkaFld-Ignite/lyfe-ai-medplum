@@ -80,6 +80,7 @@ import { ENCRYPTION_KEY_SECRET_NAME, deriveEncryptionKey } from './shared/creden
 import { ZUS_ENROLMENT_EXTENSION, mergeEnabled, mergeZusEnabled, readDirectoryState } from './shared/directory.ts';
 import type { DrChronoClient } from './shared/drchrono.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
+import { ImportProgress, buildStatusReason, countsToOutput } from './shared/progress.ts';
 import { DRCHRONO_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
@@ -3879,6 +3880,7 @@ async function importChart(
         code: { text: 'drchrono-import' },
         description: `Import DrChrono patient ${drchronoPatientId} into Medplum`,
         authoredOn: new Date().toISOString(),
+        executionPeriod: { start: new Date().toISOString() },
         identifier: [
           { system: IDENTIFIER_SYSTEMS.syncJob, value: `drchrono-import-${drchronoPatientId}-${Date.now()}` },
         ],
@@ -3886,6 +3888,11 @@ async function importChart(
     'Task.create'
   );
   const taskId = task.id;
+  // Held separately because the terminal updates below spread `task`, which is
+  // the object as it was CREATED — before the patient existed. Without this the
+  // completed Task loses the patient it belongs to, and the import monitor
+  // shows a finished run with no name against it.
+  let taskFor: Reference<Patient> | undefined;
 
   const ctx: ImportContext = {
     medplum,
@@ -3903,42 +3910,56 @@ async function importChart(
     rxNormCache: new Map(),
   };
 
+  const progress = new ImportProgress({ medplum, task, totalPhases: 11 });
+
   try {
-    log(`step 1: practice directory`);
+    await progress.phase('practice directory');
     await importPractice(ctx);
 
-    log(`step 2: patient ${drchronoPatientId}`);
+    await progress.phase(`patient ${drchronoPatientId}`);
     const { drPatient, patientRef, medplumPatientId } = await importPatientRecord(ctx);
 
-    log(`step 3: coverage`);
+    // The Task is opened before the patient exists, so `for` cannot be set at
+    // creation. Attaching it here is what lets the import monitor name the
+    // patient a run belongs to while the run is still going.
+    taskFor = patientRef;
+    if (taskId) {
+      await medplum
+        .patchResource('Task', taskId, [{ op: 'add', path: '/for', value: patientRef }])
+        .catch(() => undefined);
+    }
+
+    await progress.phase('insurance coverage');
     await importCoverage(ctx, patientRef);
 
     // Appointments come before the clinical resources that reference them: the
     // original ran them after, so `encounter` was silently empty on every
     // medication, condition, procedure, lab order and task.
-    log(`step 4: appointments`);
+    await progress.phase('appointments and visits');
     const appointments = await fetchAppointments(ctx, drPatient);
     await importAppointments(ctx, patientRef, appointments);
 
-    log(`step 5: clinical notes`);
+    await progress.phase('clinical notes');
     await importClinicalNotes(ctx, patientRef, appointments);
 
-    log(`step 6: allergies, medications, problems`);
+    await progress.phase('allergies, medications, problems');
     await importClinical(ctx, patientRef);
+    await progress.report(ctx.counts as unknown as Record<string, number>);
 
-    log(`step 7: immunizations, family and social history`);
+    await progress.phase('immunizations, family and social history');
     await importHistories(ctx, patientRef);
 
-    log(`step 8: procedures`);
+    await progress.phase('procedures');
     await importProcedures(ctx, patientRef);
 
-    log(`step 9: labs`);
+    await progress.phase('lab orders and results');
     await importLabs(ctx, patientRef);
+    await progress.report(ctx.counts as unknown as Record<string, number>);
 
-    log(`step 10: documents, messages, tasks`);
+    await progress.phase('documents, messages, tasks');
     await importAdministrative(ctx, patientRef);
 
-    log(`step 11: provenance, audit, compartment`);
+    await progress.phase('provenance and audit');
     for (const [resourceType, refs] of ctx.refsByType) {
       if (refs.length === 0) {
         continue;
@@ -3983,10 +4004,15 @@ async function importChart(
           ...task,
           status: 'completed',
           lastModified: new Date().toISOString(),
+          businessStatus: { text: 'complete' },
+          ...(taskFor ? { for: taskFor } : {}),
+          executionPeriod: { ...task.executionPeriod, end: new Date().toISOString() },
+          // One entry per resource type with a real integer, so the numbers
+          // are readable without parsing a JSON blob out of a valueString.
           output: [
-            { type: { text: 'counts' }, valueString: JSON.stringify(counts) },
+            ...countsToOutput(counts as unknown as Record<string, number>),
             { type: { text: 'medplumPatientId' }, valueString: medplumPatientId },
-            { type: { text: 'durationMs' }, valueString: String(durationMs) },
+            { type: { text: 'durationMs' }, valueInteger: durationMs },
           ],
         }),
       'Task.complete'
@@ -4015,7 +4041,20 @@ async function importChart(
       .catch(() => null);
 
     await medplum
-      .updateResource<Task>({ ...task, status: 'failed', statusReason: { text: message.slice(0, 500) } })
+      .updateResource<Task>({
+        ...task,
+        status: 'failed',
+        lastModified: new Date().toISOString(),
+        ...(taskFor ? { for: taskFor } : {}),
+        // The coded reason is what a list view groups on ("token expired" is
+        // a reconnect, "rate limited" is a retry); the text is what tells a
+        // person what actually happened.
+        statusReason: buildStatusReason(err),
+        executionPeriod: { ...task.executionPeriod, end: new Date().toISOString() },
+        // Keep whatever did land, so a partial import is visible as partial
+        // rather than looking like nothing happened.
+        output: countsToOutput(counts as unknown as Record<string, number>),
+      })
       .catch(() => null);
 
     return { ok: false, error: message, taskId, counts, durationMs: Date.now() - startedAt };

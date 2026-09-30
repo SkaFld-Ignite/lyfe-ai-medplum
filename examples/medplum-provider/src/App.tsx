@@ -6,6 +6,7 @@ import { useDoseSpotNotifications } from '@medplum/dosespot-react';
 import type { SpotlightLinkAction } from '@medplum/react';
 import { AppShell, Loading, useMedplum, useMedplumProfile } from '@medplum/react';
 import {
+  IconActivity,
   IconApps,
   IconBook2,
   IconBuildingHospital,
@@ -35,6 +36,7 @@ import { LyfeDirectoryPage } from './pages/directory/LyfeDirectoryPage';
 import { EncountersPage } from './pages/encounter/EncountersPage';
 import { FaxPage } from './pages/fax/FaxPage';
 import { GetStartedPage } from './pages/getstarted/GetStartedPage';
+import { LyfeImportMonitorPage } from './pages/imports/LyfeImportMonitorPage';
 import { DoseSpotFavoritesPage } from './pages/integrations/DoseSpotFavoritesPage';
 import { DoseSpotNotificationsPage } from './pages/integrations/DoseSpotNotificationsPage';
 import { DrChronoCallbackPage } from './pages/integrations/DrChronoCallbackPage';
@@ -201,6 +203,7 @@ export function App(): JSX.Element | null {
                   { icon: <IconUserPlus />, label: 'New Patient', href: '/onboarding' },
                   { icon: <IconApps />, label: 'Integrations', href: '/integrations' },
                   { icon: <IconBuildingHospital />, label: 'Directory', href: '/directory' },
+                  { icon: <IconActivity />, label: 'Imports', href: '/imports' },
                   ...(hasBilling
                     ? [{ icon: <IconReceipt2 />, label: 'Billing Settings', href: '/Settings/Billing' }]
                     : []),
@@ -326,6 +329,9 @@ export function App(): JSX.Element | null {
                   off. A switched-off office contributes no appointments to any
                   import. */}
               <Route path="/directory" element={<LyfeDirectoryPage />} />
+              {/* Live view of every import, read from the Task each one keeps
+                  up to date. */}
+              <Route path="/imports" element={<LyfeImportMonitorPage />} />
               {/* DrChrono's OAuth redirect target. A Medplum bot cannot serve one,
                   so the SPA lands the grant and hands the code to the bot. */}
               <Route path="/integrations/drchrono/callback" element={<DrChronoCallbackPage />} />

@@ -62,6 +62,7 @@ import {
   readCredentialRecord,
 } from './shared/credentials.ts';
 import { readZusEnabledLocationRefs } from './shared/directory.ts';
+import { ImportProgress, buildStatusReason } from './shared/progress.ts';
 import { ZUS_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
@@ -366,12 +367,18 @@ async function run(props: {
 
     await linkZusIdentifiers({ medplum, patient, input: resolved });
 
+    // Two setup phases (enrolment, identifiers) then one per resource type.
+    const progress = new ImportProgress({ medplum, task, totalPhases: RESOURCE_TYPES.length + 2 });
+    await progress.phase('enrolment');
+    await progress.phase('linking Zus identifiers');
+
     const patientRef: Reference<Patient> = { reference: `Patient/${input.medplumPatientId}` };
     // Zus reference ("Encounter/<zus id>") to Medplum reference, fed forward
     // across resource types so inter-resource links survive the move.
     const referenceMap = new Map<string, string>();
 
     for (const resourceType of RESOURCE_TYPES) {
+      await progress.phase(resourceType);
       try {
         const written = await importResourceType({
           medplum,
@@ -386,6 +393,9 @@ async function run(props: {
         if (written.reason) {
           incomplete[resourceType] = written.reason;
         }
+        // Publish after each type so a long pull shows what it has already
+        // landed rather than only its phase name.
+        await progress.report(counts);
       } catch (err) {
         // Isolation: one type's failure must not discard the types already
         // written, nor stop the ones still to come.
@@ -1293,8 +1303,9 @@ async function finishTask(props: {
           ...props.task,
           status: props.status,
           lastModified: now,
+          businessStatus: { text: props.status === 'completed' ? 'complete' : 'failed' },
           executionPeriod: { ...props.task.executionPeriod, end: now },
-          ...(props.error ? { statusReason: { text: props.error.slice(0, 400) } } : {}),
+          ...(props.error ? { statusReason: buildStatusReason(props.error) } : {}),
           output,
         }),
       'update Task'
