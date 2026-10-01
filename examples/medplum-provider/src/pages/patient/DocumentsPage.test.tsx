@@ -75,7 +75,7 @@ describe('DocumentsPage', () => {
     expect(within(lab).getByText('Labs')).toBeInTheDocument();
     expect(within(lab).getByText('Results')).toBeInTheDocument();
     // Newest first by default.
-    expect(within(rows()[0]).getByText('From Zus/HIE')).toBeInTheDocument();
+    expect(within(rows()[0]).getByText('From Lyfe')).toBeInTheDocument();
   });
 
   test('shows the empty state and hides soft-deleted documents', async () => {
@@ -90,7 +90,7 @@ describe('DocumentsPage', () => {
     beforeEach(async () => {
       await createDocument({ description: 'Beta note', meta: tag('drchrono'), category: [{ text: 'Notes' }] });
       await createDocument({ description: 'Alpha labs', meta: tag('drchrono'), category: [{ text: 'Labs' }] });
-      await createDocument({ description: 'Zus summary', meta: tag('zus') });
+      await createDocument({ description: 'Network summary', meta: tag('zus') });
     });
 
     test('searches', async () => {
@@ -104,14 +104,26 @@ describe('DocumentsPage', () => {
     });
 
     test('filters by source', async () => {
+      // An untagged document was created in Lyfe; the one tagged with the Lyfe
+      // Data Network's vendor name arrived over the network. The filter has two
+      // chips, Lyfe and DrChrono, and Lyfe covers both of these.
+      await createDocument({ description: 'Uploaded scan' });
       setup();
-      await waitFor(() => expect(rows()).toHaveLength(3));
+      await waitFor(() => expect(rows()).toHaveLength(4));
 
-      fireEvent.click(screen.getByRole('button', { name: 'Zus/HIE (1 document)' }));
-      await waitFor(() => expect(rows()).toHaveLength(1));
-      expect(screen.getByText('Zus summary')).toBeInTheDocument();
+      // Nothing on the page says Zus.
+      expect(screen.queryByText(/Zus/i)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Lyfe (2 documents)' }));
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      expect(screen.getByText('Network summary')).toBeInTheDocument();
+      expect(screen.getByText('Uploaded scan')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'DrChrono (2 documents)' }));
+      await waitFor(() => expect(rows()).toHaveLength(2));
+
       fireEvent.click(screen.getByRole('button', { name: 'All sources' }));
-      await waitFor(() => expect(rows()).toHaveLength(3));
+      await waitFor(() => expect(rows()).toHaveLength(4));
     });
 
     test('sorts by name', async () => {

@@ -53,15 +53,13 @@ export const KIND_ORDER: TimelineEventKind[] = [
 
 export const SOURCE_CONFIG: Record<DataSource, { label: string; color: MantineColor }> = {
   drchrono: { label: 'From EHR', color: 'green' },
-  zus: { label: 'From Zus', color: 'cyan' },
-  other: { label: 'Lyfe', color: 'gray' },
+  lyfe: { label: 'From Lyfe', color: 'violet' },
 };
 
 /** Filter-menu labels for sources. */
 export const SOURCE_FILTER_LABELS: Record<DataSource, string> = {
   drchrono: 'EHR (DrChrono)',
-  zus: 'Lyfe Data Network (Zus)',
-  other: 'Entered in Lyfe',
+  lyfe: 'Lyfe',
 };
 
 /**

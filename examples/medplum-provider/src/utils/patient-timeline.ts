@@ -20,8 +20,16 @@ import type {
 } from '@medplum/fhirtypes';
 import { toClinicIsoDate, weekdayForDayKey } from './clinic-time';
 
-/** Where a record came from, derived from `meta.tag` (e.g. `https://lyfe.com/source|drchrono`). */
-export type DataSource = 'drchrono' | 'zus' | 'other';
+/**
+ * Where a record came from, derived from `meta.tag` (e.g. `https://lyfe.com/source|drchrono`).
+ *
+ * The product has two sources, not three: the connected EHR (DrChrono) and
+ * Lyfe. Everything that is not DrChrono is Lyfe — records pulled over the Lyfe
+ * Data Network (tagged `zus`, the network's vendor name) and records created in
+ * Lyfe itself (no source tag) are the same thing to a clinician. See
+ * {@link getDataSource}.
+ */
+export type DataSource = 'drchrono' | 'lyfe';
 
 /** Kinds of clinical record shown on the timeline. */
 export type RecordKind =
@@ -159,18 +167,19 @@ function normalize(text: string): string {
 
 /**
  * Where a resource came from, based on its `meta.tag` codes.
+ *
+ * Collapses to the two sources the product actually has. The stored tag is
+ * untouched — a resource pulled over the Lyfe Data Network keeps its truthful
+ * `zus` provenance tag — but it reads as Lyfe everywhere it is shown, together
+ * with resources that carry no source tag because they were created in Lyfe.
+ * Nothing in the app distinguishes those two cases; everything either asks
+ * "is this DrChrono?" or renders a badge.
  * @param resource - Any FHIR resource.
  * @returns The data source.
  */
 export function getDataSource(resource: Resource): DataSource {
   const codes = (resource.meta?.tag ?? []).map((tag) => tag.code?.toLowerCase());
-  if (codes.includes('drchrono')) {
-    return 'drchrono';
-  }
-  if (codes.includes('zus')) {
-    return 'zus';
-  }
-  return 'other';
+  return codes.includes('drchrono') ? 'drchrono' : 'lyfe';
 }
 
 function isEnteredInError(resource: Resource): boolean {

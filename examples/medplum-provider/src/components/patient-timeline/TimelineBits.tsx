@@ -42,20 +42,24 @@ export function KindBadge(props: KindBadgeProps): JSX.Element {
 }
 
 /**
- * "From EHR" / "From Zus" chips for the sources an event was merged from.
+ * "From EHR" / "From Lyfe" chips for the sources an event was merged from.
+ *
+ * Both sources are labelled. There used to be a third, unlabelled bucket for
+ * records entered in Lyfe, kept quiet to reduce noise; now that Lyfe covers
+ * everything that is not the EHR, hiding it would drop the provenance of every
+ * record pulled over the Lyfe Data Network.
  * @param props - The component props.
- * @param props.sources - The sources to show; "other" (entered in Lyfe) is not labelled.
+ * @param props.sources - The sources to show.
  * @returns The chips, or null when there is nothing to show.
  */
 export function SourceBadges(props: { sources: DataSource[] }): JSX.Element | null {
   const { sources } = props;
-  const shown = sources.filter((s) => s !== 'other');
-  if (shown.length === 0) {
+  if (sources.length === 0) {
     return null;
   }
   return (
     <>
-      {shown.map((source) => (
+      {sources.map((source) => (
         <Badge
           key={source}
           variant="light"

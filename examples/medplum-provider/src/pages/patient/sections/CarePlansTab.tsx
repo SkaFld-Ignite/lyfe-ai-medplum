@@ -105,7 +105,7 @@ export function CarePlansTab(): JSX.Element {
           ? {
               icon: <IconClipboardList size={28} />,
               title: items.length === 0 ? 'No care plans on record' : 'No care plans match',
-              description: items.length === 0 ? 'Care plans from the HIE will appear here.' : 'Try another search.',
+              description: items.length === 0 ? 'Care plans from Lyfe will appear here.' : 'Try another search.',
             }
           : undefined
       }

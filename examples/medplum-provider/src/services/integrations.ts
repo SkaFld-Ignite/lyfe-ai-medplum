@@ -4,7 +4,7 @@
 /**
  * The integrations settings page's data access, kept in one place deliberately.
  *
- * Neither DrChrono nor the Lyfe Data Network (ZUS) can be called from the
+ * Neither DrChrono nor the Lyfe Data Network can be called from the
  * browser: the credentials would ship in client JS, and neither vendor sends
  * CORS headers for this origin. Every call below therefore goes to a Medplum
  * Bot, found by identifier rather than by a hard-coded id so the same build
@@ -40,7 +40,8 @@ export interface IntegrationStatus {
   /** ISO timestamp of the last successful check, when the backend tracks one. */
   readonly lastCheckedAt?: string;
   /**
-   * Non-secret settings, safe to display: API URL, and for ZUS the builder id,
+   * Non-secret settings, safe to display: API URL, and for the Lyfe Data
+   * Network the builder id,
    * package id, practitioner NPI and practice name.
    */
   readonly config: Readonly<Record<string, string>>;

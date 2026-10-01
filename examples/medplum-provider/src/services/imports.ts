@@ -18,8 +18,27 @@ import type { MedplumClient } from '@medplum/core';
 import type { Patient, Task } from '@medplum/fhirtypes';
 import { LYFE_SOURCE_TAG_SYSTEM } from '../utils/data-source';
 
-/** Where an imported resource came from. */
+/**
+ * Where an imported resource came from.
+ *
+ * These are wire values, not labels: `zus` is the literal `meta.tag` code the
+ * importers stamp and the stem of the `Task` code below, so it is what the
+ * `_tag` searches in this module match on. The product calls it Lyfe — use
+ * {@link SOURCE_LABELS} for anything a person reads.
+ */
 export type ImportSource = 'drchrono' | 'zus';
+
+/**
+ * What each source is called in the product.
+ *
+ * There are two sources, Lyfe and DrChrono. `zus` is the Lyfe Data Network's
+ * vendor name and stays in the data as a truthful record of provenance; it is
+ * never shown.
+ */
+export const SOURCE_LABELS: Record<ImportSource, string> = {
+  drchrono: 'DrChrono',
+  zus: 'Lyfe',
+};
 
 /** Coding system the bots use for a failure reason. */
 const IMPORT_ERROR_SYSTEM = 'https://lyfe.com/import-error';

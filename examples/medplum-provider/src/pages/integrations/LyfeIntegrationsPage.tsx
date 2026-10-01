@@ -82,7 +82,8 @@ interface IntegrationDefinition {
   readonly secretFields: readonly FieldDefinition[];
   /**
    * True when tokens are obtained by sending the user to the vendor rather than
-   * by typing them in. ZUS is `client_credentials`, so there is nobody to send.
+   * by typing them in. The Lyfe Data Network is `client_credentials`, so there
+   * is nobody to send.
    */
   readonly oauth?: boolean;
 }
@@ -128,7 +129,7 @@ const CATALOG: readonly IntegrationDefinition[] = [
   },
   {
     id: 'zus',
-    name: 'Lyfe Data Network (ZUS)',
+    name: 'Lyfe Data Network',
     vendor: 'Health data network · FHIR R4',
     description:
       'Bidirectional record exchange across the Lyfe Data Network. Pulls the longitudinal record for a patient and pushes encounters back as FHIR R4.',
@@ -567,7 +568,7 @@ function ConfigureModal(props: ConfigureModalProps): JSX.Element {
 }
 
 /**
- * The clinic's integrations settings: DrChrono and the Lyfe Data Network (ZUS),
+ * The clinic's integrations settings: DrChrono and the Lyfe Data Network,
  * each with its connection status, non-secret configuration, a write-only
  * credential form and a live connection test.
  *
