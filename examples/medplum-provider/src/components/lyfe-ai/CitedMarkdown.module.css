@@ -1,0 +1,106 @@
+/*
+ * The inline citation pills and the sources strip they point at. Both are lifted from the
+ * production Lyfe chat, whose violet (document) / emerald (chart section) pair carries no
+ * Mantine equivalent, so the colours are written out as Tailwind values to match it exactly.
+ */
+
+.pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  margin: 0 2px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  font-size: 10px;
+  line-height: 1.5;
+  vertical-align: baseline;
+  cursor: pointer;
+}
+
+/* `[doc:Sn]` — a source card. Monospaced, because the label is an index, not a word. */
+.docPill {
+  border-color: rgba(167 139 250 / 0.5);
+  background-color: #f5f3ff;
+  color: #6d28d9;
+  font-family: var(--mantine-font-family-monospace);
+  font-weight: 600;
+}
+
+.docPill:hover {
+  border-color: #8b5cf6;
+  background-color: #ede9fe;
+}
+
+/* `[meds]`, `[vitals]` … — a chart section. */
+.tabPill {
+  border-color: rgba(52 211 153 / 0.5);
+  background-color: #ecfdf5;
+  color: #047857;
+  font-weight: 500;
+}
+
+.tabPill:hover {
+  border-color: #10b981;
+  background-color: #d1fae5;
+}
+
+[data-mantine-color-scheme='dark'] .docPill {
+  border-color: rgba(139 92 246 / 0.45);
+  background-color: rgba(76 29 149 / 0.35);
+  color: #c4b5fd;
+}
+
+[data-mantine-color-scheme='dark'] .docPill:hover {
+  background-color: rgba(76 29 149 / 0.55);
+}
+
+[data-mantine-color-scheme='dark'] .tabPill {
+  border-color: rgba(16 185 129 / 0.45);
+  background-color: rgba(6 78 59 / 0.35);
+  color: #6ee7b7;
+}
+
+[data-mantine-color-scheme='dark'] .tabPill:hover {
+  background-color: rgba(6 78 59 / 0.55);
+}
+
+/* Sources strip */
+.stripHeading {
+  padding-left: 4px;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mantine-color-dimmed);
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: var(--mantine-radius-md);
+  padding: 2px;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+/* The flash a pill click leaves behind, so the eye can find the card it jumped to. */
+.card[data-flashed='true'] {
+  border-color: #a78bfa;
+  box-shadow: 0 0 0 2px rgba(196 181 253 / 0.6);
+}
+
+.cardBadge {
+  flex-shrink: 0;
+  font-family: var(--mantine-font-family-monospace);
+}
+
+.cardBody {
+  flex: 1;
+  min-width: 0;
+}
