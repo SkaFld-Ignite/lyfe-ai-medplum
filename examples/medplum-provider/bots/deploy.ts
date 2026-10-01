@@ -129,6 +129,15 @@ const BOTS: BotDefinition[] = [
     streamingEnabled: true,
     timeout: 300,
   },
+  {
+    name: 'lyfe-patient-ai-summary',
+    description: "Write a patient's AI clinical summary as a Composition, or mark the stored one stale.",
+    source: 'patient-ai-summary.ts',
+    // One chart read plus one model call. A long-context summarization call
+    // routinely takes 20-40s, which the 10s default would abort; 180s clears a
+    // slow one without letting a hung call hold a slot for minutes.
+    timeout: 180,
+  },
 ];
 
 /**
