@@ -1,7 +1,110 @@
-.tab {
-  color: var(--tabs-color);
+/* Lyfe record page: a back link, the record header card and a card with Medplum's tabs. */
 
-  &[data-active] {
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* LinkTabs: Lyfe's pill tabs. */
+.list {
+  gap: 4px;
+}
+
+.tab {
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: light-dark(#475569, var(--mantine-color-gray-4));
+
+  & a {
+    color: inherit;
+  }
+
+  &:hover {
+    background: light-dark(#f1f5f9, var(--mantine-color-dark-6));
+  }
+
+  &[data-active],
+  &[data-active]:hover {
     color: var(--mantine-color-white);
+    background: light-dark(#0f172a, var(--mantine-color-blue-7));
+  }
+}
+
+.body {
+  padding: 8px 20px 20px;
+}
+
+/* Medplum's ResourceTable: a quiet two-column list of label and value. */
+.body :global(dl) {
+  grid-template-columns: minmax(140px, 28%) 1fr;
+
+  & > dt,
+  & > dd {
+    padding: 11px 4px;
+    border-top: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  }
+
+  & > dt {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #64748b;
+  }
+
+  & > dd {
+    font-size: 13.5px;
+    overflow-wrap: anywhere;
+    color: light-dark(#0f172a, var(--mantine-color-gray-2));
+  }
+
+  /* Nested values (codings, periods) stay compact. */
+  & :global(dl) > dt,
+  & :global(dl) > dd {
+    padding: 2px 4px;
+    border: 0;
+  }
+}
+
+/* Nested values (e.g. an activity's detail) as a compact label/value list. */
+.body :global(dl) :global(dl) {
+  grid-template-columns: minmax(90px, auto) 1fr;
+  column-gap: 16px;
+}
+
+.allFields {
+  margin-top: 20px;
+  border-top: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+}
+
+.allFieldsToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #475569;
+
+  & svg {
+    transform: rotate(-90deg);
+    transition: transform 150ms ease;
+  }
+
+  & svg[data-open] {
+    transform: none;
   }
 }

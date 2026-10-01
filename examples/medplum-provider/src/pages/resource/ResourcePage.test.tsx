@@ -34,7 +34,8 @@ describe('ResourcePage', () => {
   test('Details tab renders', async () => {
     await setup('/Practitioner/124');
     expect((await screen.findAllByText('Name'))[0]).toBeInTheDocument();
-    expect(screen.getByText('Gender')).toBeInTheDocument();
+    // Fields the record leaves empty are not listed.
+    expect(screen.queryByText('Gender')).not.toBeInTheDocument();
   });
 
   describe('Scheduling tab visibility', () => {

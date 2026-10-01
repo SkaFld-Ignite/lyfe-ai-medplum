@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { MantineProvider } from '@mantine/core';
 import type { MedicationOrderExtensions } from '@medplum/core';
-import { formatDate, formatHumanName } from '@medplum/core';
+import { formatHumanName } from '@medplum/core';
 import type { MedicationRequest } from '@medplum/fhirtypes';
 import { DrAliceSmith, HomerSimpson, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
@@ -60,8 +60,9 @@ describe('MedicationRequestDetails', () => {
     setup({ ...baseRequest, meta: { lastUpdated: '2026-01-15T10:00:00Z' } });
 
     expect(screen.getByText('Alinia 500 mg tablet')).toBeInTheDocument();
-    expect(screen.getByText(/MedicationRequest\/rx-1/)).toBeInTheDocument();
-    expect(screen.getByText(/Last updated/)).toHaveTextContent(formatDate('2026-01-15T10:00:00Z'));
+    // The raw reference is no longer shown; the header gives the last update as a Lyfe date.
+    expect(screen.queryByText(/MedicationRequest\/rx-1/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Last updated/)).toHaveTextContent('Jan 15, 2026');
     expect(screen.getByText('active')).toBeInTheDocument();
   });
 
@@ -101,7 +102,7 @@ describe('MedicationRequestDetails', () => {
       meta: { lastUpdated: '2026-03-01T00:00:00Z' },
     });
 
-    expect(screen.getByText(/^Ordered/)).toHaveTextContent(formatDate('2026-02-01T00:00:00Z'));
+    expect(screen.getByText('Ordered').nextSibling).toHaveTextContent('Jan 31, 2026');
   });
 
   test('Navigates to the full record', () => {
@@ -211,7 +212,10 @@ describe('MedicationRequestDetails', () => {
     });
 
     expect(screen.getByText('Medication codes')).toBeInTheDocument();
-    expect(screen.getByText('Nitazoxanide · http://www.nlm.nih.gov/research/umls/rxnorm | 351264')).toBeInTheDocument();
+    expect(screen.getByText('RxNorm 351264')).toHaveAttribute(
+      'title',
+      'Nitazoxanide · http://www.nlm.nih.gov/research/umls/rxnorm'
+    );
     expect(screen.getByText('Category')).toBeInTheDocument();
     expect(screen.getByText('Outpatient')).toBeInTheDocument();
     expect(screen.getByText('Reason')).toBeInTheDocument();
@@ -219,7 +223,7 @@ describe('MedicationRequestDetails', () => {
     expect(screen.getByText('Notes')).toBeInTheDocument();
     expect(screen.getByText('Take with food.')).toBeInTheDocument();
     expect(screen.getByText('Identifiers')).toBeInTheDocument();
-    expect(screen.getByText('https://example.com/rx|abc-123')).toBeInTheDocument();
+    expect(screen.getByText('example.com/rx #abc-123')).toBeInTheDocument();
   });
 
   test('Resolves the patient reference for the patient row', async () => {
@@ -235,7 +239,7 @@ describe('MedicationRequestDetails', () => {
       requester: { reference: `Practitioner/${DrAliceSmith.id}`, display: 'Dr. Display Name' },
     });
 
-    expect(screen.getByText('Requester')).toBeInTheDocument();
+    expect(screen.getByText('Prescriber')).toBeInTheDocument();
     expect(screen.getByText('Dr. Display Name')).toBeInTheDocument();
   });
 
@@ -309,8 +313,8 @@ describe('MedicationRequestDetails', () => {
 
     expect(screen.getByText('Quantity:').parentElement).toHaveTextContent('30 Tablet');
     const validity = screen.getByText(/^Validity:/);
-    expect(validity).toHaveTextContent(formatDate('2026-01-01T00:00:00Z'));
-    expect(validity).toHaveTextContent(formatDate('2026-06-01T00:00:00Z'));
+    expect(validity).toHaveTextContent('Dec 31, 2025');
+    expect(validity).toHaveTextContent('May 31, 2026');
     expect(screen.getByText('Days supply:').parentElement).toHaveTextContent('30 days');
     expect(screen.getByText('Refills allowed: 2')).toBeInTheDocument();
     expect(screen.getByText('Intended dispenser: Walgreens #123')).toBeInTheDocument();
@@ -378,8 +382,7 @@ describe('MedicationRequestDetails', () => {
   test('Renders an em dash when there is nothing to dispense', () => {
     setup(baseRequest);
 
-    expect(screen.getByText('Dispense')).toBeInTheDocument();
-    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.getByText('Dispense').nextSibling).toHaveTextContent('—');
   });
 
   test('Renders substitution details', () => {

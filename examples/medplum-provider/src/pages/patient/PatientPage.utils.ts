@@ -81,15 +81,15 @@ export const PatientPageTabs: PatientPageTabInfo[] = [
     label: 'Orders',
     aliases: ['servicerequest'],
   },
-  { id: 'conditions', url: 'conditions', label: 'Conditions' },
+  { id: 'conditions', url: 'conditions', label: 'Conditions', aliases: ['condition'] },
   {
     id: 'meds',
     url: 'MedicationRequest?_fields=medication[x],intent,status&_offset=0&_sort=-_lastUpdated&patient=%patient.id',
     label: 'Medications',
   },
   { id: 'vitals', url: 'vitals', label: 'Vitals' },
-  { id: 'allergies', url: 'allergies', label: 'Allergies' },
-  { id: 'immunizations', url: 'immunizations', label: 'Immunizations' },
+  { id: 'allergies', url: 'allergies', label: 'Allergies', aliases: ['allergyintolerance'] },
+  { id: 'immunizations', url: 'immunizations', label: 'Immunizations', aliases: ['immunization'] },
   {
     id: 'documentreference',
     url: 'DocumentReference',

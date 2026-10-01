@@ -9,6 +9,7 @@ import { IconUserEdit } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
+import formClasses from '../../components/patient-shell/LyfeForm.module.css';
 import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { ResourceFormWithRequiredProfile } from '../../components/ResourceFormWithRequiredProfile';
 import { RESOURCE_PROFILE_URLS } from '../resource/utils';
@@ -66,7 +67,7 @@ export function EditTab(): JSX.Element | null {
       title="Edit demographics"
       description="Update the patient's details. Changes are saved to their Medplum record."
     >
-      <Box p="lg">
+      <Box px="lg" pt="md" className={formClasses.form}>
         <ResourceFormWithRequiredProfile
           missingProfileMessage={missingProfileMessage}
           defaultValue={value}

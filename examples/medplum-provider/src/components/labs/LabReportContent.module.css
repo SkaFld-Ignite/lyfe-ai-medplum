@@ -12,3 +12,114 @@
 .attachment :global(div[data-testid='attachment-iframe'] iframe) {
   height: 600px !important;
 }
+
+/* Lyfe header for a lab result. */
+.icon {
+  display: grid;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 12px;
+  color: #2563eb;
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 1px #bfdbfe;
+}
+
+.title {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: light-dark(#0f172a, var(--mantine-color-white));
+}
+
+.subtle {
+  font-size: 12.5px;
+  color: #64748b;
+}
+
+.sectionTitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+/*
+ * Medplum's DiagnosticReportDisplay in Lyfe style: its own heading and header block are dropped
+ * (the result header above shows the name, status and dates), and the results table becomes a
+ * soft card.
+ */
+.report {
+  & > div > :global(h1.mantine-Title-root):first-child {
+    display: none;
+  }
+
+  /* Its issued/status/performer block repeats the result header above. */
+  & > div > :global(h1.mantine-Title-root):first-child + :global(.mantine-Group-root) {
+    display: none;
+  }
+
+  & table {
+    width: 100%;
+    overflow: hidden;
+    border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+    border-collapse: separate;
+    border-spacing: 0;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+
+  & th,
+  & td {
+    padding: 10px 12px;
+    border: 0;
+    border-top: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+    text-align: left;
+    vertical-align: top;
+  }
+
+  & thead th,
+  & tr:first-child th {
+    border-top: 0;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #475569;
+    background: light-dark(#f1f5f9, var(--mantine-color-dark-6));
+  }
+
+  /* Abnormal rows: a red tint and a red left edge, not a red box. */
+  & tr[class*='criticalRow'] {
+    border: 0;
+    color: light-dark(#be123c, var(--mantine-color-red-2));
+    background: light-dark(#fff1f2, rgb(190 18 60 / 0.12));
+
+    & td {
+      border: 0;
+      border-top: 1px solid light-dark(#ffe4e6, var(--mantine-color-dark-5));
+    }
+
+    & td:first-child {
+      box-shadow: inset 3px 0 0 #f43f5e;
+    }
+  }
+
+  /* Result comments read as prose, not as code. */
+  & blockquote {
+    margin: 0;
+    padding: 8px 12px;
+    border-left: 3px solid #93c5fd;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12.5px;
+    color: light-dark(#334155, var(--mantine-color-gray-3));
+    background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+
+    & * {
+      font-family: inherit;
+    }
+  }
+}
