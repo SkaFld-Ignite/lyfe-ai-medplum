@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react-hooks';
+import type { JSX } from 'react';
 import { Logo } from '../Logo/Logo';
 import { act, fireEvent, render, screen, selectAutocompleteOption } from '../test-utils/render';
 import type { AppShellAnnouncement } from './AnnouncementBanners';
@@ -84,6 +85,41 @@ describe('AppShell v1', () => {
       fireEvent.click(screen.getByTitle('Medplum Logo'));
     });
 
+    expect(screen.queryByText('Menu 1')).not.toBeInTheDocument();
+  });
+
+  test('Controlled navbar follows the app and reports toggles', async () => {
+    localStorage.clear();
+    const onNavbarOpenChange = vi.fn();
+    const shell = (open: boolean): JSX.Element => (
+      <MedplumProvider medplum={medplum} navigate={navigateMock}>
+        <AppShell
+          logo={<Logo size={24} />}
+          navbarOpen={open}
+          onNavbarOpenChange={onNavbarOpenChange}
+          menus={[{ title: 'Menu 1', links: [{ label: 'Link 1', href: '/link1' }] }]}
+        >
+          Your application here
+        </AppShell>
+      </MedplumProvider>
+    );
+
+    let rerender!: (ui: JSX.Element) => void;
+    await act(async () => {
+      ({ rerender } = render(shell(true)));
+    });
+    expect(screen.getByText('Menu 1')).toBeInTheDocument();
+
+    // A toggle is reported to the app; the app's value still decides.
+    await act(async () => {
+      fireEvent.click(screen.getByTitle('Medplum Logo'));
+    });
+    expect(onNavbarOpenChange).toHaveBeenCalledWith(false);
+    expect(screen.getByText('Menu 1')).toBeInTheDocument();
+
+    await act(async () => {
+      rerender(shell(false));
+    });
     expect(screen.queryByText('Menu 1')).not.toBeInTheDocument();
   });
 

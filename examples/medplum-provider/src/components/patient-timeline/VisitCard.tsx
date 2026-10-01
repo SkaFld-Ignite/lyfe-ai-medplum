@@ -6,6 +6,7 @@ import {
   IconAlertTriangle,
   IconChevronDown,
   IconChevronRight,
+  IconClock,
   IconExternalLink,
   IconStethoscope,
 } from '@tabler/icons-react';
@@ -95,14 +96,10 @@ export function VisitCard(props: VisitCardProps): JSX.Element {
             </Group>
           )}
         </Stack>
-        <Stack gap={0} align="flex-end" className={classes.visitWhen}>
-          <Text size="xs" fw={600} className={classes.tabular}>
-            {formatShortTime(visit.date, timeZone)}
-          </Text>
-          <Text size="xs" c="dimmed" className={classes.tabular}>
-            {formatMediumDate(visit.date, timeZone)}
-          </Text>
-        </Stack>
+        <span className={classes.visitTime} title={formatMediumDate(visit.date, timeZone)}>
+          <IconClock size={12} />
+          {formatShortTime(visit.date, timeZone)}
+        </span>
       </UnstyledButton>
 
       {expanded && (

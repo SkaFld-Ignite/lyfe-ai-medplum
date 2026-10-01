@@ -1,16 +1,17 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { ActionIcon, Flex, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Box, Stack, Text, Tooltip } from '@mantine/core';
 import type { SearchRequest, WithId } from '@medplum/core';
 import { Operator, parseSearchRequest } from '@medplum/core';
 import type { CodeableConcept, Task } from '@medplum/fhirtypes';
 import { ListWithDetailPane, useMedplum } from '@medplum/react';
-import { IconPlus } from '@tabler/icons-react';
+import { IconChecklist, IconPlus } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useControllableDisclosure } from '../../hooks/useControllableDisclosure';
 import { showErrorNotification } from '../../utils/notifications';
+import shellClasses from '../patient-shell/PatientShell.module.css';
 import { NewTaskModal } from './NewTaskModal';
 import { TaskDetailPanel } from './TaskDetailPanel';
 import { TaskFilterMenu } from './TaskFilterMenu';
@@ -288,11 +289,17 @@ export function TaskBoard({
 
 function EmptyTasksState(): JSX.Element {
   return (
-    <Flex direction="column" h="100%" justify="center" align="center" pt="xl">
-      <Text c="dimmed" fw={500}>
+    <Stack align="center" gap={6} pt={56} px="md">
+      <Box className={shellClasses.emptyIcon}>
+        <IconChecklist size={28} />
+      </Box>
+      <Text fw={600} size="lg" mt="xs">
         No tasks available.
       </Text>
-    </Flex>
+      <Text size="sm" c="dimmed" maw={384} ta="center">
+        Follow-ups, reviews and orders assigned for this view will appear here.
+      </Text>
+    </Stack>
   );
 }
 

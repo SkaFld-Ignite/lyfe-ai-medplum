@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Badge, Button, Divider, Group, Paper, ScrollArea, Stack, Text, Tooltip } from '@mantine/core';
+import { Badge, Button, Group, Paper, ScrollArea, Stack, Text, Tooltip } from '@mantine/core';
 import type { MedicationOrderExtensions } from '@medplum/core';
 import {
   formatCodeableConcept,
-  formatDate,
   formatHumanName,
   getMedicationOrderIframeUrl,
   getPendingMedicationOrderId,
@@ -12,10 +11,36 @@ import {
 } from '@medplum/core';
 import type { Dosage, MedicationRequest, Patient, Practitioner, Quantity } from '@medplum/fhirtypes';
 import { useResource } from '@medplum/react';
-import { IconExternalLink, IconMaximize } from '@tabler/icons-react';
+import { IconExternalLink, IconMaximize, IconPill } from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
 import { useNavigate } from 'react-router';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
+import { formatFhirDate } from '../../utils/clinic-time';
+import { getDataSource } from '../../utils/patient-timeline';
+import classes from './MedicationRequestDetails.module.css';
 import { getQuantityQualifierLabel } from './quantity-qualifiers';
+
+/** Short names for the code and identifier systems a prescription carries. */
+const SYSTEM_LABELS: Record<string, string> = {
+  'http://www.nlm.nih.gov/research/umls/rxnorm': 'RxNorm',
+  'http://hl7.org/fhir/sid/ndc': 'NDC',
+  'https://drchrono.com/medications': 'DrChrono',
+};
+
+/**
+ * A short, readable name for a code system: a known name, else its host and path.
+ * @param system - The system URI.
+ * @returns The label.
+ */
+export function systemLabel(system: string | undefined): string {
+  if (!system) {
+    return 'Code';
+  }
+  if (SYSTEM_LABELS[system]) {
+    return SYSTEM_LABELS[system];
+  }
+  return system.replace(/^https?:\/\//, '');
+}
 
 interface MedicationRequestDetailsProps {
   medicationRequest: MedicationRequest;
@@ -85,34 +110,31 @@ function formatDosageLine(dosage: Dosage, index: number): JSX.Element {
   }
   const body = bits.length > 0 ? bits.join(' · ') : '—';
   return (
-    <Group key={index} align="flex-start" gap="lg" wrap="nowrap">
-      <Text fw={500} size="sm" w={150} c="dimmed">
-        {label}
-      </Text>
+    <div key={index} className={classes.row}>
+      <Text className={classes.label}>{label}</Text>
       <Text size="sm" flex={1}>
         {body}
       </Text>
-    </Group>
+    </div>
   );
 }
 
 function DetailRow(props: { label: string; children: ReactNode }): JSX.Element {
   const { label, children } = props;
   return (
-    <Group align="flex-start" gap="lg" wrap="nowrap">
-      <Text fw={500} size="sm" w={150} c="dimmed">
-        {label}
-      </Text>
-      <Stack gap={4} flex={1}>
+    <div className={classes.row}>
+      <Text className={classes.label}>{label}</Text>
+      <Stack gap={4} flex={1} miw={0}>
         {children}
       </Stack>
-    </Group>
+    </div>
   );
 }
 
 export function MedicationRequestDetails(props: MedicationRequestDetailsProps): JSX.Element {
   const { medicationRequest, medicationOrderExtensions, onOpenInScriptSure } = props;
   const navigate = useNavigate();
+  const timeZone = useClinicTimeZone();
   const requesterRes = useResource(medicationRequest.requester) as Practitioner | undefined;
   const patientRes = useResource(medicationRequest.subject) as Patient | undefined;
 
@@ -139,50 +161,73 @@ export function MedicationRequestDetails(props: MedicationRequestDetailsProps): 
     }
   };
 
+  const ordered = formatFhirDate(medicationRequest.authoredOn || medicationRequest.meta?.lastUpdated, timeZone);
+  const fromDrChrono = getDataSource(medicationRequest) === 'drchrono';
+
   return (
     <ScrollArea h="100%" type="scroll">
-      <Paper p="md" h="100%">
+      <Paper p="lg" h="100%" className={classes.root}>
         <Stack gap="md">
-          <Group justify="space-between" align="flex-start" wrap="wrap">
-            <Stack gap={4}>
-              <Text size="xl" fw={800}>
-                {medText}
-              </Text>
-              <Text size="sm" c="dimmed">
-                {medicationRequest.id && (
-                  <>
-                    MedicationRequest/{medicationRequest.id}
-                    {' · '}
-                  </>
-                )}
-                Last updated {formatDate(medicationRequest.meta?.lastUpdated)}
-              </Text>
-            </Stack>
+          <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
+            <Group gap={14} wrap="nowrap" align="flex-start" miw={0}>
+              <span className={classes.icon}>
+                <IconPill size={22} />
+              </span>
+              <Stack gap={6} miw={0}>
+                <Text className={classes.title}>{medText}</Text>
+                <Group gap={6}>
+                  <Badge size="sm" radius="sm" color={medicationStatusColor(medicationRequest.status)} variant="light">
+                    {medicationRequest.status ?? 'unknown'}
+                  </Badge>
+                  {fromDrChrono && (
+                    <Badge size="sm" radius="sm" color="teal" variant="light" tt="none">
+                      From DrChrono
+                    </Badge>
+                  )}
+                  <Text className={classes.subtle}>
+                    Last updated {formatFhirDate(medicationRequest.meta?.lastUpdated, timeZone) ?? '—'}
+                  </Text>
+                </Group>
+              </Stack>
+            </Group>
             <Group gap="xs">
               <Button
                 variant="default"
-                leftSection={<IconMaximize size={16} />}
+                size="xs"
+                leftSection={<IconMaximize size={15} />}
                 onClick={openFullRecord}
                 disabled={!medicationRequest.id}
               >
                 View full record
               </Button>
               {(pendingId || storedIframeUrl) && (
-                <Button leftSection={<IconExternalLink size={16} />} onClick={onOpenInScriptSure}>
+                <Button size="xs" leftSection={<IconExternalLink size={15} />} onClick={onOpenInScriptSure}>
                   Open in ScriptSure
                 </Button>
               )}
             </Group>
           </Group>
 
-          <Group justify="space-between" align="center">
-            <Text size="sm" c="dimmed">
-              Ordered {formatDate(medicationRequest.authoredOn || medicationRequest.meta?.lastUpdated)}
-            </Text>
-            <Badge size="lg" color={medicationStatusColor(medicationRequest.status)} variant="light">
-              {medicationRequest.status ?? 'unknown'}
-            </Badge>
-          </Group>
+          <div className={classes.facts}>
+            <div className={classes.fact}>
+              <Text className={classes.factLabel}>Ordered</Text>
+              <Text className={classes.factValue}>{ordered ?? '—'}</Text>
+            </div>
+            <div className={classes.fact}>
+              <Text className={classes.factLabel}>Prescriber</Text>
+              <Text className={classes.factValue}>{requesterName ?? '—'}</Text>
+            </div>
+            <div className={classes.fact}>
+              <Text className={classes.factLabel}>Quantity</Text>
+              <Text className={classes.factValue}>{dispQty ? formatQuantityWithQualifier(dispQty) : '—'}</Text>
+            </div>
+            <div className={classes.fact}>
+              <Text className={classes.factLabel}>Refills</Text>
+              <Text className={classes.factValue}>
+                {medicationRequest.dispenseRequest?.numberOfRepeatsAllowed ?? '—'}
+              </Text>
+            </div>
+          </div>
 
           {medicationRequest.statusReason && (
             <Paper p="sm" withBorder bg="var(--mantine-color-red-light)">
@@ -195,7 +240,7 @@ export function MedicationRequestDetails(props: MedicationRequestDetailsProps): 
             </Paper>
           )}
 
-          <Text size="sm" c="dimmed">
+          <Text className={classes.subtle}>
             Intent: {medicationRequest.intent ?? '—'}
             {medicationRequest.priority ? ` · Priority: ${medicationRequest.priority}` : ''}
             {medicationRequest.reportedBoolean !== undefined
@@ -214,21 +259,8 @@ export function MedicationRequestDetails(props: MedicationRequestDetailsProps): 
             </Text>
           )}
 
-          <Divider />
-
-          <Stack gap="sm">
-            {medicationRequest.medicationCodeableConcept?.coding &&
-              medicationRequest.medicationCodeableConcept.coding.length > 0 && (
-                <DetailRow label="Medication codes">
-                  {medicationRequest.medicationCodeableConcept.coding.map((c, i) => (
-                    <Text key={i} size="sm">
-                      {c.display ? `${c.display} · ` : ''}
-                      {c.system} | {c.code}
-                    </Text>
-                  ))}
-                </DetailRow>
-              )}
-
+          <div className={classes.card}>
+            <Text className={classes.cardTitle}>Prescription</Text>
             {medicationRequest.category && medicationRequest.category.length > 0 && (
               <DetailRow label="Category">
                 {medicationRequest.category.map((c, i) => (
@@ -242,12 +274,6 @@ export function MedicationRequestDetails(props: MedicationRequestDetailsProps): 
             {patientRes?.resourceType === 'Patient' && (
               <DetailRow label="Patient">
                 <Text size="sm">{formatHumanName(patientRes.name?.[0])}</Text>
-              </DetailRow>
-            )}
-
-            {requesterName && (
-              <DetailRow label="Requester">
-                <Text size="sm">{requesterName}</Text>
               </DetailRow>
             )}
 
@@ -286,11 +312,11 @@ export function MedicationRequestDetails(props: MedicationRequestDetailsProps): 
                   <Text size="sm">
                     Validity:{' '}
                     {medicationRequest.dispenseRequest.validityPeriod.start
-                      ? formatDate(medicationRequest.dispenseRequest.validityPeriod.start)
+                      ? formatFhirDate(medicationRequest.dispenseRequest.validityPeriod.start, timeZone)
                       : '?'}
                     {' – '}
                     {medicationRequest.dispenseRequest.validityPeriod.end
-                      ? formatDate(medicationRequest.dispenseRequest.validityPeriod.end)
+                      ? formatFhirDate(medicationRequest.dispenseRequest.validityPeriod.end, timeZone)
                       : '?'}
                   </Text>
                 )}
@@ -349,16 +375,35 @@ export function MedicationRequestDetails(props: MedicationRequestDetailsProps): 
               </DetailRow>
             )}
 
+            {medicationRequest.medicationCodeableConcept?.coding &&
+              medicationRequest.medicationCodeableConcept.coding.length > 0 && (
+                <DetailRow label="Medication codes">
+                  <Group gap={6}>
+                    {medicationRequest.medicationCodeableConcept.coding.map((c, i) => (
+                      <span
+                        key={i}
+                        className={classes.code}
+                        title={c.display ? `${c.display} · ${c.system}` : c.system}
+                      >
+                        {systemLabel(c.system)} {c.code}
+                      </span>
+                    ))}
+                  </Group>
+                </DetailRow>
+              )}
+
             {medicationRequest.identifier && medicationRequest.identifier.length > 0 && (
               <DetailRow label="Identifiers">
-                {medicationRequest.identifier.map((id, i) => (
-                  <Text key={i} size="sm">
-                    {id.system}|{id.value}
-                  </Text>
-                ))}
+                <Group gap={6}>
+                  {medicationRequest.identifier.map((id, i) => (
+                    <span key={i} className={classes.code} title={id.system}>
+                      {systemLabel(id.system)} #{id.value}
+                    </span>
+                  ))}
+                </Group>
               </DetailRow>
             )}
-          </Stack>
+          </div>
         </Stack>
       </Paper>
     </ScrollArea>

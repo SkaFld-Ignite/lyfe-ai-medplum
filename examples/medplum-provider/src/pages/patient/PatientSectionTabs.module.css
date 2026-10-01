@@ -105,3 +105,60 @@
   outline: 2px solid var(--mantine-color-blue-5);
   outline-offset: 1px;
 }
+
+/* ---- Vertical sidebar menu (Lyfe "Patient Details") ----------------------------------------- */
+
+.sideNav {
+  padding-bottom: var(--mantine-spacing-sm);
+}
+
+.sideHeading {
+  padding: 8px var(--mantine-spacing-md);
+  border-top: 1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4));
+  border-bottom: 1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+}
+
+.sideTabs {
+  display: block;
+  width: 100%;
+}
+
+.sideList {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-xs) 0;
+}
+
+.sideList .tab {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+  height: 34px;
+  padding: 0 12px;
+  gap: 10px;
+}
+
+/* Accent bar beside the active section. */
+.sideList .tab[data-active]::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: calc(-1 * var(--mantine-spacing-xs));
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: hsl(217 91% 60%);
+  transform: translateY(-50%);
+}
+
+.sideList .tab :global(.mantine-Tabs-tabLabel) {
+  flex: 1;
+  text-align: left;
+}

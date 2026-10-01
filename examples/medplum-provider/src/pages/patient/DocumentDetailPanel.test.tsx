@@ -3,7 +3,6 @@
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import type { WithId } from '@medplum/core';
-import { formatDate } from '@medplum/core';
 import type { Attachment, DocumentReference } from '@medplum/fhirtypes';
 import { HomerSimpson, MockClient } from '@medplum/mock';
 import { MedplumProvider } from '@medplum/react';
@@ -340,7 +339,7 @@ describe('DocumentDetailPanel', () => {
       );
 
       expect(screen.getByText('Added')).toBeInTheDocument();
-      expect(screen.getByText(formatDate('2026-03-01T10:00:00Z'))).toBeInTheDocument();
+      expect(screen.getByText('Mar 1, 2026')).toBeInTheDocument();
       expect(screen.getByText('Last updated')).toBeInTheDocument();
       expect(screen.getByText('by Dr. Hibbert')).toBeInTheDocument();
     });
@@ -349,7 +348,7 @@ describe('DocumentDetailPanel', () => {
       setup(createDocument({ meta: { lastUpdated: '2026-03-04T15:30:00Z' } }));
 
       // Both "Added" and "Last updated" fall back to the same timestamp.
-      expect(screen.getAllByText(formatDate('2026-03-04T15:30:00Z'))).toHaveLength(2);
+      expect(screen.getAllByText('Mar 4, 2026')).toHaveLength(2);
     });
 
     test('Omits the date rows when the document has no timestamps', () => {

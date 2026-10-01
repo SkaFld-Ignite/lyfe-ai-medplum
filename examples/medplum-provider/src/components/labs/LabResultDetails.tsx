@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Badge, Divider, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
-import { formatDate } from '@medplum/core';
+import { Badge, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import type { DiagnosticReport } from '@medplum/fhirtypes';
 import { CodeableConceptDisplay } from '@medplum/react';
+import { IconFileAnalytics } from '@tabler/icons-react';
 import type { JSX } from 'react';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
+import { formatFhirDate } from '../../utils/clinic-time';
+import { getDataSource } from '../../utils/patient-timeline';
 import { LabReportContent } from './LabReportContent';
+import classes from './LabReportContent.module.css';
 
 interface LabResultDetailsProps {
   result: DiagnosticReport;
@@ -13,32 +17,38 @@ interface LabResultDetailsProps {
 
 export function LabResultDetails(props: LabResultDetailsProps): JSX.Element {
   const { result } = props;
+  const timeZone = useClinicTimeZone();
+  const issued = formatFhirDate(result.issued, timeZone);
+  const collected = formatFhirDate(result.effectiveDateTime, timeZone);
+  const dates = [issued && `Issued ${issued}`, collected && `Collected ${collected}`].filter(Boolean).join(' · ');
 
   return (
     <ScrollArea h="100%">
-      <Paper h="100%">
-        <Stack gap="0">
-          <Stack gap="md" p="md">
-            <Stack gap="0">
-              <Text size="xl" fw={800}>
+      <Paper h="100%" bg="transparent">
+        <Stack gap="md" p="lg">
+          <Group gap={14} wrap="nowrap" align="flex-start">
+            <span className={classes.icon}>
+              <IconFileAnalytics size={22} />
+            </span>
+            <Stack gap={6} miw={0}>
+              <Text className={classes.title}>
                 <CodeableConceptDisplay value={result.code} />
               </Text>
-              <Text size="sm" c="gray.7">
-                Issued {formatDate(result.issued)}
-                {result.effectiveDateTime && ` • Collected ${formatDate(result.effectiveDateTime)}`}
-              </Text>
+              <Group gap={6}>
+                <Badge size="sm" radius="sm" color={getStatusColor(result.status)} variant="light">
+                  {getStatusDisplayText(result.status)}
+                </Badge>
+                {getDataSource(result) === 'drchrono' && (
+                  <Badge size="sm" radius="sm" color="teal" variant="light" tt="none">
+                    From DrChrono
+                  </Badge>
+                )}
+                {dates && <Text className={classes.subtle}>{dates}</Text>}
+              </Group>
             </Stack>
-            <Divider />
-            <Group justify="flex-end" align="center">
-              <Badge size="lg" color={getStatusColor(result.status)} variant="light">
-                {getStatusDisplayText(result.status)}
-              </Badge>
-            </Group>
-          </Stack>
+          </Group>
 
-          <Stack gap="xs" p="md">
-            <LabReportContent report={result} />
-          </Stack>
+          <LabReportContent report={result} />
         </Stack>
       </Paper>
     </ScrollArea>

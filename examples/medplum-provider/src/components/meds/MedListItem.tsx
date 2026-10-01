@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Badge, Group, Stack, Text } from '@mantine/core';
 import type { MedicationOrderExtensions } from '@medplum/core';
-import { formatCodeableConcept, formatDate, formatHumanName, getPendingMedicationOrderStatus } from '@medplum/core';
+import { formatCodeableConcept, formatHumanName, getPendingMedicationOrderStatus } from '@medplum/core';
 import type { MedicationRequest, Practitioner } from '@medplum/fhirtypes';
 import { MedplumLink, useResource } from '@medplum/react';
+import { IconChevronRight, IconPill } from '@tabler/icons-react';
 import cx from 'clsx';
 import type { JSX } from 'react';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
+import { formatFhirDate } from '../../utils/clinic-time';
 import classes from './MedListItem.module.css';
 
 export type MedTab = 'active' | 'draft' | 'completed';
@@ -28,38 +31,45 @@ export function MedListItem(props: MedListItemProps): JSX.Element {
   const isSelected = selectedItem?.id === item.id;
   const requester = useResource(item.requester) as Practitioner | undefined;
   const pendingStatus = getPendingMedicationOrderStatus(item, medicationOrderExtensions);
+  const timeZone = useClinicTimeZone();
+  const meta = getMetaLine(item, requester, timeZone);
+  const dosage = item.dosageInstruction?.[0]?.text;
 
   return (
     <MedplumLink to={getItemUrl(item)} underline="never">
       <Group
-        align="center"
+        align="flex-start"
         wrap="nowrap"
+        gap={12}
         className={cx(classes.contentContainer, {
           [classes.selected]: isSelected,
         })}
       >
-        <Stack gap={0} flex={1}>
-          <Group justify="space-between" align="flex-start">
-            <Text fw={700} className={classes.title} flex={1}>
-              {getMedicationDisplay(item)}
-            </Text>
-            <Group gap={4}>
-              {pendingStatus && (
-                <Badge size="sm" color="violet" variant="light">
-                  ScriptSure: {pendingStatus}
-                </Badge>
-              )}
+        <span className={classes.icon}>
+          <IconPill size={18} />
+        </span>
+        <Stack gap={5} flex={1} miw={0}>
+          <Text fw={600} size="sm" className={classes.title}>
+            {getMedicationDisplay(item)}
+          </Text>
+          {(pendingStatus || activeTab !== 'completed') && (
+            <Group gap={6}>
               {activeTab !== 'completed' && (
-                <Badge size="sm" color={getStatusColor(item.status)} variant="light">
+                <Badge size="sm" radius="sm" color={getStatusColor(item.status)} variant="light">
                   {getStatusDisplayText(item.status)}
                 </Badge>
               )}
+              {pendingStatus && (
+                <Badge size="sm" radius="sm" color="violet" variant="light" tt="none">
+                  ScriptSure: {pendingStatus}
+                </Badge>
+              )}
             </Group>
-          </Group>
-          <Text size="sm" c="dimmed">
-            {getSubText(item, requester)}
-          </Text>
+          )}
+          {meta && <Text className={classes.meta}>{meta}</Text>}
+          {dosage && <Text className={classes.dosage}>{dosage}</Text>}
         </Stack>
+        <IconChevronRight size={16} className={classes.chevron} />
       </Group>
     </MedplumLink>
   );
@@ -72,7 +82,7 @@ function getMedicationDisplay(mr: MedicationRequest): string {
 const getStatusColor = (status: string | undefined): string => {
   switch (status) {
     case 'active':
-      return 'blue';
+      return 'yellow';
     case 'draft':
       return 'yellow';
     case 'on-hold':
@@ -110,12 +120,8 @@ const getStatusDisplayText = (status: string | undefined): string => {
   }
 };
 
-const getSubText = (item: MedicationRequest, requester: Practitioner | undefined): string => {
-  const date = formatDate(item.authoredOn || item.meta?.lastUpdated);
-  const dosage = item.dosageInstruction?.[0]?.text;
-  const dosagePart = dosage ? ` · ${dosage}` : '';
-  if (requester?.resourceType === 'Practitioner') {
-    return `${date} · ${formatHumanName(requester.name?.[0])}${dosagePart}`;
-  }
-  return `${date}${dosagePart}`;
-};
+function getMetaLine(item: MedicationRequest, requester: Practitioner | undefined, timeZone: string): string {
+  const date = formatFhirDate(item.authoredOn || item.meta?.lastUpdated, timeZone);
+  const prescriber = requester?.resourceType === 'Practitioner' ? formatHumanName(requester.name?.[0]) : undefined;
+  return [date && `Prescribed: ${date}`, prescriber].filter(Boolean).join(' · ');
+}

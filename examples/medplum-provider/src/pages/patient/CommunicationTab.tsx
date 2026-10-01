@@ -4,9 +4,11 @@ import type { SearchRequest } from '@medplum/core';
 import { formatSearchQuery, getReferenceString, Operator } from '@medplum/core';
 import type { Communication } from '@medplum/fhirtypes';
 import { ThreadInbox } from '@medplum/react';
+import { IconMessages } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useEffect, useMemo } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
+import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { usePatient } from '../../hooks/usePatient';
 import { normalizeCommunicationSearch } from '../../utils/communication-search';
 
@@ -70,7 +72,12 @@ export function CommunicationTab(): JSX.Element {
   };
 
   return (
-    <div style={{ height: '100%' }}>
+    <PatientTabShell
+      fill
+      icon={<IconMessages size={20} />}
+      title="Messages"
+      description="Conversations with the patient and care team"
+    >
       <ThreadInbox
         threadId={messageId}
         query={formatSearchQuery(parsedSearch).substring(1)}
@@ -85,6 +92,6 @@ export function CommunicationTab(): JSX.Element {
         inProgressUri={inProgressUri}
         completedUri={completedUri}
       />
-    </div>
+    </PatientTabShell>
   );
 }

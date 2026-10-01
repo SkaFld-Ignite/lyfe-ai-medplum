@@ -1,0 +1,172 @@
+/* Lyfe patient identity card. */
+
+.card {
+  padding: var(--mantine-spacing-md);
+}
+
+.avatarWrap {
+  position: relative;
+  flex-shrink: 0;
+  border-radius: 50%;
+  box-shadow: 0 8px 22px -8px hsl(220 60% 30% / 0.45);
+  background: linear-gradient(135deg, hsl(217 91% 60%), hsl(225 78% 46%));
+
+  &[data-gender='female'] {
+    background: linear-gradient(135deg, hsl(330 82% 60%), hsl(295 78% 55%));
+  }
+}
+
+/* Lyfe avatar: white initials on the gradient (a photo, when present, covers it). */
+.avatar {
+  border: 2px solid var(--mantine-color-body);
+  background: transparent;
+}
+
+.avatar :global(.mantine-Avatar-placeholder) {
+  background: transparent;
+  color: var(--mantine-color-white);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.statusDot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--mantine-color-body);
+  border-radius: 50%;
+  background: var(--mantine-color-gray-4);
+
+  &[data-status='active'] {
+    background: var(--mantine-color-green-6);
+  }
+}
+
+.name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.mrn {
+  align-self: flex-start;
+  padding: 1px 6px;
+  border: 1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4));
+  border-radius: var(--mantine-radius-sm);
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-dark-1));
+}
+
+.metaRow {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.genderChip {
+  padding: 1px 6px;
+  border-radius: var(--mantine-radius-sm);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mantine-color-blue-7);
+  background: var(--mantine-color-blue-0);
+  box-shadow: inset 0 0 0 1px var(--mantine-color-blue-2);
+
+  &[data-gender='female'] {
+    color: var(--mantine-color-pink-7);
+    background: var(--mantine-color-pink-0);
+    box-shadow: inset 0 0 0 1px var(--mantine-color-pink-2);
+  }
+}
+
+.phone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border: 1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4));
+  border-radius: var(--mantine-radius-md);
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+  color: inherit;
+  transition:
+    background 150ms ease,
+    box-shadow 150ms ease;
+
+  &:hover {
+    background: var(--mantine-color-body);
+    box-shadow: var(--mantine-shadow-xs);
+  }
+}
+
+.callHint {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+  opacity: 0;
+  transition: opacity 150ms ease;
+
+  .phone:hover & {
+    opacity: 1;
+  }
+}
+
+.badgeDot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.infoStack {
+  overflow: hidden;
+  border: 1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4));
+  border-radius: var(--mantine-radius-md);
+}
+
+.infoRow {
+  padding: 8px 10px;
+
+  & + & {
+    border-top: 1px solid light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+  }
+}
+
+.infoIcon {
+  display: grid;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: var(--mantine-radius-sm);
+  color: var(--mantine-color-blue-7);
+  background: var(--mantine-color-blue-0);
+
+  &[data-tone='violet'] {
+    color: var(--mantine-color-violet-7);
+    background: var(--mantine-color-violet-0);
+  }
+
+  &[data-tone='teal'] {
+    color: var(--mantine-color-teal-7);
+    background: var(--mantine-color-teal-0);
+  }
+}
+
+.infoLabel {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+}

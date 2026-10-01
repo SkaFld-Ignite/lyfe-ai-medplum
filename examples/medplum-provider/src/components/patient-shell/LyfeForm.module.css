@@ -1,0 +1,68 @@
+/*
+ * Lyfe styling for Medplum's ResourceForm (used by Edit demographics and every record's Edit tab).
+ * The form and its behaviour are Medplum's; this only lays it out: label beside input on wide
+ * screens, quiet dividers between fields, and the save button kept in view.
+ */
+
+.form {
+  & form > :global(.mantine-Stack-root):first-child {
+    /* Resource type and id: disabled, and already in the page header. */
+    display: none;
+  }
+
+  & :global(.mantine-InputWrapper-label) {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: light-dark(#334155, var(--mantine-color-gray-3));
+  }
+
+  & :global(.mantine-InputWrapper-description) {
+    font-size: 11.5px;
+    color: #64748b;
+  }
+
+  & :global(.mantine-Input-input) {
+    border-color: light-dark(#e2e8f0, var(--mantine-color-dark-4));
+    border-radius: 8px;
+  }
+
+  /* Top-level fields: one row each, with a divider between rows. */
+  & form > div > :global(.mantine-Stack-root) {
+    gap: 0;
+  }
+
+  & form > div > :global(.mantine-Stack-root) > :global(.mantine-InputWrapper-root) {
+    padding: 14px 0;
+    border-top: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+
+    &:first-child {
+      border-top: 0;
+    }
+
+    @media (min-width: 62em) {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      column-gap: 24px;
+
+      & > :global(.mantine-InputWrapper-label) {
+        grid-row: span 3;
+        padding-top: 6px;
+      }
+
+      & > :not(:global(.mantine-InputWrapper-label)) {
+        grid-column: 2;
+      }
+    }
+  }
+
+  /* The save button stays reachable at the bottom of a long form. */
+  & form > :global(.mantine-Group-root):last-child {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-top: 8px !important;
+    padding: 12px 0;
+    border-top: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+    background: var(--mantine-color-body);
+  }
+}

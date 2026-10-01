@@ -1,0 +1,765 @@
+/* Lyfe Overview (old Lyfe enhanced-clinical-overview). Colours follow Tailwind's palette. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
+  padding: var(--mantine-spacing-md);
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.page > * {
+  animation: fadeUp 320ms ease both;
+}
+
+.page > :nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.page > :nth-child(3) {
+  animation-delay: 120ms;
+}
+
+.page > :nth-child(4) {
+  animation-delay: 180ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page > * {
+    animation: none;
+  }
+}
+
+/* ---- Risk banner ------------------------------------------------------------------------------ */
+
+.banner {
+  padding: 12px 16px;
+  border: 1px solid rgb(253 230 138 / 0.7);
+  border-radius: 12px;
+  background: linear-gradient(90deg, #fffbeb, var(--mantine-color-body));
+  box-shadow: var(--mantine-shadow-sm);
+  --banner-ink: #92400e;
+  --banner-tile: #fef3c7;
+
+  &[data-tone='clear'] {
+    border-color: rgb(167 243 208 / 0.7);
+    background: linear-gradient(90deg, #ecfdf5, var(--mantine-color-body));
+    --banner-ink: #065f46;
+    --banner-tile: #d1fae5;
+  }
+
+  &[data-tone='critical'] {
+    border-color: rgb(254 205 211 / 0.7);
+    background: linear-gradient(90deg, #fff1f2, var(--mantine-color-body));
+    --banner-ink: #9f1239;
+    --banner-tile: #ffe4e6;
+  }
+}
+
+.bannerTile {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--banner-ink);
+  background: var(--banner-tile);
+}
+
+.bannerTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--banner-ink);
+}
+
+.bannerSubtitle {
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* Severity scale (bg / text / ring / dot): normal emerald, info sky, watch amber, alert orange,
+   critical rose, unknown slate. */
+.flagChip,
+.statusPill,
+.profilePill {
+  --sev-bg: #f1f5f9;
+  --sev-ink: #475569;
+  --sev-ring: #e2e8f0;
+  --sev-dot: #94a3b8;
+
+  &[data-severity='normal'] {
+    --sev-bg: #ecfdf5;
+    --sev-ink: #047857;
+    --sev-ring: #a7f3d0;
+    --sev-dot: #10b981;
+  }
+
+  &[data-severity='info'] {
+    --sev-bg: #f0f9ff;
+    --sev-ink: #0369a1;
+    --sev-ring: #bae6fd;
+    --sev-dot: #0ea5e9;
+  }
+
+  &[data-severity='watch'] {
+    --sev-bg: #fffbeb;
+    --sev-ink: #b45309;
+    --sev-ring: #fde68a;
+    --sev-dot: #f59e0b;
+  }
+
+  &[data-severity='alert'] {
+    --sev-bg: #fff7ed;
+    --sev-ink: #c2410c;
+    --sev-ring: #fed7aa;
+    --sev-dot: #f97316;
+  }
+
+  &[data-severity='critical'] {
+    --sev-bg: #fff1f2;
+    --sev-ink: #be123c;
+    --sev-ring: #fecdd3;
+    --sev-dot: #f43f5e;
+  }
+}
+
+.flagChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sev-ink);
+  background: var(--sev-bg);
+  box-shadow: inset 0 0 0 1px var(--sev-ring);
+}
+
+/* ---- Section card ----------------------------------------------------------------------------- */
+
+.section {
+  overflow: hidden;
+  background: var(--mantine-color-body);
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+.sectionHeader {
+  padding: 12px 16px;
+  border-bottom: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+}
+
+.sectionTile {
+  display: grid;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 8px;
+  color: #475569;
+  background: #f1f5f9;
+
+  &[data-tone='rose'] {
+    color: #e11d48;
+    background: #fff1f2;
+  }
+
+  &[data-tone='indigo'] {
+    color: #4f46e5;
+    background: #eef2ff;
+  }
+}
+
+.sectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sectionSubtitle {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.viewAll {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: light-dark(#334155, var(--mantine-color-dark-0));
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+
+  &:hover {
+    color: #fff;
+    background: #0f172a;
+  }
+}
+
+.viewAllArrow {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: light-dark(#f1f5f9, var(--mantine-color-dark-5));
+
+  .viewAll:hover & {
+    color: #0f172a;
+    background: #fff;
+  }
+}
+
+.countPills {
+  display: flex;
+  gap: 6px;
+
+  & > span {
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #475569;
+    background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+    box-shadow: inset 0 0 0 1px light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  }
+}
+
+/* ---- Vital cards ------------------------------------------------------------------------------ */
+
+.vitalsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+
+  @media (min-width: 75em) {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.vital {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 14px 10px 16px;
+  overflow: hidden;
+  border: 1px solid light-dark(rgb(226 232 240 / 0.8), var(--mantine-color-dark-4));
+  border-radius: 16px;
+  --tone: #f43f5e;
+  --tone-soft: #fff1f2;
+  background: linear-gradient(135deg, var(--mantine-color-body) 55%, var(--tone-soft));
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--mantine-shadow-md);
+  }
+
+  &[data-tone='pink'] {
+    --tone: #ec4899;
+    --tone-soft: #fdf2f8;
+  }
+
+  &[data-tone='teal'] {
+    --tone: #14b8a6;
+    --tone-soft: #f0fdfa;
+  }
+
+  &[data-tone='sky'] {
+    --tone: #0ea5e9;
+    --tone-soft: #f0f9ff;
+  }
+}
+
+.vitalAccent {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  width: 3px;
+  height: 32px;
+  border-radius: 0 3px 3px 0;
+  background: var(--tone);
+}
+
+.vitalTile {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--tone);
+  background: var(--tone-soft);
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sev-ink);
+  background: rgb(255 255 255 / 0.8);
+  box-shadow: inset 0 0 0 1px var(--sev-ring);
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sev-dot);
+}
+
+.vitalLabel {
+  margin-top: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.vitalValue {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.vitalUnit {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.trendChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #475569;
+  background: light-dark(#f1f5f9, var(--mantine-color-dark-5));
+
+  &[data-direction='up'] {
+    color: #be123c;
+    background: #fff1f2;
+  }
+
+  &[data-direction='down'] {
+    color: #047857;
+    background: #ecfdf5;
+  }
+}
+
+.vitalPoints {
+  font-size: 10.5px;
+  color: #94a3b8;
+}
+
+.vitalTrend {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed light-dark(#e2e8f0, var(--mantine-color-dark-4));
+}
+
+.vitalRange {
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.vitalNoTrend {
+  display: grid;
+  height: 58px;
+  place-items: center;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+/* ---- Active Clinical Profile ------------------------------------------------------------------ */
+
+.profileGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+
+  @media (min-width: 75em) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.profile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 20px 16px 24px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  background: var(--mantine-color-body);
+  --tone: #9333ea;
+  --tone-soft: #faf5ff;
+  transition:
+    box-shadow 150ms ease,
+    border-color 150ms ease;
+
+  &:hover {
+    border-color: light-dark(#cbd5e1, var(--mantine-color-dark-3));
+    box-shadow: var(--mantine-shadow-md);
+  }
+
+  &[data-tone='blue'] {
+    --tone: #2563eb;
+    --tone-soft: #eff6ff;
+  }
+
+  &[data-tone='rose'] {
+    --tone: #e11d48;
+    --tone-soft: #fff1f2;
+  }
+
+  &[data-tone='emerald'] {
+    --tone: #059669;
+    --tone-soft: #ecfdf5;
+  }
+}
+
+.profileAccent {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  border-radius: 12px 0 0 12px;
+  background: var(--tone);
+}
+
+.profileTile {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--tone);
+  background: var(--tone-soft);
+}
+
+.profileLabel {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.profileCount {
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.profileSuffix {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.profilePill {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--sev-ink);
+  background: var(--sev-bg);
+  box-shadow: inset 0 0 0 1px var(--sev-ring);
+}
+
+.profileItems {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+}
+
+.profileDot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone);
+
+  &[data-severity='critical'] {
+    background: #f43f5e;
+  }
+}
+
+.profileItemText {
+  font-size: 12.5px;
+  color: light-dark(#334155, var(--mantine-color-dark-0));
+}
+
+.profileMore,
+.profileEmpty {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.profileFooter {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.profileArrow {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+
+  .profile:hover & {
+    color: #fff;
+    background: #0f172a;
+  }
+}
+
+/* ---- Visit timeline --------------------------------------------------------------------------- */
+
+.visits {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+
+  @media (min-width: 48em) {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+  }
+}
+
+.visitBox {
+  padding: 14px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  background: light-dark(rgb(248 250 252 / 0.4), var(--mantine-color-dark-6));
+
+  &[data-next='soon'] {
+    border-color: #a7f3d0;
+    background: linear-gradient(135deg, #ecfdf5, var(--mantine-color-body));
+  }
+
+  &[data-next='later'] {
+    border-color: #bfdbfe;
+    background: linear-gradient(135deg, #eff6ff, var(--mantine-color-body));
+  }
+
+  &[data-next='none'] {
+    border-style: dashed;
+    background: transparent;
+  }
+}
+
+.visitEyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.visitPill {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: #2563eb;
+
+  [data-next='soon'] & {
+    background: #059669;
+  }
+}
+
+.visitDate {
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.visitMeta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.visitConnector {
+  position: relative;
+  display: none;
+  width: 48px;
+  height: 2px;
+  background: linear-gradient(90deg, #e2e8f0, #93c5fd, #e2e8f0);
+
+  @media (min-width: 48em) {
+    display: block;
+  }
+}
+
+.visitConnectorIcon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid #bfdbfe;
+  border-radius: 50%;
+  color: #2563eb;
+  background: var(--mantine-color-body);
+  transform: translate(-50%, -50%);
+}
+
+/* ---- Medplum summary card --------------------------------------------------------------------- */
+
+/*
+ * Lyfe styling for Medplum's PatientSummary, done here so the component keeps its own logic: its
+ * sections become a grid of cards with Lyfe category headers. Its name header is hidden because the
+ * chart sidebar already shows the patient. Mantine's inline spacing props need !important.
+ */
+.summaryBody {
+  padding: 16px 20px 20px;
+  background: light-dark(#f8fafc, var(--mantine-color-dark-7));
+
+  & > :global(.mantine-Flex-root) {
+    background: transparent;
+  }
+
+  & > :global(.mantine-Flex-root) > :first-child {
+    display: none;
+  }
+}
+
+.summaryBody > :global(.mantine-Flex-root) > :global(.mantine-Stack-root) {
+  /* Masonry columns, so a short card never leaves a gap beside a long one. */
+  display: block !important;
+  column-gap: 12px;
+  padding: 0 !important;
+  overflow: visible !important;
+
+  @media (min-width: 62em) {
+    column-count: 2;
+  }
+
+  /* One card per section. */
+  & > div {
+    display: inline-block;
+    width: 100%;
+    margin-bottom: 12px;
+    break-inside: avoid;
+    overflow: hidden;
+    border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+    border-radius: 12px;
+    background: var(--mantine-color-body);
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+  }
+
+  & > div > :global(.mantine-Divider-root) {
+    display: none;
+  }
+
+  /* The patient details block has no header of its own. */
+  & > div:not(:has(button[aria-label^='Hide'], button[aria-label^='Show'])) {
+    padding: 12px 16px;
+  }
+
+  /* A collapsible section: drop its outer spacing and indent. */
+  &
+    > div
+    > div:has(
+      > :global(.mantine-Group-root) button[aria-label^='Hide'],
+      > :global(.mantine-Group-root) button[aria-label^='Show']
+    ) {
+    padding: 0 !important;
+
+    & > div:last-child > div {
+      margin: 0 !important;
+      padding: 10px 16px 14px !important;
+    }
+  }
+}
+
+/* The section header: Lyfe's grey category bar. */
+.summaryBody
+  :global(.mantine-Group-root):has(
+    > :global(.mantine-Group-root) > button[aria-label^='Hide'],
+    > :global(.mantine-Group-root) > button[aria-label^='Show']
+  ) {
+  padding: 8px 12px;
+  border-bottom: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  background: light-dark(#f1f5f9, var(--mantine-color-dark-6));
+
+  & :global(.mantine-Text-root) {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: light-dark(#334155, var(--mantine-color-gray-3));
+  }
+
+  & button[aria-label^='Hide'],
+  & button[aria-label^='Show'] {
+    --ai-size: 24px;
+  }
+
+  & button svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.summaryBody :global(.mantine-Group-root):has(> :global(.mantine-Group-root) > button[aria-label^='Show']) {
+  border-bottom: 0;
+}
+
+/*
+ * The chart summary is read-only here: clinical data comes from the EHR imports, so the
+ * per-section "Add item" (+) buttons of Medplum's PatientSummary are hidden. The component has no
+ * option to omit them, and this keeps its package untouched.
+ */
+.summaryBody :global([aria-label='Add item']) {
+  display: none;
+}

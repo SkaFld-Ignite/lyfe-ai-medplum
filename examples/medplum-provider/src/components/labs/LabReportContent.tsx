@@ -78,9 +78,7 @@ export function LabReportContent(props: LabReportContentProps): JSX.Element {
       {/* Results PDF */}
       {labDocumentAttachments.length > 0 && (
         <Stack gap="lg" mb="xl">
-          <Text fw={800} size="md" pb="0">
-            Lab Document
-          </Text>
+          <Text className={classes.sectionTitle}>Lab Document</Text>
           <Stack gap="md">
             {labDocumentAttachments.map((form, index) => (
               <Stack key={index} gap="xs">
@@ -94,9 +92,10 @@ export function LabReportContent(props: LabReportContentProps): JSX.Element {
       )}
 
       {report.result && report.result.length > 0 && (
-        <Stack pt="md">
-          <DiagnosticReportDisplay value={report} />
-        </Stack>
+        <div className={classes.report}>
+          {/* The chart already names the patient. */}
+          <DiagnosticReportDisplay value={report} hideSubject />
+        </div>
       )}
     </Stack>
   );

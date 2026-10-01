@@ -23,6 +23,10 @@ export type PatientPageTabInfo = {
   id: string;
   url: string;
   label: string;
+  /** Kept routable but left out of the section menu. */
+  hidden?: boolean;
+  /** Other first path segments that belong to this section, e.g. `edit` for Demographics. */
+  aliases?: string[];
 };
 
 export function getPatientPageTabOrThrow(tabId: string): PatientPageTabInfo {
@@ -52,6 +56,9 @@ export function getPatientPageTabs(
   const hasDoseSpot = options?.hasDoseSpotAccess ?? hasDoseSpotIdentifier(membership);
   const hasScriptSure = hasScriptSureIdentifier(membership);
   return PatientPageTabs.filter((tab) => {
+    if (tab.hidden) {
+      return false;
+    }
     if (tab.id === 'dosespot') {
       return hasDoseSpot;
     }
@@ -62,46 +69,49 @@ export function getPatientPageTabs(
   });
 }
 
+// Ordered like the Lyfe patient menu, with Medplum's own sections after the clinical ones.
 export const PatientPageTabs: PatientPageTabInfo[] = [
+  { id: 'overview', url: 'overview', label: 'Overview' },
+  { id: 'demographics', url: 'demographics', label: 'Demographics', aliases: ['edit'] },
   { id: 'timeline', url: '', label: 'Timeline' },
-  { id: 'edit', url: 'edit', label: 'Edit' },
-  {
-    id: 'encounter',
-    url: 'Encounter',
-    label: 'Visits',
-  },
-  {
-    id: 'tasks',
-    url: 'Task',
-    label: 'Tasks',
-  },
-  {
-    id: 'meds',
-    url: 'MedicationRequest?_fields=medication[x],intent,status&_offset=0&_sort=-_lastUpdated&patient=%patient.id',
-    label: 'Meds',
-  },
-  { id: 'dosespot', url: 'dosespot', label: 'DoseSpot' },
-  { id: 'scriptsure', url: 'scriptsure', label: 'ScriptSure' },
+  { id: 'labs', url: 'labs', label: 'Labs' },
   {
     id: 'orders',
     url: 'DiagnosticReport',
     label: 'Orders',
+    aliases: ['servicerequest'],
   },
+  { id: 'conditions', url: 'conditions', label: 'Conditions', aliases: ['condition'] },
   {
-    id: 'devices',
-    url: 'Device?_fields=manufacturer,deviceName,status,distinctIdentifier,serialNumber&_offset=0&_sort=-_lastUpdated&patient=%patient.id',
-    label: 'Devices',
+    id: 'meds',
+    url: 'MedicationRequest?_fields=medication[x],intent,status&_offset=0&_sort=-_lastUpdated&patient=%patient.id',
+    label: 'Medications',
   },
+  { id: 'vitals', url: 'vitals', label: 'Vitals' },
+  { id: 'allergies', url: 'allergies', label: 'Allergies', aliases: ['allergyintolerance'] },
+  { id: 'immunizations', url: 'immunizations', label: 'Immunizations', aliases: ['immunization'] },
   {
     id: 'documentreference',
     url: 'DocumentReference',
     label: 'Documents',
   },
   {
-    id: 'careplan',
-    url: 'CarePlan?_fields=_lastUpdated,status,intent,category,period&_sort=-_lastUpdated&patient=%patient.id',
-    label: 'Care Plans',
+    id: 'encounter',
+    url: 'Encounter',
+    label: 'Encounters/Notes',
+  },
+  {
+    id: 'tasks',
+    url: 'Task',
+    label: 'Tasks',
   },
   { id: 'message', url: 'Communication', label: 'Messages' },
+  // Lyfe lists; Medplum's records (and its search page) stay at /CarePlan and /Device.
+  { id: 'careplan', url: 'careplans', label: 'Care Plans', aliases: ['careplan'] },
+  { id: 'devices', url: 'devices', label: 'Devices', aliases: ['device'] },
+  { id: 'dosespot', url: 'dosespot', label: 'DoseSpot' },
+  { id: 'scriptsure', url: 'scriptsure', label: 'ScriptSure' },
   { id: 'export', url: 'export', label: 'Export' },
+  // Medplum's edit form, reached from Demographics ("Edit details").
+  { id: 'edit', url: 'edit', label: 'Edit', hidden: true },
 ];

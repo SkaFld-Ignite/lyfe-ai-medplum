@@ -215,10 +215,20 @@
   letter-spacing: 0.1em;
 }
 
-.visitWhen {
+/* Lyfe puts the visit's date and time in a footer row under the header. */
+.visitTime {
+  display: inline-flex;
   flex-shrink: 0;
-  padding-top: 1px;
-  white-space: nowrap;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: light-dark(#475569, var(--mantine-color-gray-3));
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
 }
 
 .expanded {

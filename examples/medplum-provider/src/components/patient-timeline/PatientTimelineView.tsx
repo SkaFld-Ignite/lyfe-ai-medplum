@@ -44,6 +44,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 import { usePatientTimelineData } from '../../hooks/usePatientTimelineData';
+import { formatDayKey } from '../../utils/clinic-time';
 import type {
   DataSource,
   OngoingItem,
@@ -69,7 +70,7 @@ import { FilterMenu } from '../scheduling-overview/FilterMenu';
 import { ConditionCard, DayRecordsCard } from './EventCards';
 import { OngoingCareCard } from './OngoingCareCard';
 import classes from './PatientTimeline.module.css';
-import { DAYS_PER_PAGE, formatMediumDate, KIND_CONFIG, KIND_ORDER, SOURCE_FILTER_LABELS } from './timeline-config';
+import { DAYS_PER_PAGE, KIND_CONFIG, KIND_ORDER, SOURCE_FILTER_LABELS } from './timeline-config';
 import { RailItem, TimelineSkeleton } from './TimelineBits';
 import { TimelineRecordDrawer } from './TimelineRecordDrawer';
 import { VisitCard } from './VisitCard';
@@ -225,13 +226,14 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
     body = (
       <Stack gap="xl">
         {shown.map((day) => {
-          const [y, m, d] = day.dayKey.split('-').map(Number);
-          const date = new Date(y, m - 1, d);
+          // A day key is a clinic calendar day; format it as such, never via a browser-local Date,
+          // which reads a day early for viewers east of the clinic.
+          const dayLabel = formatDayKey(day.dayKey, { month: 'short', day: 'numeric', year: 'numeric' });
           const relative = getRelativeDayLabel(day.dayKey, todayKey);
           const isToday = day.dayKey === todayKey;
           const isFuture = day.dayKey > todayKey;
           return (
-            <Box component="section" key={day.dayKey} aria-label={formatMediumDate(date, timeZone)}>
+            <Box component="section" key={day.dayKey} aria-label={dayLabel}>
               <Group gap="sm" wrap="nowrap" className={classes.dayHeader}>
                 <Badge
                   variant={isToday ? 'light' : 'default'}
@@ -242,7 +244,7 @@ export function PatientTimelineView(props: PatientTimelineViewProps): JSX.Elemen
                   tt="none"
                   className={classes.dayChip}
                 >
-                  {formatMediumDate(date, timeZone)}
+                  {dayLabel}
                 </Badge>
                 {relative && (
                   <Badge

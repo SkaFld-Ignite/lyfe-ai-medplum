@@ -1,5 +1,5 @@
 .container {
-  --patient-sidebar-width: clamp(280px, 24vw, 350px);
+  --patient-sidebar-width: 264px;
 
   display: flex;
   flex-direction: row;
@@ -8,11 +8,21 @@
   overflow: hidden;
 }
 
-/* The summary narrows on smaller screens so the chart keeps enough room. */
+/* Lyfe patient sidebar: identity card above the section menu. */
 .sidebar {
   flex: 0 0 var(--patient-sidebar-width);
   width: var(--patient-sidebar-width);
   height: 100%;
+  background: var(--mantine-color-body);
+}
+
+/* Narrow screens: one column, identity and the section bar above the content. */
+.container[data-narrow] {
+  flex-direction: column;
+}
+
+.container[data-narrow] .content {
+  border-inline-start: 0;
 }
 
 .scrollArea {
@@ -31,17 +41,9 @@
 
 .contentBody {
   display: flex;
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-8));
   flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: auto;
-}
-
-/*
- * The chart summary is read-only here: clinical data comes from the EHR imports, so the
- * per-section "Add item" (+) buttons of Medplum's PatientSummary are hidden. The component has no
- * option to omit them, and this keeps its package untouched.
- */
-.sidebar :global([aria-label='Add item']) {
-  display: none;
 }

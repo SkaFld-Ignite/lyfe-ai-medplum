@@ -23,13 +23,13 @@ describe('LabResultListItem', () => {
 
   test.each<[string, Partial<DiagnosticReport>, string]>([
     ['the code text', {}, 'CBC Panel'],
-    ['the issued date', { issued: '2024-01-15T10:00:00Z' }, 'Completed 1/15/2024'],
+    ['the issued date', { issued: '2024-01-15T10:00:00Z' }, 'Completed Jan 15, 2024'],
     ['coding displays joined by comma', { code: { coding: [{ display: 'A' }, { display: 'B' }] } }, 'A, B'],
     ['the coding display when code text is missing', { code: { coding: [{ display: 'Single' }] } }, 'Single'],
     ['fallback text when no code is available', { code: undefined }, 'Lab Result'],
     ['the performing practitioner', { performer: [createReference(DrAliceSmith)] }, 'Performed by Alice Smith'],
     ['the performing organization', { performer: [createReference(TestOrganization)] }, 'Test Organization'],
-    ['the collection date', { effectiveDateTime: '2024-01-10T10:00:00Z' }, 'Collected 1/10/2024'],
+    ['the collection date', { effectiveDateTime: '2024-01-10T10:00:00Z' }, 'Collected Jan 10, 2024'],
   ])('renders %s', async (_name, overrides, text) => {
     setup({ ...report, ...overrides });
     expect(await screen.findByText(text)).toBeInTheDocument();

@@ -1,15 +1,22 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Paper } from '@mantine/core';
 import type { SearchRequest } from '@medplum/core';
 import { DEFAULT_SEARCH_COUNT, formatSearchQuery, parseSearchRequest } from '@medplum/core';
 import { Loading, SearchControl, useMedplum } from '@medplum/react';
+import { IconListDetails } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
+import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { usePatient } from '../../hooks/usePatient';
 import { useResourceType } from '../resource/useResourceType';
 import { prependPatientPath } from './PatientPage.utils';
+
+/** Lyfe section headings for the patient search tabs. */
+const SEARCH_SECTIONS: Record<string, { title: string; description: string }> = {
+  Device: { title: 'Devices', description: 'Devices and equipment associated with this patient' },
+  CarePlan: { title: 'Care Plans', description: 'Care plans and their status over time' },
+};
 
 export function PatientSearchPage(): JSX.Element {
   const medplum = useMedplum();
@@ -44,8 +51,13 @@ export function PatientSearchPage(): JSX.Element {
     return <Loading />;
   }
 
+  const section = SEARCH_SECTIONS[search.resourceType] ?? {
+    title: search.resourceType,
+    description: `${search.resourceType} records for this patient`,
+  };
+
   return (
-    <Paper shadow="xs" m="md" p="xs">
+    <PatientTabShell icon={<IconListDetails size={20} />} title={section.title} description={section.description}>
       <SearchControl
         checkboxesEnabled={true}
         hideFilters
@@ -63,7 +75,7 @@ export function PatientSearchPage(): JSX.Element {
           );
         }}
       />
-    </Paper>
+    </PatientTabShell>
   );
 }
 

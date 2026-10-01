@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { ActionIcon, Box, Flex, Modal, Stack, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Flex, Modal, Stack, Text, Tooltip } from '@mantine/core';
 import type { Filter, SearchRequest, SortRule, WithId } from '@medplum/core';
 import { formatSearchQuery, getReferenceString, Operator, parseSearchRequest } from '@medplum/core';
 import type { DiagnosticReport, ServiceRequest } from '@medplum/fhirtypes';
 import type { ListWithDetailPaneTab } from '@medplum/react';
 import { ListWithDetailPane, useMedplum } from '@medplum/react';
-import { IconPlus } from '@tabler/icons-react';
+import { IconFlask, IconPlus } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
@@ -14,6 +14,7 @@ import { LabDetailPane } from '../../components/labs/LabDetailPane';
 import { LabListItem } from '../../components/labs/LabListItem';
 import { LabResultListItem } from '../../components/labs/LabResultListItem';
 import { LabSelectEmpty } from '../../components/labs/LabSelectEmpty';
+import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { usePatient } from '../../hooks/usePatient';
 import { showErrorNotification } from '../../utils/notifications';
 import { OrderLabsPage } from '../labs/OrderLabsPage';
@@ -190,7 +191,7 @@ export function LabsPage(props: LabsPageProps): JSX.Element {
   );
 
   return (
-    <Box w="100%" h="100%">
+    <PatientTabShell fill icon={<IconFlask size={20} />} title="Orders" description="Lab orders and their reports">
       <ListWithDetailPane<LabItem>
         items={items}
         loading={loading}
@@ -239,7 +240,7 @@ export function LabsPage(props: LabsPageProps): JSX.Element {
       >
         <OrderLabsPage onSubmitLabOrder={handleNewOrderCreated} />
       </Modal>
-    </Box>
+    </PatientTabShell>
   );
 }
 

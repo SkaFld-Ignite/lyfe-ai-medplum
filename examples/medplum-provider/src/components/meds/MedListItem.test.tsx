@@ -43,13 +43,14 @@ function setup(item: MedicationRequest, completed = false, selectedItem?: Medica
 test('renders the title, requester, dosage, and link, and marks only the selected item', async () => {
   const item = { ...baseRequest, authoredOn: '2024-01-15T10:00:00Z', dosageInstruction: [{ text: 'Take 1 daily' }] };
   const selected = setup({ ...item, requester: { reference: `Practitioner/${DrAliceSmith.id}` } }, false, baseRequest);
-  expect(await screen.findByText('1/15/2024 · Alice Smith · Take 1 daily')).toBeInTheDocument();
+  expect(await screen.findByText('Prescribed: Jan 15, 2024 · Alice Smith')).toBeInTheDocument();
+  expect(screen.getByText('Take 1 daily')).toBeInTheDocument();
   expect(screen.getByText('Alinia 500 mg tablet')).toBeInTheDocument();
   expect(screen.getByRole('link')).toHaveAttribute('href', '/meds/rx-1');
   expect(selected.querySelector('[class*="selected"]')).toBeInTheDocument();
   const unselected = setup({ ...baseRequest, id: 'rx-2', medicationCodeableConcept: undefined }, false, baseRequest);
   expect(screen.getByText('Medication order')).toBeInTheDocument();
-  expect(screen.getByText('2/20/2024')).toBeInTheDocument();
+  expect(screen.getByText('Prescribed: Feb 20, 2024')).toBeInTheDocument();
   expect(unselected.querySelector('[class*="selected"]')).not.toBeInTheDocument();
 });
 
