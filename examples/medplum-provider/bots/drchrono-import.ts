@@ -1729,7 +1729,7 @@ const PROCEDURE_STATUS_MAP: Record<string, Procedure['status']> = {
  * @param patient - Reference to the imported patient.
  * @param organization - The calling clinic.
  * @param practitioners - DrChrono doctor id to Practitioner reference.
- * @param encounters - DrChrono appointment id to Encounter reference.
+ * @param ctx - The import context, for resolving the visit this belongs to.
  * @returns The Procedure resource.
  */
 function mapProcedure(
@@ -1737,7 +1737,7 @@ function mapProcedure(
   patient: Reference<Patient>,
   organization: Reference<Organization>,
   practitioners: Map<string, Reference<Practitioner>>,
-  encounters: Map<string, Reference<Encounter>>
+  ctx: Pick<ImportContext, 'encounters' | 'encountersByDay'>
 ): Procedure {
   const performer = p.doctor ? lookup(practitioners, p.doctor) : undefined;
   return {
@@ -1746,7 +1746,7 @@ function mapProcedure(
     identifier: [{ system: IDENTIFIER_SYSTEMS.procedure, value: String(p.id) }],
     status: PROCEDURE_STATUS_MAP[(p.status ?? '').toLowerCase()] ?? 'unknown',
     subject: patient,
-    encounter: p.appointment ? lookup(encounters, p.appointment) : undefined,
+    encounter: resolveEncounter(p.appointment, p.date ?? undefined, ctx),
     code: {
       coding: p.code ? [{ system: 'http://www.ama-assn.org/go/cpt', code: p.code, display: p.description }] : [],
       text: p.description || (p.code ? `CPT ${p.code}` : 'Unknown procedure'),
@@ -2774,6 +2774,13 @@ interface ImportContext {
   disabledDoctors: Set<number>;
   /** DrChrono appointment id to Encounter reference. */
   encounters: Map<string, Reference<Encounter>>;
+  /**
+   * Clinic calendar day to the Encounters written for it.
+   *
+   * Only consulted when DrChrono gives a record no `appointment` id at all.
+   * See {@link resolveEncounter}.
+   */
+  encountersByDay: Map<string, Reference<Encounter>[]>;
   /** DrChrono lab order id to ServiceRequest reference. */
   labOrders: Map<string, Reference<ServiceRequest>>;
   /** Written resource references, grouped by type, for Provenance. */
@@ -2834,6 +2841,59 @@ function refKey(id: string | number | null | undefined): string | undefined {
 function lookup<T>(map: Map<string, T>, id: string | number | null | undefined): T | undefined {
   const key = refKey(id);
   return key === undefined ? undefined : map.get(key);
+}
+
+/**
+ * Marks an encounter link this importer deduced rather than DrChrono asserting it.
+ *
+ * There is no FHIR element for "we worked this out", and inventing a resource
+ * to record it would be worse than the problem. An extension on the reference
+ * itself is the smallest honest place for it: it marks the *link*, not the
+ * procedure, and anything reading the chart can tell the two apart.
+ */
+export const INFERRED_LINK_EXTENSION = 'https://lyfe.com/inferred-encounter-link';
+
+/**
+ * Find the visit a clinical record belongs to.
+ *
+ * DrChrono names the visit through an `appointment` foreign key, and when it is
+ * there this is a plain lookup. It is absent on roughly a third of procedures —
+ * the E&M billing lines especially — which left them floating free of any visit
+ * in an encounter-centric chart.
+ *
+ * The fallback is the calendar day, and it is deliberately timid: it links only
+ * when the patient had **exactly one** visit that day. Two visits and there is a
+ * real chance of filing a procedure under the wrong one, which is a worse
+ * outcome than leaving it unlinked, so it declines. The link it does make is
+ * marked, because a deduced link in a medical record should never be
+ * indistinguishable from one the source system stated.
+ * @param appointmentId - DrChrono's appointment foreign key, when present.
+ * @param day - The record's own date, as `YYYY-MM-DD`.
+ * @param ctx - The import context, holding both indexes.
+ * @returns The Encounter reference, or undefined when none can be chosen.
+ */
+export function resolveEncounter(
+  appointmentId: number | null | undefined,
+  day: string | undefined,
+  ctx: Pick<ImportContext, 'encounters' | 'encountersByDay'>
+): Reference<Encounter> | undefined {
+  const asserted = appointmentId ? lookup(ctx.encounters, appointmentId) : undefined;
+  if (asserted) {
+    return asserted;
+  }
+  const sameDay = day ? ctx.encountersByDay.get(day.slice(0, 10)) : undefined;
+  if (sameDay?.length !== 1) {
+    return undefined;
+  }
+  return {
+    ...sameDay[0],
+    extension: [
+      {
+        url: INFERRED_LINK_EXTENSION,
+        valueString: 'Matched on visit date; DrChrono supplied no appointment id',
+      },
+    ],
+  };
 }
 
 function log(message: string): void {
@@ -3286,7 +3346,20 @@ async function importAppointments(
   for (let i = 0; i < appointments.length; i++) {
     const id = encounterResult.ids[i];
     if (id) {
-      ctx.encounters.set(String(appointments[i].id), { reference: `Encounter/${id}` });
+      const ref: Reference<Encounter> = { reference: `Encounter/${id}` };
+      ctx.encounters.set(String(appointments[i].id), ref);
+      // `scheduled_time` is the clinic's own wall clock, and a DrChrono
+      // procedure's `date` is the same calendar day in the same clock, so the
+      // two are compared as plain day strings with no zone conversion.
+      const day = appointments[i].scheduled_time?.slice(0, 10);
+      if (day) {
+        const sameDay = ctx.encountersByDay.get(day);
+        if (sameDay) {
+          sameDay.push(ref);
+        } else {
+          ctx.encountersByDay.set(day, [ref]);
+        }
+      }
     }
   }
   ctx.counts.appointments = encounterResult.wrote;
@@ -3533,7 +3606,7 @@ async function importProcedures(ctx: ImportContext, patient: Reference<Patient>)
     ctx.medplum,
     procedures.map((p) => ({
       resourceType: 'Procedure',
-      resource: mapProcedure(p, patient, ctx.organization, ctx.practitioners, ctx.encounters),
+      resource: mapProcedure(p, patient, ctx.organization, ctx.practitioners, ctx),
       system: IDENTIFIER_SYSTEMS.procedure,
       value: String(p.id),
     })),
@@ -3950,6 +4023,7 @@ async function importChart(
     disabledOffices: new Set(),
     disabledDoctors: new Set(),
     encounters: new Map(),
+    encountersByDay: new Map(),
     labOrders: new Map(),
     refsByType: new Map(),
     rxNormCache: new Map(),
