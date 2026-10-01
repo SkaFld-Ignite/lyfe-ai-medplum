@@ -16,6 +16,7 @@ import {
   TextInput,
 } from '@mantine/core';
 import { useMedplum } from '@medplum/react';
+import { IMPORT_WORKER_URL, queueBulkImport } from '../../services/bulk-import';
 import { IconAlertCircle, IconDatabase, IconSearch } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useState } from 'react';
@@ -208,7 +209,33 @@ export function BulkImportPanel(): JSX.Element {
     const update = (id: string, patch: Partial<RunRow>): void =>
       setRun((prev) => prev?.map((r) => (r.drchronoId === id ? { ...r, ...patch } : r)));
 
-    // Each patient is a server-side job, run a bounded number at a time. See
+    // Preferred path: hand the whole run to the import worker in one call.
+    //
+    // The worker owns it from that moment, so closing the tab does not stop it
+    // and concurrency is decided there, per clinic, rather than by a constant
+    // in this file. The page then only watches.
+    if (IMPORT_WORKER_URL) {
+      try {
+        const queued = await queueBulkImport(
+          medplum,
+          todo.map((c) => String(c.id)),
+          withZus
+        );
+        setRun((prev) =>
+          prev?.map((r) => ({ ...r, status: 'importing' as const, detail: `queued · ${queued.batchId}` }))
+        );
+        setRunning(false);
+        return;
+      } catch (err) {
+        // A worker that is unreachable must not strand the run: fall through to
+        // driving it from the page, which is slower but still works.
+        setRun((prev) =>
+          prev?.map((r) => ({ ...r, detail: err instanceof Error ? err.message : String(err) }))
+        );
+      }
+    }
+
+    // Fallback: drive the imports from here, a bounded number at a time. See
     // IMPORT_CONCURRENCY for why this is bounded rather than started all at
     // once — Medplum runs an async $execute immediately and in-process, so
     // "all at once" means 122 bot executions inside one Node process.
