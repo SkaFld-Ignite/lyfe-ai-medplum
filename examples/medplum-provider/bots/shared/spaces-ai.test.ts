@@ -509,6 +509,90 @@ describe('collectCitableSources', () => {
   test('is empty when nothing was fetched, so no source list is sent at all', () => {
     expect(collectCitableSources([])).toStrictEqual([]);
   });
+
+  /**
+   * A `search_documents` response, as `toDocumentSearchToolResult` records it.
+   * @param references - `DocumentReference/<id>` strings, one per hit, in hit order.
+   * @returns The tool message.
+   */
+  function documentSearch(references: string[]): Record<string, unknown> {
+    return toolMessage({
+      documentSearch: {
+        patientId: 'p1',
+        hits: references.map((reference, index) => ({
+          reference,
+          title: 'Cardiology consult',
+          date: '2026-03-14',
+          chunk: index,
+          text: 'Patient reports intermittent chest pain on exertion.',
+        })),
+      },
+    });
+  }
+
+  test('numbers document hits and FHIR resources in one sequence, in conversation order', () => {
+    // The point of the whole design: a document hit is a `DocumentReference` reference in the same
+    // `resources` array, so there is one numbering and no namespace for it to collide with. Were
+    // documents numbered separately, [doc:S2] would mean two different records in one answer.
+    expect(
+      collectCitableSources([
+        { role: 'user', content: 'what did the cardiologist say, and what are they on?' },
+        toolMessage(bundle(['MedicationRequest/m1'])),
+        documentSearch(['DocumentReference/d1', 'DocumentReference/d2']),
+        toolMessage(bundle(['Observation/o1'])),
+      ])
+    ).toStrictEqual(['MedicationRequest/m1', 'DocumentReference/d1', 'DocumentReference/d2', 'Observation/o1']);
+  });
+
+  test('collapses two chunks of one document into one source, keeping the first position', () => {
+    // The index's grain is a chunk, so a relevant document commonly matches twice. Both chunks must
+    // cite one card and must not consume two numbers — which is exactly what the UI's `Set` does.
+    expect(
+      collectCitableSources([
+        documentSearch(['DocumentReference/d1', 'DocumentReference/d1', 'DocumentReference/d2']),
+        toolMessage(bundle(['Patient/p1'])),
+      ])
+    ).toStrictEqual(['DocumentReference/d1', 'DocumentReference/d2', 'Patient/p1']);
+  });
+
+  test('a document search that matched nothing takes no number', () => {
+    // The worker's note is prose, not a source. A number for it would shift every later citation.
+    expect(
+      collectCitableSources([
+        toolMessage({ documentSearch: { patientId: 'p1', hits: [], note: 'No indexed documents matched.' } }),
+        toolMessage(bundle(['Patient/p1'])),
+      ])
+    ).toStrictEqual(['Patient/p1']);
+  });
+
+  test('a failed document search takes no number', () => {
+    // Mirrors the UI, which pushes no refs when the worker call throws.
+    expect(
+      collectCitableSources([
+        toolMessage({ error: true, message: 'Unable to search documents for Patient/p1', details: '503' }),
+        toolMessage(bundle(['Patient/p1'])),
+      ])
+    ).toStrictEqual(['Patient/p1']);
+  });
+
+  test('ignores a malformed hit rather than numbering it', () => {
+    // A hit with no reference cannot be opened, so citing it would be a dead pill.
+    expect(
+      collectCitableSources([
+        toolMessage({
+          documentSearch: { patientId: 'p1', hits: [{ title: 'no reference' }, { reference: 'DocumentReference/d1' }] },
+        }),
+      ])
+    ).toStrictEqual(['DocumentReference/d1']);
+  });
+
+  test('does not mistake a FHIR resource carrying a hits field for a document search', () => {
+    // Matched on the `documentSearch` wrapper rather than on the shape inside it, so an ordinary
+    // resource is still cited as itself.
+    expect(
+      collectCitableSources([toolMessage({ resourceType: 'Basic', id: 'b1', hits: [{ reference: 'Patient/p9' }] })])
+    ).toStrictEqual(['Basic/b1']);
+  });
 });
 
 describe('formatSourceList', () => {

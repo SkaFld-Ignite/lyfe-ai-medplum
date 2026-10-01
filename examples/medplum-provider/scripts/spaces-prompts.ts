@@ -62,6 +62,27 @@ const DOC_CITATIONS = [
   'marker.',
 ].join('\n');
 
+/**
+ * How a document-search passage names its source, for the bot that has to cite one.
+ *
+ * `search_documents` returns extracted text rather than resources, so its passages do not look
+ * like anything else the summary bot is given. Each one carries the `DocumentReference` it was
+ * extracted from, and that reference appears in the numbered source list like any other — which is
+ * the whole reason document hits and FHIR resources can share one `[doc:Sn]` numbering. Said here
+ * because a model that cannot see how to cite a passage cites nothing for it, and the one fact it
+ * needs is which list to look the reference up in.
+ */
+const DOCUMENT_PASSAGES = [
+  "Some of what you were given is passages extracted from the patient's scanned documents rather",
+  'than structured resources. Each passage names the DocumentReference it came from, and that',
+  'reference is in the numbered source list like any other — find it there and cite its number.',
+  '',
+  'A passage is an extract, often produced by OCR, and it describes the day the document was',
+  'written. Say which document and date a statement came from when you use one, prefer the',
+  'structured resource where both speak to the same thing, and never present a value read out of',
+  'an old letter as the current one.',
+].join('\n');
+
 /** The chart-section citation protocol, which needs no source list. */
 const TAB_CITATIONS_PROTOCOL = [
   'Point the reader at a section of the patient chart with a bare key in square brackets, like',
@@ -75,8 +96,9 @@ const TAB_CITATIONS_PROTOCOL = [
  * What the summary bot can and cannot cite.
  *
  * Stated to the model because the alternative is a model that invents a marker in order to look
- * compliant, which is precisely the failure mode worth preventing. It is also the honest limit of
- * the chat's "Every claim is cited" empty-state copy.
+ * compliant, which is precisely the failure mode worth preventing. It is also the limit the chat's
+ * empty-state copy is written to: "Claims are cited to the records they came from", not "every
+ * claim is cited", which this list is the reason nobody can promise.
  */
 const UNCITABLE = [
   'Some statements have no source to cite, and for those you write no marker rather than an',
@@ -103,6 +125,18 @@ export const SPACES_PROMPT_SEEDS: readonly PromptSeed[] = [
       'Use the fhir_request tool for every FHIR read and every FHIR write. Never state a patient',
       'name, value, date or count that did not come back from a tool result. If a search returns',
       'nothing, say so — do not retry the same search with invented identifiers.',
+      '',
+      'Use the search_documents tool when the answer is written inside a document rather than',
+      'recorded as a structured resource: a finding in a scanned consult letter, the body of a',
+      'discharge summary, the impression on an outside imaging report, a history taken somewhere',
+      'else. A fhir_request search of DocumentReference tells you a document exists; only',
+      'search_documents tells you what it says.',
+      '',
+      'Reach for the structured resource first where one would hold the answer — medications,',
+      'problems, allergies, labs, vitals, encounters — and for documents when it would not, or when',
+      'the structured record is silent on something the question asks about. A document search that',
+      'comes back empty means no indexed passage matched; report that rather than rephrasing the',
+      'same question more than once.',
       '',
       'Work in as few requests as possible. Prefer one search with the right parameters over several',
       'broad ones, always bound a search with _count, and use _include or _revinclude instead of a',
@@ -161,6 +195,10 @@ export const SPACES_PROMPT_SEEDS: readonly PromptSeed[] = [
       '',
       'If a request failed, say which one and what the error was. Never present a failure as an',
       'absence of data.',
+      '',
+      'DOCUMENTS',
+      '',
+      DOCUMENT_PASSAGES,
       '',
       'CITATIONS',
       '',

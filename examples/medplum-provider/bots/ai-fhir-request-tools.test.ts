@@ -115,17 +115,37 @@ describe('the request it sends to $ai', () => {
     ]);
   });
 
-  test('declares exactly one tool, named fhir_request, with strict off', async () => {
+  test('declares exactly two tools: fhir_request and search_documents', async () => {
     await handler(stubClient(), event([]));
 
     const tools = JSON.parse(param(posts[0].body, 'tools')?.valueString as string);
-    expect(tools).toHaveLength(1);
-    expect(tools[0].function.name).toBe('fhir_request');
+    expect(tools.map((tool: { function: { name: string } }) => tool.function.name)).toStrictEqual([
+      'fhir_request',
+      'search_documents',
+    ]);
     expect(tools[0].function.parameters.required).toStrictEqual(['method', 'path']);
     expect(tools[0].function.parameters.properties.visualize.type).toBe('boolean');
+  });
+
+  test.each([0, 1])('tool %i has strict off', async (index) => {
     // Not cosmetic. $ai routes tools + a reasoning effort to the Responses API, which defaults
-    // `strict` to true and then rejects a schema with optional properties.
-    expect(tools[0].function.strict).toBe(false);
+    // `strict` to true and then rejects a schema with optional properties — and both tools have
+    // one: `body` and `visualize` on the first, `topK` on the second.
+    await handler(stubClient(), event([]));
+    const tools = JSON.parse(param(posts[0].body, 'tools')?.valueString as string);
+    expect(tools[index].function.strict).toBe(false);
+  });
+
+  test('the document tool takes a patient and a query, and nothing that widens the scope', async () => {
+    // The clinic is resolved from the caller's own token by the worker. A tool parameter the model
+    // could fill in with an organization would be a way to ask for another clinic's documents, so
+    // the absence of one is the thing worth pinning.
+    await handler(stubClient(), event([]));
+    const search = JSON.parse(param(posts[0].body, 'tools')?.valueString as string)[1].function;
+    expect(search.parameters.required).toStrictEqual(['patientId', 'query']);
+    expect(Object.keys(search.parameters.properties).sort()).toStrictEqual(['patientId', 'query', 'topK']);
+    // Easy to confuse with a DocumentReference search; they answer different questions.
+    expect(search.description).toMatch(/cannot count documents/i);
   });
 
   test('forwards the model and reasoning effort it was given', async () => {

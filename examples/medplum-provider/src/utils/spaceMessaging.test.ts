@@ -2,11 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { MedplumClient } from '@medplum/core';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { processMessage, sendToBotStreaming } from './spaceMessaging';
+import { executeToolCalls, processMessage, sendToBotStreaming } from './spaceMessaging';
 
 vi.mock('./spacePersistence', () => ({
   createConversationTopic: vi.fn().mockResolvedValue({ id: 'topic-1', resourceType: 'Communication' }),
   saveMessage: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Mocked at the boundary: the document index lives behind a separate HTTP service, and this module
+// reads `import.meta.env` for its URL.
+const searchDocuments = vi.fn();
+vi.mock('../services/document-search', () => ({
+  searchPatientDocuments: (...args: unknown[]) => searchDocuments(...args),
 }));
 
 // Helper to create a mock streaming SSE response
@@ -406,5 +413,235 @@ describe('processMessage - max iterations behavior', () => {
     // tool messages exist, so summary bot is called → content = 'Summary.'
     expect(result.assistantMessage.content).toBe('Summary.');
     expect(result.assistantMessage.content).not.toContain('processing limit');
+  });
+});
+
+/**
+ * The `search_documents` tool, executed by the UI exactly as `fhir_request` is.
+ *
+ * Two things are asserted here and neither is cosmetic. First, the patient is read under the
+ * signed-in user's access policy *before* the worker is called: the worker scopes a search to the
+ * caller's organization but cannot see their AccessPolicy, so this read is what keeps the tool no
+ * more permissive than the rest of the loop. Second, each hit contributes
+ * `DocumentReference/<documentId>` to `resourceRefs`, because that array *is* the `[doc:Sn]`
+ * numbering — a hit that does not land in it cannot be cited at all, and one that lands in the
+ * wrong position is cited as the wrong record.
+ */
+describe('executeToolCalls - search_documents', () => {
+  /**
+   * A medplum stub whose `readResource` resolves, i.e. the user may open the patient.
+   * @param readResource - Override for the access-policy check.
+   * @returns The stub and the mock, so a test can assert on the check.
+   */
+  function makeMedplum(readResource = vi.fn().mockResolvedValue({ resourceType: 'Patient', id: 'p1' })): {
+    medplum: Partial<MedplumClient>;
+    readResource: ReturnType<typeof vi.fn>;
+  } {
+    return {
+      medplum: { readResource, getAccessToken: vi.fn().mockReturnValue('mock-token') },
+      readResource,
+    };
+  }
+
+  /**
+   * One `search_documents` call, with arguments as the JSON string `$ai` returns.
+   * @param args - The tool arguments.
+   * @returns The tool call.
+   */
+  function call(args: Record<string, unknown>): { id: string; function: { name: string; arguments: string } } {
+    return { id: 'call-doc-1', function: { name: 'search_documents', arguments: JSON.stringify(args) } };
+  }
+
+  const twoHits = {
+    hits: [
+      {
+        documentId: 'd1',
+        chunkIndex: 2,
+        snippet: 'Moderate aortic stenosis, peak velocity 3.4 m/s.',
+        distance: 0.18,
+        title: 'Echocardiogram report',
+        documentDate: '2026-03-14',
+        contentType: 'application/pdf',
+      },
+      {
+        documentId: 'd2',
+        chunkIndex: 0,
+        snippet: 'Referred for consideration of valve replacement.',
+        distance: 0.26,
+        title: 'Cardiology consult',
+        documentDate: '2026-04-02',
+        contentType: 'application/pdf',
+      },
+    ],
+    asText: '[doc:S1 | Echocardiogram report (2026-03-14) | chunk 2]\n…',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    searchDocuments.mockResolvedValue(twoHits);
+  });
+
+  test('reads the patient under the access policy before searching', async () => {
+    const { medplum, readResource } = makeMedplum();
+    await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'p1', query: 'aortic stenosis' })],
+      vi.fn()
+    );
+    expect(readResource).toHaveBeenCalledWith('Patient', 'p1');
+    expect(searchDocuments).toHaveBeenCalledWith(medplum, { patientId: 'p1', query: 'aortic stenosis' });
+  });
+
+  test('does not search when the user may not open the patient', async () => {
+    // Medplum answers this, not a role comparison here. Without the read, a user scoped to a
+    // subset of their clinic could reach the documents of a patient they cannot see.
+    const { medplum } = makeMedplum(vi.fn().mockRejectedValue(new Error('Forbidden')));
+    const { messages, resourceRefs } = await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'other-clinic-patient', query: 'anything' })],
+      vi.fn()
+    );
+    expect(searchDocuments).not.toHaveBeenCalled();
+    expect(resourceRefs).toStrictEqual([]);
+    expect(JSON.parse(messages[0].content as string)).toMatchObject({ error: true });
+  });
+
+  test('makes each hit citable as its DocumentReference, in hit order', async () => {
+    const { medplum } = makeMedplum();
+    const { resourceRefs } = await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'p1', query: 'valve' })],
+      vi.fn()
+    );
+    expect(resourceRefs).toStrictEqual(['DocumentReference/d1', 'DocumentReference/d2']);
+  });
+
+  test('gives the model each passage with the reference it came from, and no local numbering', async () => {
+    // The worker's digest numbers its own hits from 1. Forwarding those numbers would invite
+    // [doc:S1] for a document that is globally S7, so the hits go as structured JSON instead and
+    // the summary bot's `Sn = Type/id` list stays the only numbering the model sees.
+    const { medplum } = makeMedplum();
+    const { messages } = await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'p1', query: 'valve' })],
+      vi.fn()
+    );
+    const content = messages[0].content as string;
+    expect(JSON.parse(content)).toStrictEqual({
+      documentSearch: {
+        patientId: 'p1',
+        hits: [
+          {
+            reference: 'DocumentReference/d1',
+            title: 'Echocardiogram report',
+            date: '2026-03-14',
+            chunk: 2,
+            text: 'Moderate aortic stenosis, peak velocity 3.4 m/s.',
+          },
+          {
+            reference: 'DocumentReference/d2',
+            title: 'Cardiology consult',
+            date: '2026-04-02',
+            chunk: 0,
+            text: 'Referred for consideration of valve replacement.',
+          },
+        ],
+      },
+    });
+    expect(content).not.toContain('doc:S');
+  });
+
+  test('passes the worker’s note through when nothing matched, and cites nothing', async () => {
+    // "No document is relevant" and "the embedding call failed" must not read the same, and
+    // neither may take a citation number.
+    searchDocuments.mockResolvedValue({ hits: [], asText: 'Document search unavailable: Bedrock timed out' });
+    const { medplum } = makeMedplum();
+    const { messages, resourceRefs } = await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'p1', query: 'valve' })],
+      vi.fn()
+    );
+    expect(resourceRefs).toStrictEqual([]);
+    expect(JSON.parse(messages[0].content as string).documentSearch).toStrictEqual({
+      patientId: 'p1',
+      hits: [],
+      note: 'Document search unavailable: Bedrock timed out',
+    });
+  });
+
+  test('answers a failed search with a tool message rather than throwing', async () => {
+    // Every tool_call_id needs a response or the next model call is rejected, and a throw here
+    // would take the whole chat turn with it.
+    searchDocuments.mockRejectedValue(new Error('Document search failed (503): RAG_DATABASE_URL is unset.'));
+    const { medplum } = makeMedplum();
+    const { messages, resourceRefs } = await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'p1', query: 'valve' })],
+      vi.fn()
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0].tool_call_id).toBe('call-doc-1');
+    expect(JSON.parse(messages[0].content as string)).toMatchObject({
+      error: true,
+      details: expect.stringContaining('RAG_DATABASE_URL'),
+    });
+    expect(resourceRefs).toStrictEqual([]);
+  });
+
+  test('accepts a reference where an id was asked for', async () => {
+    // The pre-selected-patient system message hands the model `Patient/<id>`, so it passes that
+    // back often enough to matter. `Patient/Patient/abc` is a 404 that reads to the user as "the
+    // AI cannot see my documents".
+    const { medplum, readResource } = makeMedplum();
+    await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'Patient/p1', query: 'valve' })],
+      vi.fn()
+    );
+    expect(readResource).toHaveBeenCalledWith('Patient', 'p1');
+    expect(searchDocuments).toHaveBeenCalledWith(medplum, { patientId: 'p1', query: 'valve' });
+  });
+
+  test('forwards topK only when the model asked for one', async () => {
+    const { medplum } = makeMedplum();
+    await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'p1', query: 'valve', topK: 12 })],
+      vi.fn()
+    );
+    expect(searchDocuments).toHaveBeenCalledWith(medplum, { patientId: 'p1', query: 'valve', topK: 12 });
+  });
+
+  test('interleaves document and FHIR refs in call order, so one numbering covers both', async () => {
+    // `resourceRefs` is the citation numbering. Its order across a mixed batch is the contract.
+    const { medplum } = makeMedplum();
+    const withGet = {
+      ...medplum,
+      get: vi.fn().mockResolvedValue({
+        resourceType: 'Bundle',
+        entry: [{ resource: { resourceType: 'MedicationRequest', id: 'm1' } }],
+      }),
+      fhirUrl: vi.fn().mockReturnValue(new URL('https://api.medplum.com/fhir/R4/MedicationRequest')),
+    };
+    const { resourceRefs } = await executeToolCalls(
+      withGet as unknown as Parameters<typeof executeToolCalls>[0],
+      [
+        { id: 'c1', function: { name: 'fhir_request', arguments: JSON.stringify({ method: 'GET', path: 'Med' }) } },
+        call({ patientId: 'p1', query: 'valve' }),
+      ],
+      vi.fn()
+    );
+    expect(resourceRefs).toStrictEqual(['MedicationRequest/m1', 'DocumentReference/d1', 'DocumentReference/d2']);
+  });
+
+  test('reports the search in the progress callback the UI shows', async () => {
+    const onProgress = vi.fn();
+    const { medplum } = makeMedplum();
+    await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call({ patientId: 'p1', query: 'aortic stenosis' })],
+      onProgress
+    );
+    expect(onProgress).toHaveBeenCalledWith('search documents: aortic stenosis');
   });
 });

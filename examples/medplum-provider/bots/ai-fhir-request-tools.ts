@@ -93,6 +93,57 @@ const FHIR_REQUEST_TOOL = {
 };
 
 /**
+ * Searching the text of a patient's scanned documents.
+ *
+ * The second tool, and the only one that reaches something FHIR search cannot. `fhir_request` can
+ * find a `DocumentReference` but not read what is inside its `Binary`: a scanned cardiology letter
+ * is a PDF, and the finding in it exists in no structured resource. The lyfe-worker keeps a
+ * pgvector index over text extracted from those binaries, and this tool queries it.
+ *
+ * Executed by the Provider UI exactly as `fhir_request` is — the UI reads the patient under the
+ * signed-in user's access policy first, then calls the worker with the user's own token, and the
+ * worker scopes the search to the organization that token resolves to. The bot never sees a
+ * document and cannot widen the scope of a search it asked for.
+ *
+ * `strict` is off for the same reason it is off above: `topK` is genuinely optional, which strict
+ * mode forbids, and the Responses API defaults `strict` to true.
+ */
+const SEARCH_DOCUMENTS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'search_documents',
+    description:
+      "Search the full text of one patient's scanned and uploaded documents — consult letters, " +
+      'discharge summaries, imaging and pathology reports, outside records — and get back the ' +
+      'passages that match, each naming the DocumentReference it came from. Use it when the ' +
+      'answer is written in a document rather than recorded as a structured resource. It reads ' +
+      'text, so it cannot count documents, filter them by date or list them: use fhir_request on ' +
+      'DocumentReference for that.',
+    strict: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        patientId: {
+          type: 'string',
+          description: 'The Patient resource id, with no "Patient/" prefix.',
+        },
+        query: {
+          type: 'string',
+          description:
+            'What to look for, in clinical language. Matched by meaning rather than by keyword, ' +
+            'so a phrase from the question works better than a single word.',
+        },
+        topK: {
+          type: 'number',
+          description: 'How many passages to return. Defaults to 6; more than about 12 rarely helps.',
+        },
+      },
+      required: ['patientId', 'query'],
+    },
+  },
+};
+
+/**
  * Entry point.
  * @param medplum - The bot's Medplum client, used to load the prompt and to call `$ai`.
  * @param event - Carries the `Parameters` input and the requester.
@@ -114,7 +165,7 @@ export async function handler(medplum: MedplumClient, event: BotEvent): Promise<
     ],
     model: input.model,
     reasoningEffort: input.reasoningEffort,
-    tools: [FHIR_REQUEST_TOOL],
+    tools: [FHIR_REQUEST_TOOL, SEARCH_DOCUMENTS_TOOL],
   });
 
   const content = readStringParameter(response, 'content');
