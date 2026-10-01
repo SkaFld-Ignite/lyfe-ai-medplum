@@ -1,0 +1,446 @@
+/*
+ * The Lyfe sign-in screen, ported from the old Lyfe app's Tailwind classes (app/login/page.tsx).
+ * Colours are the same HSL values.
+ */
+
+.root {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  overflow-y: auto;
+  background: var(--mantine-color-body);
+
+  @media (min-width: 64em) {
+    grid-template-columns: 1.05fr 1fr;
+  }
+}
+
+/* ---- Left: brand hero ---------------------------------------------------------------------- */
+
+.hero {
+  position: relative;
+  display: none;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+  padding: 40px;
+  color: #fff;
+  background: linear-gradient(to bottom right, hsl(222 47% 14%), hsl(217 91% 22%), hsl(225 78% 36%));
+
+  @media (min-width: 64em) {
+    display: flex;
+  }
+
+  @media (min-width: 80em) {
+    padding: 56px;
+  }
+}
+
+.orbTop,
+.orbBottom,
+.dots,
+.panelOrb,
+.cardOrb,
+.halo {
+  position: absolute;
+  pointer-events: none;
+}
+
+.orbTop {
+  top: -128px;
+  left: -160px;
+  width: 384px;
+  height: 384px;
+  border-radius: 50%;
+  background: linear-gradient(to bottom right, hsl(217 91% 60% / 0.4), hsl(262 73% 64% / 0.2), transparent);
+  filter: blur(64px);
+}
+
+.orbBottom {
+  right: -80px;
+  bottom: -128px;
+  width: 448px;
+  height: 448px;
+  border-radius: 50%;
+  background: linear-gradient(to top right, hsl(173 75% 45% / 0.3), hsl(217 91% 60% / 0.15), transparent);
+  filter: blur(64px);
+}
+
+.dots {
+  inset: 0;
+  opacity: 0.07;
+  background-image: radial-gradient(circle at 1px 1px, white 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+.brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #fff;
+  background: linear-gradient(to bottom right, hsl(217 91% 60%), hsl(220 85% 55%), hsl(225 78% 46%));
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.2),
+    inset 0 0 0 1px rgb(255 255 255 / 0.2);
+
+  &[data-size='lg'] {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+  }
+
+  &[data-size='sm'] {
+    width: 40px;
+    height: 40px;
+    font-size: 16px;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, transparent, rgb(255 255 255 / 0.2));
+  }
+}
+
+.brandName {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.heroBody {
+  position: relative;
+}
+
+.heroPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding: 4px 12px;
+  border: 1px solid rgb(255 255 255 / 0.2);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgb(255 255 255 / 0.8);
+  background: rgb(255 255 255 / 0.05);
+  backdrop-filter: blur(4px);
+}
+
+.heroTitle {
+  margin: 0;
+  font-size: clamp(30px, 3vw, 44px);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.heroText {
+  max-width: 28rem;
+  margin: 16px 0 0;
+  font-size: 16px;
+  line-height: 1.65;
+  color: rgb(255 255 255 / 0.7);
+}
+
+.features {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 32px 0 0;
+  padding: 0;
+  list-style: none;
+
+  & li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+    color: rgb(255 255 255 / 0.85);
+  }
+}
+
+.featureIcon {
+  display: grid;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+  backdrop-filter: blur(4px);
+}
+
+.stats {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 12px;
+  text-align: center;
+  background: rgb(255 255 255 / 0.04);
+  backdrop-filter: blur(4px);
+}
+
+.statValue {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.statLabel {
+  margin: 2px 0 0;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.55);
+}
+
+/* ---- Right: form panel --------------------------------------------------------------------- */
+
+.panel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 24px;
+
+  @media (min-width: 40em) {
+    padding: 32px;
+  }
+}
+
+.panelOrb {
+  top: -128px;
+  right: -128px;
+  width: 384px;
+  height: 384px;
+  border-radius: 50%;
+  background: linear-gradient(to bottom right, hsl(217 91% 60% / 0.12), hsl(262 73% 64% / 0.06), transparent);
+  filter: blur(64px);
+
+  @media (min-width: 64em) {
+    display: none;
+  }
+}
+
+.column {
+  position: relative;
+  width: 100%;
+  max-width: 28rem;
+  animation: fadeInUp 400ms ease-out both;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mobileBrand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 24px;
+
+  @media (min-width: 64em) {
+    display: none;
+  }
+}
+
+.mobileBrandName {
+  font-size: 18px;
+  font-weight: 600;
+  color: light-dark(#0f172a, var(--mantine-color-white));
+}
+
+.cardShell {
+  position: relative;
+}
+
+.halo {
+  inset: -1px;
+  border-radius: 1.4rem;
+  background: linear-gradient(to bottom right, hsl(217 91% 60% / 0.18), transparent, hsl(262 73% 64% / 0.14));
+  opacity: 0.7;
+  filter: blur(6px);
+}
+
+.card {
+  position: relative;
+  overflow: hidden;
+  padding: 24px;
+  border: 1px solid light-dark(rgb(226 232 240 / 0.7), var(--mantine-color-dark-4));
+  border-radius: 1.25rem;
+  background: light-dark(rgb(255 255 255 / 0.85), rgb(26 27 30 / 0.85));
+  box-shadow: 0 30px 60px -30px hsl(220 60% 30% / 0.25);
+  backdrop-filter: blur(24px);
+
+  @media (min-width: 40em) {
+    padding: 32px;
+  }
+}
+
+.cardOrb {
+  top: -96px;
+  right: -96px;
+  width: 224px;
+  height: 224px;
+  border-radius: 50%;
+  background: linear-gradient(to bottom right, hsl(217 91% 60% / 0.1), hsl(262 73% 64% / 0.06), transparent);
+  filter: blur(64px);
+}
+
+.heading {
+  /* Medplum centres its form header; the Lyfe heading spans the card. */
+  align-self: stretch;
+  width: 100%;
+  margin-bottom: 24px;
+  text-align: center;
+
+  @media (min-width: 64em) {
+    text-align: left;
+  }
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 2px 10px;
+  border: 1px solid light-dark(rgb(226 232 240 / 0.6), var(--mantine-color-dark-4));
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #64748b;
+  background: light-dark(rgb(241 245 249 / 0.4), var(--mantine-color-dark-6));
+}
+
+.eyebrowIcon {
+  color: hsl(262 73% 64%);
+}
+
+.title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: light-dark(#0f172a, var(--mantine-color-white));
+
+  @media (min-width: 40em) {
+    font-size: 28px;
+  }
+}
+
+.subtitle {
+  margin-top: 6px;
+  font-size: 14px;
+  color: #64748b;
+}
+
+.secure {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 20px 0 0;
+  font-size: 12px;
+  color: #64748b;
+
+  @media (min-width: 64em) {
+    justify-content: flex-start;
+  }
+}
+
+.secureIcon {
+  color: hsl(152 64% 38%);
+}
+
+/*
+ * Medplum's auth forms draw their own bordered card; inside the Lyfe card that frame is removed so
+ * only the fields show, and the fields take Lyfe's input and button sizes.
+ */
+.formSlot {
+  position: relative;
+
+  & > :global(.mantine-Container-root) {
+    max-width: none;
+    padding: 0;
+  }
+
+  & > :global(.mantine-Container-root) > :global(.mantine-Paper-root) {
+    width: auto !important;
+    max-width: none;
+    margin: 0;
+    padding: 0 !important;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  & :global(.mantine-InputWrapper-label) {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: light-dark(#334155, var(--mantine-color-gray-3));
+  }
+
+  & :global(.mantine-Input-input) {
+    height: 44px;
+    border-color: light-dark(#e2e8f0, var(--mantine-color-dark-4));
+    border-radius: 10px;
+    font-size: 14px;
+    background: var(--mantine-color-body);
+
+    &:focus,
+    &:focus-within {
+      border-color: #60a5fa;
+      box-shadow: 0 0 0 3px #dbeafe;
+    }
+  }
+
+  & :global(.mantine-Button-root) {
+    height: 44px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  & :global(.mantine-Button-root[data-variant='filled']) {
+    background: #2563eb;
+
+    &:hover {
+      background: #1d4ed8;
+    }
+  }
+}

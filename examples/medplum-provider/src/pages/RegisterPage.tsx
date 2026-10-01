@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Alert, Title } from '@mantine/core';
+import { Alert } from '@mantine/core';
 import { Document, RegisterForm, useMedplum } from '@medplum/react';
 import { IconAlertCircle } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
-import { LyfeLogo } from '../components/brand/LyfeLogo';
+import { LyfeAuthHeading, LyfeAuthLayout } from '../components/auth/LyfeAuthLayout';
 
 export function RegisterPage(): JSX.Element | null {
   const medplum = useMedplum();
@@ -30,23 +30,22 @@ export function RegisterPage(): JSX.Element | null {
   }
 
   return (
-    <RegisterForm
-      type="project"
-      projectId="new"
-      onSuccess={() => {
-        // Use window.location.href to force a reload
-        // Otherwise we get caught in a React render loop
-        window.location.href = '/';
-      }}
-      googleClientId={import.meta.env.GOOGLE_CLIENT_ID}
-      recaptchaSiteKey={import.meta.env.RECAPTCHA_SITE_KEY}
-      login={searchParams.get('login') || undefined}
-      onSignIn={() => navigate('/signin')?.catch(console.error)}
-    >
-      <LyfeLogo size={32} />
-      <Title order={3} py="lg">
-        Register a new Provider account
-      </Title>
-    </RegisterForm>
+    <LyfeAuthLayout>
+      <RegisterForm
+        type="project"
+        projectId="new"
+        onSuccess={() => {
+          // Use window.location.href to force a reload
+          // Otherwise we get caught in a React render loop
+          window.location.href = '/';
+        }}
+        googleClientId={import.meta.env.GOOGLE_CLIENT_ID}
+        recaptchaSiteKey={import.meta.env.RECAPTCHA_SITE_KEY}
+        login={searchParams.get('login') || undefined}
+        onSignIn={() => navigate('/signin')?.catch(console.error)}
+      >
+        <LyfeAuthHeading eyebrow="Register" title="Create your account" subtitle="Register a new Provider account" />
+      </RegisterForm>
+    </LyfeAuthLayout>
   );
 }

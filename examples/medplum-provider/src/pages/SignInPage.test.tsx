@@ -30,7 +30,7 @@ describe('SignInPage', () => {
   });
 
   function expectSigninPageRendered(): void {
-    expect(screen.getByText('Sign in to LyfeAI')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Welcome back' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
   }
 
