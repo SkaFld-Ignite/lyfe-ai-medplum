@@ -193,7 +193,20 @@ export async function failTask(
   const current = await withMedplum429Retry(() => medplum.readResource('Task', taskId), 'failTask read');
   // A failure the bot recorded names what actually broke inside the import.
   // This one only knows what escaped the step, so it must not overwrite it.
-  if (current.status === FAILED) {
+  //
+  // `completed` is guarded for a different and less obvious reason. Every
+  // function here closes its Task and *then* hands off to the next stage with
+  // `step.sendEvent`. A hand-off that cannot be delivered throws into the
+  // function's catch, which lands here — and without this guard the import or
+  // index run that genuinely succeeded would be restated as failed because the
+  // stage *after* it could not be started. That is the one thing this chain
+  // must never do: a chart that imported perfectly, or an index that was
+  // written, stays reported as such, and the undelivered hand-off shows up
+  // where it belongs, as a failed run in Inngest that an operator can replay.
+  //
+  // Nothing in this worker legitimately fails a Task it has already completed:
+  // completion is always the last meaningful act of a run.
+  if (current.status === FAILED || current.status === 'completed') {
     return;
   }
   const statusReason: CodeableConcept = {

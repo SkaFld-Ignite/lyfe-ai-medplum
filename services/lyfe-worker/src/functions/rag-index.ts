@@ -78,7 +78,50 @@ export const ragIndex = inngest.createFunction(
   { event: 'lyfe/rag.ingest.requested' },
   async ({ event, step, runId, logger }) => {
     const { organizationId, requester, patientId, taskId: callerTaskId, batchId } = event.data;
+
+    /**
+     * Ask for this patient's AI summary.
+     *
+     * Sent from every terminal path of this function, including the ones that
+     * indexed nothing, because the summary does not depend on the index being
+     * useful — it is written from structured FHIR, and document excerpts are an
+     * additional context block that is currently empty either way. A patient
+     * with no documents, or whose indexing failed, still has conditions,
+     * medications, labs and encounters worth summarising, and withholding the
+     * summary because a derived index came back empty would be the chain
+     * punishing the patient for the infrastructure.
+     *
+     * Its own event, fire-and-forget. One model call failing must not mark an
+     * index run that succeeded as failed, and the two have to be retriable
+     * independently. Debounced on the patient at the other end, so the
+     * chart-driven and network-driven index completions produce one summary
+     * rather than two — see `functions/patient-summary.ts`.
+     *
+     * Sent after the Task is closed, on both the empty and the indexed path.
+     * `step.sendEvent` can itself fail, and when it does the error lands in the
+     * `catch` below — which is deliberate rather than tolerated: an undelivered
+     * hand-off is a real failure and should show as a red run an operator can
+     * replay, not vanish into a log line. What it must *not* do is restate a
+     * finished index run as a failed one, and that is `failTask`'s job to
+     * refuse; see its guard in `task.ts`.
+     * @param id - Step id; distinct per call site so replay stays deterministic.
+     * @param why - What asked for it, for the log.
+     * @returns Resolves once the event is accepted.
+     */
+    const requestSummary = async (id: string, why: string): Promise<unknown> =>
+      step.sendEvent(id, {
+        name: 'lyfe/summary.generate.requested',
+        data: { organizationId, requester, patientId, reason: why, batchId },
+      });
+
     if (!isRagConfigured()) {
+      // The chain is forwarded before this run gives up. A worker deployed
+      // without `RAG_DATABASE_URL` still runs the importers — RAG is an
+      // addition to this service, not a precondition for it — and if the
+      // summary hung off the index being configured, such a deployment would
+      // silently produce no summaries at all. The summary needs Medplum and
+      // `$ai`, neither of which is this variable.
+      await requestSummary('request-summary-unconfigured', 'index-unavailable');
       // Not retryable: no number of attempts adds an environment variable.
       throw new NonRetriableError(
         'RAG_DATABASE_URL is not set on this worker, so there is no index to write to. ' +
@@ -132,7 +175,12 @@ export const ragIndex = inngest.createFunction(
       );
 
       if (documents.length === 0) {
+        // Completed, not failed. A patient with no documents is an ordinary
+        // patient — a new intake, a chart whose attachments live only in the
+        // outside record — and reporting that as an error would put a red row
+        // on the Imports page for a run that did exactly what it should.
         await step.run('complete-empty', () => completeTask(medplum, taskId, {}));
+        await requestSummary('request-summary-empty', 'no-documents');
         return { patientId, documents: 0, indexed: 0, skipped: 0, failed: 0, chunks: 0 };
       }
 
@@ -176,6 +224,17 @@ export const ragIndex = inngest.createFunction(
         })
       );
 
+      // The index is current, so the summary can be written over the most
+      // complete chart this patient has had. This is the ordering the platform
+      // this was ported from used, and it is kept for a reason that is about to
+      // matter rather than one that already does: the summary prompt has a
+      // RECENT DOCUMENTS block (the DOCUMENT CONTEXT SEAM in
+      // `shared/ai-summary-prompt.ts`) which is still fed an empty list, so
+      // today the order changes nothing the model sees. The moment that seam is
+      // wired to this index, the order is what makes the summary able to quote a
+      // scanned referral — and nothing in the chain has to change for it.
+      await requestSummary('request-summary', 'documents-indexed');
+
       return {
         patientId,
         documents: documents.length,
@@ -188,6 +247,13 @@ export const ragIndex = inngest.createFunction(
           failTask(medplum, taskId, classify(err), err instanceof Error ? err.message : String(err))
         )
         .catch(() => undefined);
+      // Asked for even here. Reached only once a step has exhausted its
+      // retries, so indexing really is over for this run — but a dead pgvector
+      // connection or a Textract outage says nothing about whether the chart is
+      // summarisable, and it is read from Medplum, not from this index. A RAG
+      // failure costing the patient their summary as well would be one outage
+      // doing double damage.
+      await requestSummary('request-summary-failed', 'index-failed');
       throw err;
     }
   }

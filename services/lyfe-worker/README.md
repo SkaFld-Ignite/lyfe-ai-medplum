@@ -1,7 +1,8 @@
 # lyfe-worker
 
-Runs Lyfe's DrChrono and Zus imports, and the document RAG index, as Inngest
-functions.
+Runs Lyfe's DrChrono and Zus imports, the document RAG index, and the AI
+patient summary as Inngest functions — chained, so importing a patient indexes
+their documents and writes their summary without anyone asking for either.
 
 ## Why this exists
 
@@ -38,6 +39,57 @@ Neither replaces the other, so every run writes both, and they are cross-linked:
 
 Without that link you have two dashboards and no way between them.
 
+## The chain runs itself
+
+Importing a patient is one action, not four. Nobody clicks "index documents"
+and nobody clicks "generate summary":
+
+```
+POST /api/imports/bulk
+        │
+        ▼
+lyfe/chart.import.requested ──▶ drchrono-chart-import
+                                   ├──▶ lyfe/zus.import.requested ──▶ zus-record-import
+                                   │                                     │ (wrote something)
+                                   │                                     ▼
+                                   └──▶ lyfe/rag.ingest.requested ◀──────┘
+                                                 │
+                                                 ▼
+                                        rag-document-index
+                                                 │
+                                                 ▼
+                                   lyfe/summary.generate.requested
+                                                 │
+                                                 ▼
+                                        patient-ai-summary  (debounced 10m per patient)
+```
+
+Three properties hold this together, and each is there because its absence was
+a real failure somewhere:
+
+- **Every link is an event, never an inline call.** A stage hands off with
+  `step.sendEvent` and returns, so a failure downstream can never reach back
+  and mark the stage before it as failed. A chart that imported perfectly is
+  reported as imported, whatever the indexer or the model does afterwards.
+- **Indexing happens twice per patient, on purpose.** Once when the chart
+  lands, once when the network record does — and most documents come from the
+  network, which for a fresh enrolment arrives on the 30m/2h/6h ladder, hours
+  later. Re-ingest _replaces_ a document's chunks rather than appending them,
+  so the second run converges on the same index plus whatever arrived.
+- **The summary is debounced on the patient**, 10 minutes with a 30-minute
+  ceiling, so the two index completions of one import cost one model call
+  rather than two. Inngest's own `debounce`, not a lock of ours — see
+  `src/functions/patient-summary.ts` for why that number.
+
+Nothing in the chain treats "empty" as "failed". A patient with no documents
+closes its index Task as complete and still gets a summary, because the summary
+is written from structured FHIR and documents are additional context. A summary
+that cannot be produced leaves the chart with no summary yet; it never leaves an
+import marked failed.
+
+A **backfill** is still an operator's decision, and still `POST /api/rag/ingest`
+below. What is automatic is the patient who just imported.
+
 ## Running it locally
 
 ```bash
@@ -60,6 +112,10 @@ emits `lyfe/zus.import.requested` for that patient. Whether the patient may be
 enrolled is decided inside the importer from the office their encounters are at
 (the Directory page's Zus column), and an ineligible one closes as skipped.
 
+Neither is the index, and neither is the summary. That one event is the whole
+import: expect four runs per patient in the dev server — the chart, the Zus
+pull, the index, and the summary ten minutes behind it.
+
 ## Required: the worker's client must be org-scoped
 
 The worker authenticates as a `ClientApplication`. A machine client has no
@@ -81,8 +137,10 @@ check looks for the parameter, not for privilege.
 
 ## Document RAG
 
-The third function indexes a patient's `DocumentReference`s so the AI can
-answer from the documents, not just the structured chart.
+`rag-document-index` indexes a patient's `DocumentReference`s so the AI can
+answer from the documents, not just the structured chart. It runs on its own
+whenever a patient is imported — see "The chain runs itself" — and the endpoints
+below are for backfills and for re-indexing on demand.
 
 ### It lives here because Medplum cannot host it
 

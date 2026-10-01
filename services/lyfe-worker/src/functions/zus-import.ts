@@ -95,6 +95,12 @@ export const zusImport = inngest.createFunction(
         // Ineligible is not a failure: the office may simply not be enrolled in
         // Zus, which is a configuration choice. It closes the Task as complete
         // with the reason, rather than as an error someone has to triage.
+        //
+        // No index request from here either. A refused pull wrote nothing, so
+        // there is nothing new to index — and the chart import has already had
+        // this patient's own documents indexed, with a summary behind them. A
+        // request here would re-extract and re-embed every document to discover
+        // that none of them changed.
         const message = 'error' in result ? String(result.error) : 'Zus import failed';
         await step.run('close-skipped', () => setPhase(medplum, taskId, `skipped — ${message}`));
         await step.run('complete-skipped', () => completeTask(medplum, taskId, {}));
@@ -105,6 +111,33 @@ export const zusImport = inngest.createFunction(
       await step.run('complete-task', () =>
         withStepTimeout('complete-task', () => completeTask(medplum, taskId, counts))
       );
+
+      // The network half of the chain, and the half that matters most.
+      //
+      // Most of a patient's documents arrive here rather than from DrChrono —
+      // the outside record is where the discharge summaries, the referral
+      // letters and the imaging reports live. And it can arrive *hours* after
+      // the chart: a fresh enrolment waits on the 30m/2h/6h ladder above, so an
+      // index built when the chart landed describes a record that has since
+      // grown. Re-indexing is how it catches up, and it is idempotent — a
+      // document's chunks are replaced, never appended — so the second run
+      // converges on the same index plus whatever the network added.
+      //
+      // Gated on something having actually been written. An empty result means
+      // the networks returned nothing for this patient, in which case there is
+      // no new document to index and re-running the whole extraction to confirm
+      // that would be paid for in Textract and Bedrock calls.
+      //
+      // Fire-and-forget, as its own event, for the same reason `request-zus`
+      // is: a failure in the indexer must never reach back and mark a network
+      // pull that succeeded as failed.
+      if (total(result) > 0) {
+        await step.sendEvent('request-index', {
+          name: 'lyfe/rag.ingest.requested',
+          data: { organizationId, requester, patientId: medplumPatientId, batchId },
+        });
+      }
+
       return { counts, empty: total(result) === 0 };
     } catch (err) {
       // Reached only once the step has exhausted its retries, so the Task is

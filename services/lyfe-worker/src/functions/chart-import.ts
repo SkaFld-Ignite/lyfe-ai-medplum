@@ -125,6 +125,30 @@ export const chartImport = inngest.createFunction(
         data: { organizationId, requester, medplumPatientId: patientId, batchId },
       });
 
+      // And the documents are indexed, on the same terms and for the same
+      // reason: nobody imports a chart and then wants its documents left
+      // unsearchable. This used to need a separate call to
+      // `POST /api/rag/ingest`, which meant the normal outcome of an import was
+      // a patient whose scanned referrals and discharge summaries the assistant
+      // could not read. Indexing is also what pulls the AI summary along behind
+      // it — see `functions/patient-summary.ts` — so this one event is what
+      // makes the whole chain automatic.
+      //
+      // Sent **after** `request-zus` rather than before it, so the step
+      // sequence of a run already in flight when this deployed is unchanged.
+      //
+      // `taskId` is deliberately not passed. The field exists so a caller that
+      // already opened a Task can have the indexer adopt it instead of opening
+      // a second one — but the Task here belongs to the *chart import*, and an
+      // indexer adopting it would re-close a finished run with document counts
+      // in place of the chart's own. Omitting it lets the index run open its
+      // own `rag-index` Task, which is a different unit of work and belongs on
+      // its own row.
+      await step.sendEvent('request-index', {
+        name: 'lyfe/rag.ingest.requested',
+        data: { organizationId, requester, patientId, batchId },
+      });
+
       return { patientId, counts };
     } catch (err) {
       // Reached only once the step has exhausted its retries, so the Task is
