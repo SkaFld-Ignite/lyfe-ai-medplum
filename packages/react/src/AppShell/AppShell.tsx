@@ -38,10 +38,20 @@ export interface AppShellProps {
   readonly showLayoutVersionToggle?: boolean;
   readonly spotlightPatientsOnly?: boolean;
   readonly spotlightActions?: SpotlightLinkAction[];
+  /**
+   * Controlled navbar state. When set, the app decides whether the navbar is open (e.g. to close
+   * it on pages that need the width) and `onNavbarOpenChange` receives the user's toggles. When
+   * omitted, the shell manages the state itself, remembered in localStorage.
+   */
+  readonly navbarOpen?: boolean;
+  /** Called when the user opens or closes the navbar. */
+  readonly onNavbarOpenChange?: (open: boolean) => void;
 }
 
 export function AppShell(props: AppShellProps): JSX.Element {
-  const [navbarOpen, setNavbarOpen] = useState(localStorage['navbarOpen'] === 'true');
+  const [internalNavbarOpen, setInternalNavbarOpen] = useState(localStorage['navbarOpen'] === 'true');
+  const navbarControlled = props.navbarOpen !== undefined;
+  const navbarOpen = navbarControlled ? Boolean(props.navbarOpen) : internalNavbarOpen;
   const [layoutVersion] = useState(
     props.layoutVersion ?? (localStorage['appShellLayoutVersion'] as 'v1' | 'v2' | undefined) ?? 'v1'
   );
@@ -63,7 +73,10 @@ export function AppShell(props: AppShellProps): JSX.Element {
 
   function setNavbarOpenWrapper(open: boolean): void {
     localStorage['navbarOpen'] = open.toString();
-    setNavbarOpen(open);
+    if (!navbarControlled) {
+      setInternalNavbarOpen(open);
+    }
+    props.onNavbarOpenChange?.(open);
   }
 
   function dismissAnnouncement(announcement: AppShellAnnouncement): void {
