@@ -14,7 +14,8 @@
     "backfill:compartments": "node --env-file=.env --experimental-strip-types scripts/backfill-compartments.ts",
     "deploy:bots": "node --env-file=.env --experimental-strip-types bots/deploy.ts",
     "setup:tenancy": "node --env-file=.env --experimental-strip-types scripts/setup-tenancy.ts",
-    "seed:credential-key": "node --env-file=.env --experimental-strip-types scripts/seed-credential-key.ts"
+    "seed:credential-key": "node --env-file=.env --experimental-strip-types scripts/seed-credential-key.ts",
+    "seed:spaces-prompts": "node --env-file=.env --experimental-strip-types scripts/seed-spaces-prompts.ts"
   },
   "prettier": {
     "plugins": [

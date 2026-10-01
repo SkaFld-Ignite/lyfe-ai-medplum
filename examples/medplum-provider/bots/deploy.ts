@@ -25,12 +25,37 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Identifier system used to find a bot again on re-deploy. */
 const BOT_IDENTIFIER_SYSTEM = 'https://lyfe.health/bots';
 
+/**
+ * Medplum's own bot identifier system.
+ *
+ * The Provider UI resolves the three Spaces bots through it — `medplum.executeBot({ system, value
+ * })` and `Bot/$execute?identifier=<system>|<value>` — so every value under it is a contract with
+ * `src/utils/spaceMessaging.ts`, not a label. A typo here does not fail a deploy; it fails every
+ * Spaces turn, with a 404 the chat reports as a generic error.
+ */
+const MEDPLUM_BOT_IDENTIFIER_SYSTEM = 'https://www.medplum.com/bots';
+
 interface BotDefinition {
   readonly name: string;
   readonly description: string;
   readonly source: string;
   /** Seconds. The 10s default is too tight for a bulk preview. */
   readonly timeout: number;
+  /**
+   * Extra identifiers to carry alongside the deploy key, for a bot that something else looks up by
+   * identifier. This manifest is the source of truth: on re-deploy the identifier list is written
+   * as declared here, so an identifier added by hand in the Medplum app is removed again.
+   */
+  readonly identifiers?: readonly { readonly system: string; readonly value: string }[];
+  /**
+   * Whether `Bot/$execute` may answer this bot with Server-Sent Events.
+   *
+   * Without it the server ignores `Accept: text/event-stream`, never builds a `responseStream`, and
+   * the bot has no choice but to buffer the whole answer and return it in one piece. The chat still
+   * works — `sendToBotStreaming` reads a buffered `Parameters` when the content type is not SSE —
+   * but the narration lands all at once after a long pause instead of word by word.
+   */
+  readonly streamingEnabled?: boolean;
 }
 
 const BOTS: BotDefinition[] = [
@@ -67,6 +92,42 @@ const BOTS: BotDefinition[] = [
     description: 'Per-tenant DrChrono/ZUS credential storage: save, status and test.',
     source: 'lyfe-integrations.ts',
     timeout: 60,
+  },
+  // The three Spaces bots. Their names are the identifier values the Provider UI looks them up by
+  // rather than `lyfe-`-prefixed ones: the value is fixed by the UI either way, and using it as the
+  // deploy key too means there is one string per bot instead of two to keep in step.
+  {
+    name: 'ai-fhir-request-tools',
+    description: 'Spaces translator: turns a conversation into fhir_request tool calls.',
+    source: 'ai-fhir-request-tools.ts',
+    identifiers: [{ system: MEDPLUM_BOT_IDENTIFIER_SYSTEM, value: 'ai-fhir-request-tools' }],
+    // One OpenAI call, but with reasoning effort up to `xhigh` over a history that grows with every
+    // loop iteration. The 10s default would cut off the later iterations of exactly the multi-hop
+    // questions the loop exists for.
+    timeout: 300,
+  },
+  {
+    name: 'ai-resource-summary-sse',
+    description: 'Spaces summary: streams a plain-language narration of the resources the loop fetched.',
+    source: 'ai-resource-summary-sse.ts',
+    identifiers: [
+      { system: MEDPLUM_BOT_IDENTIFIER_SYSTEM, value: 'ai-resource-summary-sse' },
+      // `spaceMessaging.ts` falls back to a bot called `ai-resource-summary` when the caller passes
+      // no `onStreamChunk`. The shipping UI always passes one, so this never fires today, but a
+      // second identifier on the same Bot is cheaper than the 404 it would otherwise be — the bot
+      // already answers both ways, and `executeBot` does not ask for SSE, so that path buffers.
+      { system: MEDPLUM_BOT_IDENTIFIER_SYSTEM, value: 'ai-resource-summary' },
+    ],
+    streamingEnabled: true,
+    timeout: 300,
+  },
+  {
+    name: 'ai-component-generator-sse',
+    description: 'Spaces visualizer: streams a Recharts/Mantine Chart() component for the resolved resources.',
+    source: 'ai-component-generator-sse.ts',
+    identifiers: [{ system: MEDPLUM_BOT_IDENTIFIER_SYSTEM, value: 'ai-component-generator-sse' }],
+    streamingEnabled: true,
+    timeout: 300,
   },
 ];
 
@@ -167,11 +228,22 @@ async function main(): Promise<void> {
 
   for (const def of BOTS) {
     const code = await bundle(def.source);
-    const identifier = [{ system: BOT_IDENTIFIER_SYSTEM, value: def.name }];
+    const identifier = [{ system: BOT_IDENTIFIER_SYSTEM, value: def.name }, ...(def.identifiers ?? [])];
+    const streamingEnabled = def.streamingEnabled ?? false;
 
     let bot = await medplum.searchOne('Bot', `identifier=${BOT_IDENTIFIER_SYSTEM}|${def.name}`);
     if (bot) {
-      bot = await medplum.updateResource<Bot>({ ...bot, description: def.description, timeout: def.timeout, code });
+      // `identifier` and `streamingEnabled` are rewritten on every deploy, not only on create.
+      // Without that, adding either to a bot already in the project would need a hand edit in the
+      // Medplum app, and the manifest would stop describing what is actually deployed.
+      bot = await medplum.updateResource<Bot>({
+        ...bot,
+        identifier,
+        description: def.description,
+        timeout: def.timeout,
+        streamingEnabled,
+        code,
+      });
       console.log(`  updated ${def.name} (${bot.id})`);
     } else {
       bot = await medplum.createResource<Bot>({
@@ -181,6 +253,7 @@ async function main(): Promise<void> {
         description: def.description,
         runtimeVersion: 'vmcontext',
         timeout: def.timeout,
+        streamingEnabled,
         code,
       });
       console.log(`  created ${def.name} (${bot.id})`);
