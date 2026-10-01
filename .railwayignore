@@ -10,10 +10,9 @@
 
 node_modules/
 **/node_modules/
-dist/
-**/dist/
-build/
-**/build/
+# NOT dist/: the worker imports @medplum/core and @medplum/fhirtypes as
+# workspace packages, and resolves them to their built output. Excluding dist
+# uploads a context the Dockerfile cannot build from.
 .turbo/
 **/.turbo/
 coverage/
@@ -23,6 +22,9 @@ coverage/
 # Documentation, the web apps and the other example projects are not part of
 # the worker image.
 docs/
+packages/docs/
+packages/storybook/
+packages/definitions/
 examples/foomedical/
 examples/medplum-chart-demo/
 examples/medplum-client-external-idp-demo/
@@ -48,7 +50,6 @@ examples/medplum-websocket-subscriptions-demo/
 # The worker needs the provider's bots, not its frontend.
 examples/medplum-provider/src/
 examples/medplum-provider/public/
-examples/medplum-provider/dist/
 
 *.log
 .DS_Store
