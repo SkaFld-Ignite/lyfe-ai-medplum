@@ -1,0 +1,97 @@
+/* Pre-visit and post-visit encounter summary card.
+
+   Deliberately small. The card's shell — narrative block, two-column block grid,
+   row, badge, footer and citation chip — is `patient-overview/AiSummary.module.css`,
+   imported rather than copied, because prod's `EncounterCard` summary views and
+   its `AIPatientSummaryCard` were the same shadcn vocabulary at the same sizes.
+   What is here is only what the encounter views had and the patient card did not:
+   the per-item tints, the two badges, and the pull-into-note footer row.
+
+   Colours are the same Tailwind palette values prod's two views used, written out
+   as hex the way the imported module already does. */
+
+/* ---- Per-item tint ---------------------------------------------------------------------------- */
+
+/* Prod coloured two lists per item, with the same three-step scale under two
+   names: prep-item `priority` high/medium/low (inline `borderLeftColor` +
+   `backgroundColor`) and key-finding `significance` critical/abnormal/normal
+   (`border-l-red-500 bg-red-50` and friends). One attribute serves both, since
+   the tiers line up exactly: red-500/red-50, yellow-500/yellow-50,
+   green-500/green-50. A row whose qualifier is none of the six renders untinted
+   rather than guessing a tier. */
+.tinted {
+  border-left: 3px solid transparent;
+
+  &[data-tone='high'],
+  &[data-tone='critical'] {
+    border-left-color: #ef4444;
+    background: #fef2f2;
+  }
+
+  &[data-tone='medium'],
+  &[data-tone='abnormal'] {
+    border-left-color: #eab308;
+    background: #fefce8;
+  }
+
+  &[data-tone='low'],
+  &[data-tone='normal'] {
+    border-left-color: #22c55e;
+    background: #f0fdf4;
+  }
+}
+
+/* Prod's Unresolved list: an amber-bordered card rather than a tinted left bar,
+   because an unresolved item is a state of the whole row, not a severity tier. */
+.amber {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+/* ---- Badges ----------------------------------------------------------------------------------- */
+
+.pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  align-self: flex-start;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Recent-changes significance. Prod used shadcn's `destructive` for "notable"
+   and `secondary` for "routine". */
+.changePill {
+  color: #475569;
+  background: #f1f5f9;
+  box-shadow: 0 0 0 1px #e2e8f0;
+
+  &[data-tone='notable'] {
+    color: #be123c;
+    background: #fff1f2;
+    box-shadow: 0 0 0 1px #fecdd3;
+  }
+}
+
+/* Follow-up timeframe. Prod used shadcn's `outline` variant: no fill, just a border. */
+.timeframePill {
+  color: #475569;
+  background: transparent;
+  box-shadow: 0 0 0 1px light-dark(#cbd5e1, var(--mantine-color-dark-3));
+}
+
+/* ---- Footer ----------------------------------------------------------------------------------- */
+
+/* Prod's footer was a bordered row with the action on the left and the generation
+   time on the right; the imported `.footer` has only the right-hand half. */
+.footerRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
