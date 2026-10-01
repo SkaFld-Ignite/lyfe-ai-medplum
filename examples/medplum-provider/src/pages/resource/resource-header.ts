@@ -8,7 +8,6 @@ export const PATIENT_SECTIONS: Partial<Record<string, { url: string; label: stri
   AllergyIntolerance: { url: 'allergies', label: 'Allergies' },
   CarePlan: { url: 'careplans', label: 'Care Plans' },
   Condition: { url: 'conditions', label: 'Conditions' },
-  Device: { url: 'devices', label: 'Devices' },
   Encounter: { url: 'Encounter', label: 'Encounters' },
   Immunization: { url: 'immunizations', label: 'Immunizations' },
   Observation: { url: 'vitals', label: 'Vitals' },

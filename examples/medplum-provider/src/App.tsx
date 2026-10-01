@@ -1,20 +1,16 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { useDisclosure } from '@mantine/hooks';
-import { getReferenceString } from '@medplum/core';
 import { useDoseSpotNotifications } from '@medplum/dosespot-react';
 import type { SpotlightLinkAction } from '@medplum/react';
 import { AppShell, Loading, useMedplum, useMedplumProfile } from '@medplum/react';
 import {
   IconActivity,
   IconApps,
-  IconBook2,
   IconBuildingHospital,
   IconCalendarEvent,
-  IconClipboardCheck,
-  IconMail,
+  IconLayoutDashboard,
   IconPill,
-  IconPrinter,
   IconReceipt2,
   IconSettingsAutomation,
   IconUserPlus,
@@ -33,9 +29,9 @@ import { ScriptSurePracticeProvider } from './scriptsure/ScriptSurePractice';
 const SETUP_DISMISSED_KEY = 'medplum-provider-setup-completed';
 const PROVIDER_HIDE_GET_STARTED_SETTING = 'hideGetStarted';
 
+import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { LyfeDirectoryPage } from './pages/directory/LyfeDirectoryPage';
 import { EncountersPage } from './pages/encounter/EncountersPage';
-import { FaxPage } from './pages/fax/FaxPage';
 import { GetStartedPage } from './pages/getstarted/GetStartedPage';
 import { LyfeImportMonitorPage } from './pages/imports/LyfeImportMonitorPage';
 import { DoseSpotFavoritesPage } from './pages/integrations/DoseSpotFavoritesPage';
@@ -43,9 +39,7 @@ import { DoseSpotNotificationsPage } from './pages/integrations/DoseSpotNotifica
 import { DrChronoCallbackPage } from './pages/integrations/DrChronoCallbackPage';
 import { LyfeIntegrationsPage } from './pages/integrations/LyfeIntegrationsPage';
 import { ScriptSurePage } from './pages/integrations/ScriptSurePage';
-import { MessagesPage } from './pages/messages/MessagesPage';
 import { LyfeOnboardingPage } from './pages/onboarding/LyfeOnboardingPage';
-import { CommunicationTab } from './pages/patient/CommunicationTab';
 import { CoveragePage } from './pages/patient/CoveragePage';
 import { DocumentsPage } from './pages/patient/DocumentsPage';
 import { DoseSpotTab } from './pages/patient/DoseSpotTab';
@@ -63,7 +57,6 @@ import { AllergiesTab } from './pages/patient/sections/AllergiesTab';
 import { CarePlansTab } from './pages/patient/sections/CarePlansTab';
 import { ConditionsTab } from './pages/patient/sections/ConditionsTab';
 import { DemographicsTab } from './pages/patient/sections/DemographicsTab';
-import { DevicesTab } from './pages/patient/sections/DevicesTab';
 import { ImmunizationsTab } from './pages/patient/sections/ImmunizationsTab';
 import { LabsTab } from './pages/patient/sections/LabsTab';
 import { VitalsTab } from './pages/patient/sections/VitalsTab';
@@ -86,8 +79,6 @@ import { SignInPage } from './pages/SignInPage';
 import { SmartHealthLinkImportModal } from './pages/smart/SmartHealthLinkImportModal';
 import { SmartHealthLinkImportPage } from './pages/smart/SmartHealthLinkImportPage';
 import { SmartLogo } from './pages/smart/SmartLogo';
-import { SpacesPage } from './pages/spaces/SpacesPage';
-import { TasksPage } from './pages/tasks/TasksPage';
 
 export function App(): JSX.Element | null {
   const medplum = useMedplum();
@@ -131,24 +122,6 @@ export function App(): JSX.Element | null {
       label: 'New Patient Intake',
       leftSection: <IconUserPlus size={16} color="var(--mantine-color-dimmed)" />,
     },
-    {
-      id: 'action-new-message',
-      href: '/Communication/new',
-      label: 'New Message',
-      leftSection: <IconMail size={16} color="var(--mantine-color-dimmed)" />,
-    },
-    {
-      id: 'action-new-task',
-      href: '/Task/new',
-      label: 'New Task',
-      leftSection: <IconClipboardCheck size={16} color="var(--mantine-color-dimmed)" />,
-    },
-    {
-      id: 'action-send-fax',
-      href: '/Fax/Communication/new',
-      label: 'Send a Fax',
-      leftSection: <IconPrinter size={16} color="var(--mantine-color-dimmed)" />,
-    },
   ];
 
   if (medplum.isLoading()) {
@@ -169,35 +142,13 @@ export function App(): JSX.Element | null {
           ? [
               {
                 links: [
-                  { icon: <IconBook2 />, label: 'Spaces', href: '/Spaces/Communication' },
+                  { icon: <IconLayoutDashboard />, label: 'Dashboard', href: '/' },
                   {
                     icon: <IconUsers />,
                     label: 'Patients',
                     href: '/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated',
                   },
                   { icon: <IconCalendarEvent />, label: 'Scheduling', href: '/scheduling' },
-                  {
-                    icon: <IconMail />,
-                    label: 'Messages',
-                    href: `/Communication?status=in-progress`,
-                    notificationCount: {
-                      resourceType: 'Communication',
-                      countCriteria:
-                        'status=in-progress&_has:Communication:part-of:_id:not=null&identifier:not=ai-message-topic&_summary=count',
-                      subscriptionCriteria: `Communication?status=in-progress&_has:Communication:part-of:_id:not=null&identifier:not=ai-message-topic`,
-                    },
-                  },
-                  {
-                    icon: <IconClipboardCheck />,
-                    label: 'Tasks',
-                    href: `/Task?owner=${getReferenceString(profile)}&_sort=-_lastUpdated&status=requested,ready,received,accepted,in-progress,draft`,
-                    notificationCount: {
-                      resourceType: 'Task',
-                      countCriteria: `owner=${getReferenceString(profile)}&status=requested,ready,received,accepted,in-progress,draft&_summary=count`,
-                      subscriptionCriteria: `Task?owner=${getReferenceString(profile)}&status=requested,ready,received,accepted,in-progress,draft`,
-                    },
-                  },
-                  { icon: <IconPrinter />, label: 'Faxes', href: '/Fax/Communication' },
                 ],
               },
               {
@@ -254,30 +205,12 @@ export function App(): JSX.Element | null {
           {profile ? (
             <>
               <Route path="/getstarted" element={<GetStartedPage />} />
-              <Route path="/Spaces/Communication" element={<SpacesPage />}>
-                <Route index element={<SpacesPage />} />
-                <Route path=":topicId" element={<SpacesPage />} />
-              </Route>
-              <Route
-                path="/"
-                element={
-                  <Navigate
-                    to={
-                      setupDismissed
-                        ? '/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated'
-                        : '/getstarted'
-                    }
-                    replace
-                  />
-                }
-              />
+              <Route path="/" element={<DashboardPage />} />
               <Route path="/Patient/new" element={<ResourceCreatePage />} />
               <Route path="/Patient/:patientId" element={<PatientPage />}>
                 <Route path="Encounter" element={<EncountersPage />} />
                 <Route path="Encounter/:encounterId/Task?/:taskId?" element={<EncountersPage />} />
                 <Route path="edit" element={<EditTab />} />
-                <Route path="Communication" element={<CommunicationTab />} />
-                <Route path="Communication/:messageId" element={<CommunicationTab />} />
                 <Route path="Task" element={<TasksTab />} />
                 <Route path="Task/new" element={<TasksTab />} />
                 <Route path="Task/:taskId" element={<TasksTab />} />
@@ -291,7 +224,6 @@ export function App(): JSX.Element | null {
                 <Route path="vitals" element={<VitalsTab />} />
                 <Route path="labs" element={<LabsTab />} />
                 <Route path="careplans" element={<CarePlansTab />} />
-                <Route path="devices" element={<DevicesTab />} />
                 <Route path="allergies" element={<AllergiesTab />} />
                 <Route path="immunizations" element={<ImmunizationsTab />} />
                 <Route path="export" element={<ExportTab />} />
@@ -316,20 +248,6 @@ export function App(): JSX.Element | null {
                 </Route>
                 <Route path="" element={<PatientOverviewTab />} />
               </Route>
-              <Route path="/Communication" element={<MessagesPage />}>
-                <Route index element={<MessagesPage />} />
-                <Route path="new" element={<MessagesPage />} />
-                <Route path=":messageId" element={<MessagesPage />} />
-                <Route path=":messageId/new" element={<MessagesPage />} />
-              </Route>
-              <Route path="/Task" element={<TasksPage />} />
-              <Route path="/Task/new" element={<TasksPage />} />
-              <Route path="/Task/:taskId" element={<TasksPage />} />
-              <Route path="/Task/:taskId/new" element={<TasksPage />} />
-              <Route path="/Fax/Communication" element={<FaxPage />} />
-              <Route path="/Fax/Communication/new" element={<FaxPage />} />
-              <Route path="/Fax/Communication/:faxId" element={<FaxPage />} />
-              <Route path="/Fax/Communication/:faxId/new" element={<FaxPage />} />
               {/* The "New Patient" nav item lands here: find the record in DrChrono first,
                   rather than keying demographics in by hand. Medplum's own intake
                   form is still reachable at /onboarding/intake. */}

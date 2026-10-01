@@ -158,10 +158,8 @@ describe('PatientPage.utils', () => {
         'tasks',
         'meds',
         'orders',
-        'devices',
         'documentreference',
         'careplan',
-        'message',
         'dosespot',
         'scriptsure',
         'export',
@@ -189,10 +187,10 @@ describe('PatientPage.utils', () => {
       expect(tabIds).toContain('tasks');
       expect(tabIds).toContain('meds');
       expect(tabIds).toContain('orders');
-      expect(tabIds).toContain('devices');
+      expect(tabIds).not.toContain('devices');
       expect(tabIds).toContain('documentreference');
       expect(tabIds).toContain('careplan');
-      expect(tabIds).toContain('message');
+      expect(tabIds).not.toContain('message');
       expect(tabIds).toContain('dosespot');
       expect(tabIds).toContain('scriptsure');
       expect(tabIds).toContain('export');

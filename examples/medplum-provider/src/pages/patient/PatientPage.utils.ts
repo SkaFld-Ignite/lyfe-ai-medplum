@@ -105,10 +105,8 @@ export const PatientPageTabs: PatientPageTabInfo[] = [
     url: 'Task',
     label: 'Tasks',
   },
-  { id: 'message', url: 'Communication', label: 'Messages' },
-  // Lyfe lists; Medplum's records (and its search page) stay at /CarePlan and /Device.
+  // Lyfe list; Medplum's records (and its search page) stay at /CarePlan.
   { id: 'careplan', url: 'careplans', label: 'Care Plans', aliases: ['careplan'] },
-  { id: 'devices', url: 'devices', label: 'Devices', aliases: ['device'] },
   { id: 'dosespot', url: 'dosespot', label: 'DoseSpot' },
   { id: 'scriptsure', url: 'scriptsure', label: 'ScriptSure' },
   { id: 'export', url: 'export', label: 'Export' },

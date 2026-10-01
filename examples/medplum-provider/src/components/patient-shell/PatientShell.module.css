@@ -68,6 +68,18 @@
 
 .empty {
   padding: 64px var(--mantine-spacing-md);
+
+  &[data-compact] {
+    padding: 28px var(--mantine-spacing-md);
+    border-style: dashed;
+    box-shadow: none;
+    background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+  }
+
+  &[data-compact] .emptyIcon {
+    width: 40px;
+    height: 40px;
+  }
 }
 
 .emptyIcon {

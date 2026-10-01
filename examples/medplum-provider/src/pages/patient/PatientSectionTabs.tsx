@@ -8,7 +8,6 @@ import {
   IconChecklist,
   IconChevronLeft,
   IconChevronRight,
-  IconDeviceWatch,
   IconDownload,
   IconFileText,
   IconFlask,
@@ -17,7 +16,6 @@ import {
   IconId,
   IconLayoutDashboard,
   IconLayoutList,
-  IconMessages,
   IconMicroscope,
   IconPill,
   IconPrescription,
@@ -68,10 +66,8 @@ const TAB_ICONS: Record<string, Icon> = {
   scriptsure: IconPrescription,
   labs: IconMicroscope,
   orders: IconFlask,
-  devices: IconDeviceWatch,
   documentreference: IconFileText,
   careplan: IconHeartbeat,
-  message: IconMessages,
   export: IconDownload,
 };
 

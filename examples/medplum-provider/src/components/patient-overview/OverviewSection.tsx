@@ -6,8 +6,8 @@ import classes from './PatientOverview.module.css';
 
 export interface OverviewSectionProps {
   icon: ReactNode;
-  /** Tile tone: rose, slate or indigo. */
-  tone: 'rose' | 'slate' | 'indigo';
+  /** Tile tone: rose, slate, indigo or blue. */
+  tone: 'rose' | 'slate' | 'indigo' | 'blue';
   title: string;
   subtitle?: ReactNode;
   right?: ReactNode;

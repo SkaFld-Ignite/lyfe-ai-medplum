@@ -176,6 +176,11 @@
     color: #4f46e5;
     background: #eef2ff;
   }
+
+  &[data-tone='blue'] {
+    color: #2563eb;
+    background: #eff6ff;
+  }
 }
 
 .sectionTitle {

@@ -14,7 +14,6 @@ import { prependPatientPath } from './PatientPage.utils';
 
 /** Lyfe section headings for the patient search tabs. */
 const SEARCH_SECTIONS: Record<string, { title: string; description: string }> = {
-  Device: { title: 'Devices', description: 'Devices and equipment associated with this patient' },
   CarePlan: { title: 'Care Plans', description: 'Care plans and their status over time' },
 };
 
