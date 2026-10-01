@@ -1,61 +1,54 @@
 # Image for the Lyfe import worker (services/lyfe-worker).
 #
-# Built from the repository root, not the service directory: the worker imports
-# the importers from examples/medplum-provider/bots, and those import workspace
-# packages. A context scoped to the service would resolve none of it.
+# Deliberately NOT a monorepo build.
 #
-# The workspace packages are BUILT here rather than copied in. That is not a
-# preference — `dist/` is gitignored, so any build context that comes from a git
-# checkout or a `railway up` upload simply does not contain it. Copying prebuilt
-# output produces an image that builds on a developer's laptop, where dist
-# happens to exist, and fails everywhere else.
+# The worker needs @medplum/core and @medplum/fhirtypes, and the obvious move
+# is to build them from the workspace. Two attempts at that were wrong in
+# different ways: copying their prebuilt `dist` produces an image that only
+# builds on a machine that happens to have it, because `dist/` is gitignored
+# and absent from any git checkout; and building them in the image drags in
+# `tsc && esbuild && api-extractor && api-documenter` per package, for output
+# identical to what is already on npm.
 #
-# The worker itself runs TypeScript directly through tsx. The importers are
-# ~4000 lines of .ts that the Medplum bot bundler also reads as source, and a
-# second, different build of the same files is a way for the two to drift
-# without anyone noticing.
-
-# ---- Stage 1: build the workspace packages the worker depends on -------------
-FROM node:22-slim AS build
-
-WORKDIR /app
-
-# Build tooling is needed because some workspace packages compile native deps.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-
-COPY package.json package-lock.json turbo.json ./
-COPY packages ./packages
-COPY examples/medplum-provider/package.json ./examples/medplum-provider/
-COPY services/lyfe-worker/package.json ./services/lyfe-worker/
-
-# Dev dependencies are required: these packages are compiled from source here.
-RUN npm ci --ignore-scripts
-
-# Only what the worker imports, rather than the whole monorepo.
-RUN npx turbo run build --filter=@medplum/core --filter=@medplum/fhirtypes
-
-# ---- Stage 2: runtime --------------------------------------------------------
-FROM node:22-slim AS runtime
+# This fork has never modified either package, so the published 5.1.42 is the
+# same code. The image installs those two from npm and copies only the worker
+# and the importers it runs — which is why the build context here is small
+# enough to matter and the build has nothing in it that can drift.
+#
+# If the fork ever does patch @medplum/core, this stops being true and the
+# dependency has to go back to the workspace. The pin below is what makes that
+# break loudly rather than silently.
+FROM node:22-slim
 
 WORKDIR /app
 ENV NODE_ENV=production
 
-# node_modules and the freshly built package output, from the build stage.
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/packages ./packages
-COPY --from=build /app/package.json ./package.json
+COPY services/lyfe-worker/package.json ./package.json
 
-COPY services/lyfe-worker ./services/lyfe-worker
-COPY examples/medplum-provider/package.json ./examples/medplum-provider/
+# Pinned exactly, not by range: the worker runs importers written against this
+# API, and a silent minor bump is not something a deploy should decide.
+RUN npm install --omit=dev --no-audit --no-fund \
+      @medplum/core@5.1.42 \
+      @medplum/fhirtypes@5.1.42 \
+      inngest \
+      tsx
+
+# The worker, and the importers it runs. The repository's directory shape is
+# kept rather than flattened, because the worker imports the importers by
+# relative path — a flat layout would mean rewriting those paths for the image
+# only, so the source would read one way and run another.
+#
+# The importers stay TypeScript source rather than being compiled: the Medplum
+# bot bundler reads the same files, and a second, different build of them is a
+# way for the two to drift unnoticed.
+COPY services/lyfe-worker/src ./services/lyfe-worker/src
 COPY examples/medplum-provider/bots ./examples/medplum-provider/bots
 
 EXPOSE 3020
 
-# tsx is invoked by its entry point rather than through npx or a .bin symlink.
-# In a workspace install the binary lands under the service's own node_modules,
-# not the root one npx searches, and the image then builds cleanly and fails to
-# start — which is a slow way to learn this.
+# tsx by its entry point rather than through npx: npx searches a .bin that a
+# workspace install does not populate where you expect, and the image then
+# builds cleanly and fails to start.
 #
 # Inngest calls /api/inngest; the app calls /api/imports/bulk.
-CMD ["node", "services/lyfe-worker/node_modules/tsx/dist/cli.mjs", "services/lyfe-worker/src/server.ts"]
+CMD ["node", "node_modules/tsx/dist/cli.mjs", "services/lyfe-worker/src/server.ts"]

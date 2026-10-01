@@ -5,7 +5,7 @@
     "dockerfilePath": "docker/worker.Dockerfile"
   },
   "deploy": {
-    "startCommand": "node services/lyfe-worker/node_modules/tsx/dist/cli.mjs services/lyfe-worker/src/server.ts",
+    "startCommand": "node node_modules/tsx/dist/cli.mjs services/lyfe-worker/src/server.ts",
     "healthcheckPath": "/health",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
