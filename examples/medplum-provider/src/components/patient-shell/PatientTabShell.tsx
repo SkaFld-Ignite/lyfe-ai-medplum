@@ -102,13 +102,25 @@ export function PatientTabShell(props: PatientTabShellProps): JSX.Element {
  * @param props.icon - Icon in the tile.
  * @param props.title - Heading.
  * @param props.description - Supporting text.
+ * @param props.compact - A smaller box, for panels inside a card.
  * @returns The empty state.
  */
-export function EmptyState(props: { icon: ReactNode; title: string; description?: string }): JSX.Element {
+export function EmptyState(props: {
+  icon: ReactNode;
+  title: string;
+  description?: string;
+  /** A smaller box, for panels inside a card. */
+  compact?: boolean;
+}): JSX.Element {
   return (
-    <Stack align="center" gap={6} className={`${classes.card} ${classes.empty}`}>
+    <Stack
+      align="center"
+      gap={6}
+      className={`${classes.card} ${classes.empty}`}
+      data-compact={props.compact || undefined}
+    >
       <Box className={classes.emptyIcon}>{props.icon}</Box>
-      <Text fw={600} size="lg" mt="xs">
+      <Text fw={600} size={props.compact ? 'sm' : 'lg'} mt="xs">
         {props.title}
       </Text>
       {props.description && (

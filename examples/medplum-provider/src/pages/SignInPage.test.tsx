@@ -89,7 +89,7 @@ describe('SignInPage', () => {
       fireEvent.click(submitButton);
     });
 
-    // After successful sign-in, user is redirected to /getstarted
-    expect(await screen.findByText('Get Started with LyfeAI')).toBeInTheDocument();
+    // After successful sign-in, the user lands on the dashboard.
+    expect(await screen.findByText("Here's your clinical overview for today")).toBeInTheDocument();
   });
 });
