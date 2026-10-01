@@ -38,12 +38,18 @@ export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
 
 /** Built-in fallback used when the project has not configured `aiModels`. */
 export const DEFAULT_MODELS: SpaceModelOption[] = [
-  { value: 'gpt-6-astra', label: 'GPT-6 Astra' },
-  { value: 'gpt-5.5', label: 'GPT-5.5' },
-  { value: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
-  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
-  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
-  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+  // Upstream Medplum ships a list of OpenAI models here. This deployment reaches
+  // exactly one model — Claude Sonnet 4.6 on Bedrock, via the LiteLLM bridge that
+  // `LLM_BASE_URL` points at — so the upstream list is not a useful fallback: it is
+  // a list of models that do not exist here, and a request for one comes back
+  // `Invalid model name` from LiteLLM.
+  //
+  // This fallback is load-bearing rather than cosmetic. `getProjectModels` reads
+  // `aiModels` off `medplum.getProject()`, and a non-admin clinic user does not see
+  // `Project.setting` — so for every real clinician the fallback IS the list. It
+  // shipped showing "GPT-6 Astra", which would have been both wrong and expensive
+  // if it had resolved to anything.
+  { value: 'global.anthropic.claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
 ];
 
 /**

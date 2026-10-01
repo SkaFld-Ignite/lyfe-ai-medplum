@@ -9,7 +9,20 @@
  * stays on Mantine variables so light and dark follow the app.
  */
 
-.root {
+/*
+ * Defined on :root, NOT on .root.
+ *
+ * Mantine's `Affix` renders through a portal to document.body, so the launcher
+ * and the panel are NOT descendants of this component's wrapper in the DOM.
+ * Custom properties scoped to the wrapper therefore never reach them, and
+ * `linear-gradient(to bottom right, , , )` is invalid — the element renders with
+ * no background at all. That shipped: a white pill with a violet shadow, because
+ * the shadow is a literal and the gradient was not.
+ *
+ * Custom property NAMES are not scoped by CSS modules, so :root is safe here and
+ * survives the portal.
+ */
+:root {
   /* violet-600 → indigo-600 → blue-600, and the lighter hover triplet. */
   --lyfe-ai-from: #7c3aed;
   --lyfe-ai-via: #4f46e5;
