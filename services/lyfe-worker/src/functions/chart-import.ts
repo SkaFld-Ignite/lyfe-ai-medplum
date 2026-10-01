@@ -5,6 +5,7 @@ import { handler as drchronoHandler } from '../../../../examples/medplum-provide
 import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
+import { withStepTimeout } from '../rate-limit.ts';
 import { attachPatient, completeTask, failTask, setPhase, startTask } from '../task.ts';
 
 /**
@@ -25,7 +26,10 @@ export const chartImport = inngest.createFunction(
     id: 'drchrono-chart-import',
     name: 'DrChrono chart import',
     concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
-    retries: 3,
+    // Raised from 3. With RetryAfterError a rate limit no longer consumes an
+    // attempt usefully — it reschedules — so the budget is there for the
+    // failures that are actually worth re-running.
+    retries: 6,
   },
   { event: 'lyfe/chart.import.requested' },
   async ({ event, step, runId, logger }) => {
@@ -45,17 +49,19 @@ export const chartImport = inngest.createFunction(
     // A chart import does not know its patient yet — the importer finds or
     // creates one — so the Task opens without `for`, carrying the DrChrono id
     // so it is still findable, and the patient is attached once resolved.
-    const taskId = await step.run('open-task', async () => {
-      const task = await startTask({
-        medplum,
-        organization,
-        code: 'drchrono-import',
-        sourceId: drchronoPatientId,
-        runId,
-        batchId,
-      });
-      return task.id as string;
-    });
+    const taskId = await step.run('open-task', async () =>
+      withStepTimeout('open-task', async () => {
+        const task = await startTask({
+          medplum,
+          organization,
+          code: 'drchrono-import',
+          sourceId: drchronoPatientId,
+          runId,
+          batchId,
+        });
+        return task.id as string;
+      })
+    );
 
     try {
       // The success check lives INSIDE the step, not after it.
@@ -65,30 +71,34 @@ export const chartImport = inngest.createFunction(
       // would rethrow the same cached error three times without ever calling
       // DrChrono again. Throwing inside the step retries the step, which is
       // what a 429 or a timeout actually needs.
-      const { patientId, counts } = await step.run('import-chart', async () => {
-        logger.info('importing chart', { drchronoPatientId, organizationId });
-        await setPhase(medplum, taskId, 'importing chart');
-        const res = await drchronoHandler(medplum, botEvent(requester, { action: 'import', drchronoPatientId }));
+      const { patientId, counts } = await step.run('import-chart', async () =>
+        withStepTimeout(`chart import ${drchronoPatientId}`, async () => {
+          logger.info('importing chart', { drchronoPatientId, organizationId });
+          await setPhase(medplum, taskId, 'importing chart');
+          const res = await drchronoHandler(medplum, botEvent(requester, { action: 'import', drchronoPatientId }));
 
-        if (!res.ok) {
-          const message = 'error' in res ? String(res.error) : 'import failed';
-          // A chart DrChrono will never return is not worth three attempts.
-          // Anything else — a timeout, a 429, a blip — is, and a plain Error
-          // lets Inngest retry the step with backoff.
-          throw /not found|no patient|invalid/i.test(message) ? new NonRetriableError(message) : new Error(message);
-        }
+          if (!res.ok) {
+            const message = 'error' in res ? String(res.error) : 'import failed';
+            // A chart DrChrono will never return is not worth three attempts.
+            // Anything else — a timeout, a 429, a blip — is, and a plain Error
+            // lets Inngest retry the step with backoff.
+            throw /not found|no patient|invalid/i.test(message) ? new NonRetriableError(message) : new Error(message);
+          }
 
-        const id = 'medplumPatientId' in res ? (res.medplumPatientId) : undefined;
-        if (!id) {
-          throw new NonRetriableError('Import reported success without a patient id');
-        }
-        return { patientId: id, counts: ('counts' in res ? res.counts : {}) as Record<string, number> };
-      });
+          const id = 'medplumPatientId' in res ? res.medplumPatientId : undefined;
+          if (!id) {
+            throw new NonRetriableError('Import reported success without a patient id');
+          }
+          return { patientId: id, counts: ('counts' in res ? res.counts : {}) as Record<string, number> };
+        })
+      );
 
-      await step.run('complete-task', async () => {
-        await attachPatient(medplum, taskId, patientId);
-        await completeTask(medplum, taskId, counts);
-      });
+      await step.run('complete-task', async () =>
+        withStepTimeout('complete-task', async () => {
+          await attachPatient(medplum, taskId, patientId);
+          await completeTask(medplum, taskId, counts);
+        })
+      );
 
       // Sent as its own event rather than awaited inline, so a Zus failure
       // never marks a chart that imported perfectly well as failed, and either

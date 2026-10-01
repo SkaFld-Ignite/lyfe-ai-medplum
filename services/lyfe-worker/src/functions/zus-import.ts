@@ -4,6 +4,7 @@ import { handler as zusHandler } from '../../../../examples/medplum-provider/bot
 import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
+import { withStepTimeout } from '../rate-limit.ts';
 import { completeTask, failTask, setPhase, startTask } from '../task.ts';
 import { classify } from './chart-import.ts';
 
@@ -36,7 +37,10 @@ export const zusImport = inngest.createFunction(
     id: 'zus-record-import',
     name: 'Zus record import',
     concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
-    retries: 3,
+    // Raised from 3, matching chart import: a rate limit now reschedules via
+    // RetryAfterError instead of spending an attempt, so the budget covers the
+    // failures worth re-running.
+    retries: 6,
   },
   { event: 'lyfe/zus.import.requested' },
   async ({ event, step, runId, logger }) => {
@@ -44,25 +48,29 @@ export const zusImport = inngest.createFunction(
     const medplum = await getMedplum();
     const organization = { reference: `Organization/${organizationId}` };
 
-    const taskId = await step.run('open-task', async () => {
-      const task = await startTask({
-        medplum,
-        organization,
-        code: 'zus-import',
-        patientId: medplumPatientId,
-        runId,
-        batchId,
-      });
-      return task.id as string;
-    });
+    const taskId = await step.run('open-task', async () =>
+      withStepTimeout('open-task', async () => {
+        const task = await startTask({
+          medplum,
+          organization,
+          code: 'zus-import',
+          patientId: medplumPatientId,
+          runId,
+          batchId,
+        });
+        return task.id as string;
+      })
+    );
 
     try {
       // First attempt. For an already-enrolled patient this is the whole job,
       // and the waits below never happen.
-      let result = await step.run('pull-record', async () => {
-        await setPhase(medplum, taskId, 'pulling Zus record');
-        return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
-      });
+      let result = await step.run('pull-record', async () =>
+        withStepTimeout(`zus pull ${medplumPatientId}`, async () => {
+          await setPhase(medplum, taskId, 'pulling Zus record');
+          return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
+        })
+      );
 
       // A fresh enrolment comes back successful but nearly empty, because the
       // networks have not answered yet. Counting what landed is the only way to
@@ -74,10 +82,12 @@ export const zusImport = inngest.createFunction(
         logger.info('record empty, waiting for the networks', { medplumPatientId, wait });
         await setPhase(medplum, taskId, `enrolled — waiting ${wait} for the networks`);
         await step.sleep(`await-networks-${attempt}`, wait);
-        result = await step.run(`re-pull-${attempt}`, async () => {
-          await setPhase(medplum, taskId, `pulling Zus record (attempt ${attempt + 2})`);
-          return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
-        });
+        result = await step.run(`re-pull-${attempt}`, async () =>
+          withStepTimeout(`zus re-pull ${medplumPatientId}`, async () => {
+            await setPhase(medplum, taskId, `pulling Zus record (attempt ${attempt + 2})`);
+            return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
+          })
+        );
       }
 
       if (!result.ok) {
@@ -91,7 +101,9 @@ export const zusImport = inngest.createFunction(
       }
 
       const counts = ('counts' in result ? result.counts : {}) as Record<string, number>;
-      await step.run('complete-task', () => completeTask(medplum, taskId, counts));
+      await step.run('complete-task', () =>
+        withStepTimeout('complete-task', () => completeTask(medplum, taskId, counts))
+      );
       return { counts, empty: total(result) === 0 };
     } catch (err) {
       // Reached only once the step has exhausted its retries, so the Task is
