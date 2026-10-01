@@ -1,0 +1,581 @@
+/* AI patient summary card. A Mantine + CSS-modules rebuild of lyfe-provider-ui's
+   `components/patients/views/ai-patient-summary-card.tsx`, which was shadcn +
+   Tailwind utility classes. Colours are the same Tailwind palette values that
+   file used, written out as hex the way PatientOverview.module.css already does,
+   so the two cards sit together without a seam. */
+
+/* ---- Header controls -------------------------------------------------------------------------- */
+
+.headerActions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Fresh / Cached / Stale / Generating, as in prod's header pills. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #475569;
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+
+  &[data-state='fresh'] {
+    border-color: #a7f3d0;
+    color: #047857;
+    background: #ecfdf5;
+  }
+
+  &[data-state='stale'] {
+    border-color: #fde68a;
+    color: #b45309;
+    background: #fffbeb;
+  }
+
+  &[data-state='generating'] {
+    border-color: #ddd6fe;
+    color: #6d28d9;
+    background: #f5f3ff;
+  }
+}
+
+.badgeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+
+  .badge[data-state='fresh'] & {
+    background: #10b981;
+  }
+
+  .badge[data-state='stale'] & {
+    background: #f59e0b;
+  }
+}
+
+/* ---- Body ------------------------------------------------------------------------------------- */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px;
+  transition: opacity 150ms ease;
+
+  /* Prod dimmed the whole card while regenerating, keeping the last good summary
+     readable underneath rather than swapping it for a spinner. */
+  &[data-busy='true'] {
+    opacity: 0.6;
+  }
+}
+
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 16px;
+}
+
+.placeholderText {
+  font-size: 13px;
+  color: #64748b;
+}
+
+/* ---- Narrative -------------------------------------------------------------------------------- */
+
+.narrative {
+  position: relative;
+  padding: 12px 16px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+}
+
+.narrativeBar {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  width: 3px;
+  height: calc(100% - 24px);
+  border-radius: 0 999px 999px 0;
+  background: #8b5cf6;
+}
+
+.narrativeText {
+  padding-left: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.65;
+  color: light-dark(#1e293b, var(--mantine-color-dark-0));
+}
+
+/* ---- Blocks ----------------------------------------------------------------------------------- */
+
+.blocks {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+
+  @media (min-width: 64em) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.block {
+  overflow: hidden;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  background: var(--mantine-color-body);
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+.blockHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+}
+
+.blockTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: light-dark(#334155, var(--mantine-color-dark-0));
+}
+
+/* Block tones: alerts rose, risks amber, focus emerald, care gaps sky — the four
+   `sectionToneStyles` entries from prod. */
+.blockTile,
+.blockCount {
+  --tone-bg: #f1f5f9;
+  --tone-ink: #475569;
+  --tone-ring: #e2e8f0;
+
+  &[data-tone='rose'] {
+    --tone-bg: #fff1f2;
+    --tone-ink: #e11d48;
+    --tone-ring: #fecdd3;
+  }
+
+  &[data-tone='amber'] {
+    --tone-bg: #fffbeb;
+    --tone-ink: #b45309;
+    --tone-ring: #fde68a;
+  }
+
+  &[data-tone='emerald'] {
+    --tone-bg: #ecfdf5;
+    --tone-ink: #047857;
+    --tone-ring: #a7f3d0;
+  }
+
+  &[data-tone='sky'] {
+    --tone-bg: #f0f9ff;
+    --tone-ink: #0369a1;
+    --tone-ring: #bae6fd;
+  }
+}
+
+.blockTile {
+  display: grid;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--tone-ink);
+  background: var(--tone-bg);
+  box-shadow: inset 0 0 0 1px var(--tone-ring);
+}
+
+.blockCount {
+  display: inline-flex;
+  height: 16px;
+  min-width: 16px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--tone-ink);
+  background: var(--tone-bg);
+  box-shadow: 0 0 0 1px var(--tone-ring);
+}
+
+.blockBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+}
+
+/* ---- Rows ------------------------------------------------------------------------------------- */
+
+.row {
+  position: relative;
+  overflow: hidden;
+  padding: 8px 12px;
+  border: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  border-radius: 8px;
+  background: var(--mantine-color-body);
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
+
+  &:hover {
+    border-color: light-dark(#e2e8f0, var(--mantine-color-dark-4));
+    background: light-dark(#f8fafc80, var(--mantine-color-dark-6));
+  }
+}
+
+.rowInner {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+/* Alert severity: the left bar and the icon tile, keyed off one attribute. */
+.rowBar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: #0ea5e9;
+
+  &[data-severity='critical'] {
+    background: #f43f5e;
+  }
+
+  &[data-severity='warning'] {
+    background: #f59e0b;
+  }
+}
+
+.rowTile {
+  display: grid;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  place-items: center;
+  border-radius: 6px;
+  color: #0369a1;
+  background: #f0f9ff;
+  box-shadow: inset 0 0 0 1px #bae6fd;
+
+  &[data-severity='critical'] {
+    color: #e11d48;
+    background: #fff1f2;
+    box-shadow: inset 0 0 0 1px #fecdd3;
+  }
+
+  &[data-severity='warning'] {
+    color: #b45309;
+    background: #fffbeb;
+    box-shadow: inset 0 0 0 1px #fde68a;
+  }
+
+  &[data-tone='amber'] {
+    color: #b45309;
+    background: #fffbeb;
+    box-shadow: inset 0 0 0 1px #fde68a;
+  }
+}
+
+/* Alerts get the severity bar, so their content is nudged clear of it. */
+.rowInset {
+  padding-left: 6px;
+}
+
+.rowMain {
+  min-width: 0;
+  flex: 1;
+}
+
+.rowTitle {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: light-dark(#0f172a, var(--mantine-color-dark-0));
+}
+
+.rowTitleStrong {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: light-dark(#0f172a, var(--mantine-color-dark-0));
+}
+
+.rowDetail {
+  display: flex;
+  gap: 4px;
+  align-items: flex-start;
+  margin-top: 4px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+.rowDetailIcon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #94a3b8;
+
+  &[data-tone='amber'] {
+    color: #f59e0b;
+  }
+}
+
+.rowDetailPlain {
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+/* ---- Risk level badge ------------------------------------------------------------------------- */
+
+.riskRow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.levelBadge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #047857;
+  background: #ecfdf5;
+  box-shadow: 0 0 0 1px #a7f3d0;
+
+  &[data-level='high'] {
+    color: #be123c;
+    background: #fff1f2;
+    box-shadow: 0 0 0 1px #fecdd3;
+  }
+
+  &[data-level='moderate'] {
+    color: #b45309;
+    background: #fffbeb;
+    box-shadow: 0 0 0 1px #fde68a;
+  }
+}
+
+.levelDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+
+  .levelBadge[data-level='high'] & {
+    background: #f43f5e;
+  }
+
+  .levelBadge[data-level='moderate'] & {
+    background: #f59e0b;
+  }
+}
+
+/* ---- Focus area ordinal ----------------------------------------------------------------------- */
+
+.focusNumber {
+  display: grid;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #059669;
+}
+
+/* ---- Citations -------------------------------------------------------------------------------- */
+
+/* Inline chip and footer chip share the palette: one `data-kind` per cited
+   resource type, matching prod's CITATION_COLORS map. */
+.citation,
+.sourceChip {
+  --cite-bg: #fae8ff;
+  --cite-ink: #86198f;
+  --cite-hover: #f5d0fe;
+
+  &[data-kind='condition'] {
+    --cite-bg: #f3e8ff;
+    --cite-ink: #6b21a8;
+    --cite-hover: #e9d5ff;
+  }
+
+  &[data-kind='medication'] {
+    --cite-bg: #dbeafe;
+    --cite-ink: #1e40af;
+    --cite-hover: #bfdbfe;
+  }
+
+  &[data-kind='allergy'] {
+    --cite-bg: #fee2e2;
+    --cite-ink: #991b1b;
+    --cite-hover: #fecaca;
+  }
+
+  &[data-kind='lab'] {
+    --cite-bg: #d1fae5;
+    --cite-ink: #065f46;
+    --cite-hover: #a7f3d0;
+  }
+
+  &[data-kind='vital'] {
+    --cite-bg: #fef3c7;
+    --cite-ink: #92400e;
+    --cite-hover: #fde68a;
+  }
+
+  &[data-kind='encounter'] {
+    --cite-bg: #f1f5f9;
+    --cite-ink: #1e293b;
+    --cite-hover: #e2e8f0;
+  }
+}
+
+.citation {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 2px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--cite-ink);
+  background: var(--cite-bg);
+  transition: background 150ms ease;
+
+  &:hover {
+    background: var(--cite-hover);
+  }
+}
+
+.sources {
+  padding: 10px 12px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+}
+
+.sourcesHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.sourcesChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sourceChip {
+  display: inline-flex;
+  max-width: 220px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cite-ink);
+  background: var(--cite-bg);
+  transition: background 150ms ease;
+
+  &:hover {
+    background: var(--cite-hover);
+  }
+}
+
+.sourceChipLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Footer ----------------------------------------------------------------------------------- */
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+}
+
+.footerMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.footerDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+
+  &[data-state='fresh'] {
+    background: #10b981;
+  }
+
+  &[data-state='generating'] {
+    background: #8b5cf6;
+    animation: aiPulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes aiPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .footerDot[data-state='generating'] {
+    animation: none;
+  }
+}

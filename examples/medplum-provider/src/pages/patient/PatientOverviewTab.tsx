@@ -16,6 +16,7 @@ import {
 import type { JSX } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { AiSummaryCard } from '../../components/patient-overview/AiSummaryCard';
 import { OverviewSection } from '../../components/patient-overview/OverviewSection';
 import classes from '../../components/patient-overview/PatientOverview.module.css';
 import { ProfileCard } from '../../components/patient-overview/ProfileCard';
@@ -178,6 +179,11 @@ export function PatientOverviewTab(): JSX.Element | null {
           </OverviewSection>
         </>
       )}
+
+      {/* Outside the overview's loading guard on purpose: the summary is a separate
+          read with its own states, and a slow Composition search should not hold
+          back the vitals and the clinical profile. */}
+      <AiSummaryCard patientId={patientId} />
 
       <OverviewSection
         icon={<IconClipboardHeart size={16} />}
