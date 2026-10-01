@@ -20,6 +20,7 @@ import type { JSX } from 'react';
 import { Suspense, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router';
 import { LyfeLogo } from './components/brand/LyfeLogo';
+import { LyfeAiLauncher } from './components/lyfe-ai/LyfeAiLauncher';
 import { hasScriptSureIdentifier } from './components/utils';
 import { useDoseSpotAccess } from './hooks/useDoseSpotAccess';
 import { useNavbarState } from './hooks/useNavbarState';
@@ -308,6 +309,9 @@ export function App(): JSX.Element | null {
   const content = (
     <>
       {appShellContent}
+      {/* Lyfe AI floats over every signed-in screen. It hides itself on the Spaces page, which is
+          the same chat at full size, and picks up the patient when a chart is open. */}
+      {profile && <LyfeAiLauncher />}
       <SmartHealthLinkImportModal opened={shlOpened} onClose={shlHandlers.close} />
     </>
   );
