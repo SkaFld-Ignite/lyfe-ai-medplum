@@ -37,9 +37,9 @@ export function getMedplum(): Promise<MedplumClient> {
  * @returns The authenticated client.
  */
 async function login(): Promise<MedplumClient> {
-  const baseUrl = required('MEDPLUM_BASE_URL');
-  const clientId = required('MEDPLUM_CLIENT_ID');
-  const clientSecret = required('MEDPLUM_CLIENT_SECRET');
+  const baseUrl = requiredEnv('MEDPLUM_BASE_URL');
+  const clientId = requiredEnv('MEDPLUM_CLIENT_ID');
+  const clientSecret = requiredEnv('MEDPLUM_CLIENT_SECRET');
   const medplum = new MedplumClient({ baseUrl, fetch });
   await medplum.startClientLogin(clientId, clientSecret);
   return medplum;
@@ -47,11 +47,18 @@ async function login(): Promise<MedplumClient> {
 
 /**
  * Read a required environment variable.
+ *
+ * Surrounding quotes are stripped, because whether they survive depends on who
+ * reads the file. Node's `--env-file` removes them; Docker's `--env-file` does
+ * not, so the same `.env` that works locally yields a base URL beginning with a
+ * quote character inside a container — which surfaces as "Base URL must start
+ * with http or https" and sends you looking at the URL rather than the quoting.
  * @param name - The variable name.
- * @returns Its value.
+ * @returns Its value, unquoted and trimmed.
  */
-function required(name: string): string {
-  const value = process.env[name];
+export function requiredEnv(name: string): string {
+  const raw = process.env[name]?.trim();
+  const value = raw?.replace(/^(['"])(.*)\1$/, '$2');
   if (!value) {
     throw new Error(`${name} is required. Copy .env.example to .env and fill it in.`);
   }

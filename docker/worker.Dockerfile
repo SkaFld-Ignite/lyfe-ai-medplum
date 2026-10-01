@@ -27,5 +27,10 @@ COPY examples/medplum-provider/bots ./examples/medplum-provider/bots
 ENV NODE_ENV=production
 EXPOSE 3020
 
+# tsx is invoked by its entry point rather than through npx or a .bin symlink.
+# In a workspace install the binary lands under the service's own node_modules,
+# not the root one npx searches, and the image then builds cleanly and fails to
+# start — which is a slow way to learn this.
+#
 # Inngest calls /api/inngest; the app calls /api/imports/bulk.
-CMD ["npx", "tsx", "services/lyfe-worker/src/server.ts"]
+CMD ["node", "services/lyfe-worker/node_modules/tsx/dist/cli.mjs", "services/lyfe-worker/src/server.ts"]

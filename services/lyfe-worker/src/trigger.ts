@@ -3,7 +3,7 @@
 import { MedplumClient } from '@medplum/core';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { inngest } from './inngest.ts';
-import { getMedplum } from './medplum.ts';
+import { getMedplum, requiredEnv } from './medplum.ts';
 
 /**
  * The endpoint the app calls to start a bulk run.
@@ -120,7 +120,7 @@ interface Caller {
  * @returns The caller, or undefined when the token is not usable.
  */
 async function identify(token: string): Promise<Caller | undefined> {
-  const asCaller = new MedplumClient({ baseUrl: process.env.MEDPLUM_BASE_URL, fetch });
+  const asCaller = new MedplumClient({ baseUrl: requiredEnv('MEDPLUM_BASE_URL'), fetch });
   asCaller.setAccessToken(token);
   const me = (await asCaller.get('auth/me').catch(() => undefined)) as
     { profile?: { resourceType?: string; id?: string } } | undefined;
