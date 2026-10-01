@@ -84,11 +84,14 @@ export function AiSummaryCard(props: AiSummaryCardProps): JSX.Element {
   const navigate = useNavigate();
   const { summary, loading, generating, error, reload, regenerate } = usePatientAiSummary(props.patientId);
   // Prod distinguished a summary it had just generated from one the server had
-  // cached. Here the equivalent is simply whether this session asked for it.
-  const [regeneratedHere, setRegeneratedHere] = useState(false);
+  // cached. Here the equivalent is whether this session asked for it — and only
+  // if that ask succeeded, so a failed regenerate does not label the old summary
+  // on screen as freshly written.
+  const [requested, setRequested] = useState(false);
+  const regeneratedHere = requested && !error;
 
   const onRegenerate = useCallback(() => {
-    setRegeneratedHere(true);
+    setRequested(true);
     regenerate();
   }, [regenerate]);
 
