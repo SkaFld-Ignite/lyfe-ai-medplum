@@ -68,7 +68,8 @@ export const zusImport = inngest.createFunction(
       let result = await step.run('pull-record', async () =>
         withStepTimeout(`zus pull ${medplumPatientId}`, async () => {
           await setPhase(medplum, taskId, 'pulling Zus record');
-          return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
+          // The Task opened above is handed to the bot, so one import is one row.
+          return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId, taskId }));
         })
       );
 
@@ -85,7 +86,7 @@ export const zusImport = inngest.createFunction(
         result = await step.run(`re-pull-${attempt}`, async () =>
           withStepTimeout(`zus re-pull ${medplumPatientId}`, async () => {
             await setPhase(medplum, taskId, `pulling Zus record (attempt ${attempt + 2})`);
-            return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId }));
+            return zusHandler(medplum, botEvent(requester, { action: 'import', medplumPatientId, taskId }));
           })
         );
       }

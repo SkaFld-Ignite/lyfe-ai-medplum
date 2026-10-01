@@ -81,7 +81,7 @@ import type { DrChronoClient } from './shared/drchrono.ts';
 import { createDrChronoClient } from './shared/drchrono.ts';
 import { contentTypeFromName } from './shared/file-type.ts';
 import { mapWithConcurrency, storeFile, storedBinaryReference } from './shared/files.ts';
-import { ImportProgress, buildStatusReason, countsToOutput } from './shared/progress.ts';
+import { ImportProgress, buildStatusReason, countsToOutput, openOrAdoptTask } from './shared/progress.ts';
 import { DRCHRONO_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 
@@ -125,6 +125,16 @@ export interface ImportChartInput {
   action: 'import';
   /** DrChrono's numeric patient id, as a string. */
   drchronoPatientId: string;
+  /**
+   * A Task the caller already opened for this run.
+   *
+   * The import worker opens one before invoking the bot, so a run that fails
+   * before reaching the bot still leaves a record. Supplying it here means the
+   * bot reports onto that Task instead of opening a second one for the same
+   * import. Absent — a direct invocation from patient search or onboarding —
+   * the bot opens its own.
+   */
+  taskId?: string;
 }
 
 /**
@@ -3962,7 +3972,7 @@ async function run(
     throw new Error('drchronoPatientId is required');
   }
 
-  return importChart(medplum, client, organization, drchronoPatientId);
+  return importChart(medplum, client, organization, drchronoPatientId, input.taskId);
 }
 
 /**
@@ -3981,28 +3991,34 @@ async function importChart(
   medplum: MedplumClient,
   client: DrChronoClient,
   organization: Reference<Organization>,
-  drchronoPatientId: string
+  drchronoPatientId: string,
+  callerTaskId?: string
 ): Promise<ImportSuccess | ImportFailure> {
   const startedAt = Date.now();
   const counts = emptyCounts();
 
-  const task = await withMedplum429Retry(
-    () =>
-      medplum.createResource<Task>({
-        resourceType: 'Task',
-        meta: buildMeta(organization),
-        status: 'in-progress',
-        intent: 'order',
-        code: { text: 'drchrono-import' },
-        description: `Import DrChrono patient ${drchronoPatientId} into Medplum`,
-        authoredOn: new Date().toISOString(),
-        executionPeriod: { start: new Date().toISOString() },
-        identifier: [
-          { system: IDENTIFIER_SYSTEMS.syncJob, value: `drchrono-import-${drchronoPatientId}-${Date.now()}` },
-        ],
-      }),
-    'Task.create'
-  );
+  const task = await openOrAdoptTask({
+    medplum,
+    taskId: callerTaskId,
+    create: () =>
+      withMedplum429Retry(
+        () =>
+          medplum.createResource<Task>({
+            resourceType: 'Task',
+            meta: buildMeta(organization),
+            status: 'in-progress',
+            intent: 'order',
+            code: { text: 'drchrono-import' },
+            description: `Import DrChrono patient ${drchronoPatientId} into Medplum`,
+            authoredOn: new Date().toISOString(),
+            executionPeriod: { start: new Date().toISOString() },
+            identifier: [
+              { system: IDENTIFIER_SYSTEMS.syncJob, value: `drchrono-import-${drchronoPatientId}-${Date.now()}` },
+            ],
+          }),
+        'Task.create'
+      ),
+  });
   const taskId = task.id;
   // Held separately because the terminal updates below spread `task`, which is
   // the object as it was CREATED — before the patient existed. Without this the

@@ -75,7 +75,12 @@ export const chartImport = inngest.createFunction(
         withStepTimeout(`chart import ${drchronoPatientId}`, async () => {
           logger.info('importing chart', { drchronoPatientId, organizationId });
           await setPhase(medplum, taskId, 'importing chart');
-          const res = await drchronoHandler(medplum, botEvent(requester, { action: 'import', drchronoPatientId }));
+          const res = await drchronoHandler(
+          medplum,
+          // The Task opened above is handed to the bot, which reports its phases,
+          // its patient and its counts onto it instead of opening a second one.
+          botEvent(requester, { action: 'import', drchronoPatientId, taskId })
+        );
 
           if (!res.ok) {
             const message = 'error' in res ? String(res.error) : 'import failed';

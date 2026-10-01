@@ -50,7 +50,7 @@
  * from the input. Accepting it as an argument would let any clinic import into
  * another clinic's compartment.
  */
-import type { BotEvent, MedplumClient } from '@medplum/core';
+import type { BotEvent, MedplumClient, WithId } from '@medplum/core';
 import type {
   Attachment,
   Binary,
@@ -76,7 +76,7 @@ import {
 import { readZusEnabledLocationRefs } from './shared/directory.ts';
 import { mapWithConcurrency, storeFile, storedBinaryReference } from './shared/files.ts';
 import { linkPatientCoveragePayors } from './shared/payers.ts';
-import { ImportProgress, buildStatusReason } from './shared/progress.ts';
+import { ImportProgress, buildStatusReason, openOrAdoptTask } from './shared/progress.ts';
 import { ZUS_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
 import { pushReciprocity } from './shared/zus-push.ts';
@@ -115,6 +115,15 @@ sandboxGlobals.Buffer ??= NodeBuffer;
 export interface ZusImportInput {
   /** Only supported action. Present so the bot can grow siblings without breaking callers. */
   action: 'import';
+  /**
+   * A Task the caller already opened for this run.
+   *
+   * The import worker opens one before invoking the bot, so a run that fails
+   * before reaching the bot still leaves a record. Supplying it here means the
+   * bot reports onto that Task instead of opening a second one for the same
+   * import. Absent — a direct invocation — the bot opens its own.
+   */
+  taskId?: string;
   /**
    * Builder-scoped Zus Patient resource id — the one the data subscription API
    * enrols. NOT the universal id; see the note at the top of this file.
@@ -365,7 +374,11 @@ async function run(props: {
   const ids = await resolveZusPatientIds({ medplum, zus, patient, input });
   const resolved: ZusImportInput = { ...input, ...ids };
 
-  const task = await createTask({ medplum, organization, input: resolved });
+  const task = await openOrAdoptTask({
+    medplum,
+    taskId: input.taskId,
+    create: () => createTask({ medplum, organization, input: resolved }),
+  });
   log(`task ${task.id} opened for Patient/${input.medplumPatientId}`);
 
   const counts: Record<string, number> = {};
@@ -1464,7 +1477,7 @@ async function createTask(props: {
   medplum: MedplumClient;
   organization: Reference<Organization>;
   input: ZusImportInput;
-}): Promise<Task> {
+}): Promise<WithId<Task>> {
   const now = new Date().toISOString();
   return withMedplum429Retry(
     () =>

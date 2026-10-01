@@ -37,6 +37,17 @@ export const BATCH_IDENTIFIER = 'https://lyfe.com/import-batch';
 /** Identifier carrying the source-system id, for a Task with no patient yet. */
 export const SOURCE_ID_IDENTIFIER = 'https://lyfe.com/source-id';
 
+/**
+ * The status this platform writes for a failed run.
+ *
+ * `failed` is **not** a FHIR R4 `Task.status` — the value set stops at
+ * `cancelled`, `on-hold`, `completed` and friends. Both bots have written it
+ * since before this worker existed and the server accepts it, so the Imports
+ * page filters on it and the stored data uses it. Changing that is a migration,
+ * not a tidy-up, so it is named here rather than silently cast at each use.
+ */
+const FAILED = 'failed' as Task['status'];
+
 /** Coding system for a coded failure reason, matching what the bots wrote. */
 export const IMPORT_ERROR_SYSTEM = 'https://lyfe.com/import-error';
 
@@ -142,6 +153,13 @@ export async function completeTask(medplum: MedplumClient, taskId: string, count
   // update built from a stale copy silently dropped `Task.for` once, which
   // detached a finished run from its patient.
   const current = await withMedplum429Retry(() => medplum.readResource('Task', taskId), 'completeTask read');
+  // The bot now reports onto this same Task and closes it with more than we
+  // have here — the patient id and the duration alongside the counts. Writing
+  // over a Task it has already finished would strip those back out, so a run
+  // the bot has closed is left exactly as the bot left it.
+  if (current.status === 'completed' || current.status === FAILED) {
+    return;
+  }
   await withMedplum429Retry(
     () =>
       medplum.updateResource<Task>({
@@ -173,6 +191,11 @@ export async function failTask(
 ): Promise<void> {
   const now = new Date().toISOString();
   const current = await withMedplum429Retry(() => medplum.readResource('Task', taskId), 'failTask read');
+  // A failure the bot recorded names what actually broke inside the import.
+  // This one only knows what escaped the step, so it must not overwrite it.
+  if (current.status === FAILED) {
+    return;
+  }
   const statusReason: CodeableConcept = {
     coding: [{ system: IMPORT_ERROR_SYSTEM, code: reason }],
     text: message.slice(0, 500),
@@ -181,7 +204,7 @@ export async function failTask(
     () =>
       medplum.updateResource<Task>({
         ...current,
-        status: 'failed',
+        status: FAILED,
         statusReason,
         output: countsToOutput(counts),
         lastModified: now,
