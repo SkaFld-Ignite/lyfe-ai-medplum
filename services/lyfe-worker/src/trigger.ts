@@ -26,7 +26,11 @@ import { getMedplum, requiredEnv } from './medplum.ts';
  *    IDOR the importers were hardened against, reintroduced one layer up.
  *
  * What the body *is* trusted for is which patients to import, because that is
- * bounded by the clinic the token resolves to anyway.
+ * bounded by the clinic the token resolves to anyway. It is trusted for nothing
+ * else: it used to carry a `withZus` flag deciding whether the network record
+ * was pulled after each chart, and that is not the browser's call. The pull
+ * always follows, and whether a given patient qualifies is decided inside the
+ * importer from the clinic's own Directory configuration.
  */
 
 /** Cap on patients accepted in one request, so a typo cannot queue a million. */
@@ -35,8 +39,6 @@ const MAX_PATIENTS_PER_REQUEST = 5000;
 interface BulkImportBody {
   /** DrChrono patient ids to import. */
   drchronoPatientIds: string[];
-  /** Pull each patient's Zus record once their chart lands. */
-  withZus?: boolean;
 }
 
 /**
@@ -84,7 +86,6 @@ export async function handleBulkImport(req: IncomingMessage, res: ServerResponse
           organizationId: caller.organizationId,
           requester: caller.profile,
           drchronoPatientId,
-          withZus: body.withZus !== false,
           batchId,
         },
       }))

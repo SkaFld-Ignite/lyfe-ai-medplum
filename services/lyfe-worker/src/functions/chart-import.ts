@@ -33,7 +33,7 @@ export const chartImport = inngest.createFunction(
   },
   { event: 'lyfe/chart.import.requested' },
   async ({ event, step, runId, logger }) => {
-    const { organizationId, requester, drchronoPatientId, withZus, batchId } = event.data;
+    const { organizationId, requester, drchronoPatientId, batchId } = event.data;
     const medplum = await getMedplum();
     const organization = { reference: `Organization/${organizationId}` };
 
@@ -105,15 +105,25 @@ export const chartImport = inngest.createFunction(
         })
       );
 
-      // Sent as its own event rather than awaited inline, so a Zus failure
-      // never marks a chart that imported perfectly well as failed, and either
-      // half can be retried without the other.
-      if (withZus) {
-        await step.sendEvent('request-zus', {
-          name: 'lyfe/zus.import.requested',
-          data: { organizationId, requester, medplumPatientId: patientId, batchId },
-        });
-      }
+      // Always sent, and sent as its own event rather than awaited inline.
+      //
+      // Always, because there is no version of this the person importing a
+      // chart should have to ask for: a chart is half a record until the
+      // outside one is on it. Whether this patient may actually be enrolled is
+      // the importer's decision, taken from the office their encounters are at
+      // — the Directory page's Zus column — and an ineligible patient is
+      // refused there having cost nothing. This used to be gated on a `withZus`
+      // flag that travelled all the way from a checkbox in the browser, which
+      // put a clinical-completeness decision in the hands of whoever happened
+      // to be clicking.
+      //
+      // As its own event, because a Zus failure must never mark a chart that
+      // imported perfectly well as failed, and either half has to be retriable
+      // without the other.
+      await step.sendEvent('request-zus', {
+        name: 'lyfe/zus.import.requested',
+        data: { organizationId, requester, medplumPatientId: patientId, batchId },
+      });
 
       return { patientId, counts };
     } catch (err) {

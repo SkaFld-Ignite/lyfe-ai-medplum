@@ -33,16 +33,17 @@ export interface BulkRunQueued {
  * The caller's own access token is sent and verified there: the worker takes
  * the requesting user from the token and resolves their clinic itself, so the
  * clinic can never be chosen by the browser.
+ *
+ * Only the patients are sent. The network pull that follows each chart is not a
+ * parameter — the worker always runs it, and which patients qualify is read
+ * there from the clinic's Directory configuration. A `withZus` flag used to
+ * travel in this body from a checkbox in the page; it no longer exists, and the
+ * worker ignores it if an older build sends one.
  * @param medplum - Authenticated Medplum client, for its access token.
  * @param drchronoPatientIds - The patients to import.
- * @param withZus - Pull each patient's Zus record once their chart lands.
  * @returns The batch id and how many were queued.
  */
-export async function queueBulkImport(
-  medplum: MedplumClient,
-  drchronoPatientIds: string[],
-  withZus: boolean
-): Promise<BulkRunQueued> {
+export async function queueBulkImport(medplum: MedplumClient, drchronoPatientIds: string[]): Promise<BulkRunQueued> {
   if (!IMPORT_WORKER_URL) {
     throw new Error('No import worker is configured');
   }
@@ -52,7 +53,7 @@ export async function queueBulkImport(
       Authorization: `Bearer ${medplum.getAccessToken()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ drchronoPatientIds, withZus }),
+    body: JSON.stringify({ drchronoPatientIds }),
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => '');

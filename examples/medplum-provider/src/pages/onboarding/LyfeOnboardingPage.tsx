@@ -8,9 +8,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { LyfePageHeader } from '../../components/brand/LyfePageHeader';
 import type { DrChronoPatientSummary } from '../../services/onboarding';
 import {
+  describeNetworkPull,
   formatDrChronoName,
   importDrChronoPatient,
-  importZusRecord,
+  pullNetworkRecord,
   searchDrChronoPatients,
 } from '../../services/onboarding';
 import { BulkImportPanel } from './BulkImportPanel';
@@ -21,9 +22,11 @@ const DEBOUNCE_MS = 350;
 /**
  * Step one of the Lyfe onboarding flow: find a patient in DrChrono.
  *
- * Importing is deliberately not wired up yet — the import runs DrChrono and Zus
- * pulls that take minutes, so it belongs in a Medplum Bot with a Task to track
- * progress, not in a request the browser holds open. See `services/onboarding.ts`.
+ * Importing one runs both halves — the DrChrono chart and then the patient's
+ * network record — because a chart on its own is half a record and whether the
+ * second half applies is not a question for whoever is clicking. Both are long
+ * server-side jobs with a `Task` apiece, so the page starts them and watches
+ * rather than holding a request open. See `services/onboarding.ts`.
  * @returns The onboarding search page.
  */
 export function LyfeOnboardingPage(): JSX.Element {
@@ -42,11 +45,31 @@ export function LyfeOnboardingPage(): JSX.Element {
   const [zusRunning, setZusRunning] = useState<Record<string, boolean>>({});
   const [zusResult, setZusResult] = useState<Record<string, string>>({});
 
+  /**
+   * Import this patient: the DrChrono chart, then their network record.
+   *
+   * Both halves, always. This screen used to import the chart and stop — the
+   * chaining only ever existed inside the bulk import worker — so a patient
+   * imported from here ended up with a complete DrChrono chart and no outside
+   * record at all, with nothing on screen to suggest anything was missing.
+   * `importDrChronoPatient` now does both, and whether this patient qualifies
+   * for the second half is decided server-side from their office's Directory
+   * configuration.
+   *
+   * The network outcome is reported beside the chart's, never folded into it: a
+   * patient who is not enrolled, or whose networks have not answered yet, still
+   * has a perfectly good chart.
+   */
   const runImport = useCallback(
     (patient: DrChronoPatientSummary): void => {
       const id = String(patient.id);
       setImporting((m) => ({ ...m, [id]: true }));
-      importDrChronoPatient(medplum, id)
+      setZusResult((m) => ({ ...m, [id]: '' }));
+      importDrChronoPatient(medplum, id, (status, stage) => {
+        if (stage === 'network') {
+          setZusResult((m) => ({ ...m, [id]: status }));
+        }
+      })
         .then((r) => {
           const total = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
           setImported((m) => ({
@@ -55,6 +78,7 @@ export function LyfeOnboardingPage(): JSX.Element {
               ? { ok: true, detail: `${total} resources`, medplumId: r.medplumPatientId }
               : { ok: false, detail: r.error ?? 'Import failed' },
           }));
+          setZusResult((m) => ({ ...m, [id]: r.ok ? describeNetworkPull(r.zus).detail : '' }));
         })
         .catch((err: Error) => setImported((m) => ({ ...m, [id]: { ok: false, detail: err.message } })))
         .finally(() => setImporting((m) => ({ ...m, [id]: false })));
@@ -63,24 +87,24 @@ export function LyfeOnboardingPage(): JSX.Element {
   );
 
   /**
-   * Pull (and publish back) this patient's Zus record.
+   * Run the network pull again for a patient whose chart is already in.
    *
-   * Separate from the chart import on purpose. A patient already in Medplum
-   * has no reason to re-import their DrChrono chart just to refresh Zus, and
-   * before this there was no way to run the Zus leg on its own at all.
+   * Not an opt-in — the import above always pulls. This is a retry, and it
+   * exists because a *fresh* enrolment comes back empty: enrolling starts
+   * queries out to the networks that answer over hours, and a direct call like
+   * this one gets a single attempt rather than the import worker's 30m/2h/6h
+   * ladder. So the first pull of a new patient legitimately lands nothing, and
+   * this is how someone gets the rest of it without re-importing the chart.
    */
   const runZus = useCallback(
     (drchronoId: string, medplumPatientId: string): void => {
       setZusRunning((m) => ({ ...m, [drchronoId]: true }));
       setZusResult((m) => ({ ...m, [drchronoId]: 'starting…' }));
-      importZusRecord(medplum, medplumPatientId, (status) => setZusResult((m) => ({ ...m, [drchronoId]: status })))
-        .then((r) => {
-          const total = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
-          setZusResult((m) => ({
-            ...m,
-            [drchronoId]: r.ok ? `Zus — ${total} resources` : (r.error ?? 'Zus failed'),
-          }));
-        })
+      pullNetworkRecord(medplum, medplumPatientId, (status) => setZusResult((m) => ({ ...m, [drchronoId]: status })))
+        .then((r) => setZusResult((m) => ({ ...m, [drchronoId]: describeNetworkPull(r).detail })))
+        // `pullNetworkRecord` reports every outcome rather than throwing, so
+        // this catches nothing in practice. It is here because a promise with no
+        // rejection handler is a promise someone will one day wonder about.
         .catch((err: Error) => setZusResult((m) => ({ ...m, [drchronoId]: err.message })))
         .finally(() => setZusRunning((m) => ({ ...m, [drchronoId]: false })));
     },
