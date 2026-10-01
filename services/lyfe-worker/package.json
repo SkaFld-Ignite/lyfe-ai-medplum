@@ -13,11 +13,11 @@
   "dependencies": {
     "@medplum/core": "*",
     "@medplum/fhirtypes": "*",
-    "inngest": "^3.27.0"
+    "inngest": "^3.27.0",
+    "tsx": "4.19.2"
   },
   "devDependencies": {
     "inngest-cli": "^1.4.0",
-    "tsx": "4.19.2",
     "typescript": "5.9.3"
   }
 }
