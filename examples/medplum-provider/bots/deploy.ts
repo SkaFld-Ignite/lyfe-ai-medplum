@@ -138,6 +138,13 @@ const BOTS: BotDefinition[] = [
     // slow one without letting a hung call hold a slot for minutes.
     timeout: 180,
   },
+  {
+    name: 'lyfe-encounter-summary',
+    description: "Write an encounter's pre-visit or post-visit AI summary as a Composition.",
+    source: 'encounter-summary.ts',
+    // Same shape of work as the patient summary: one chart read plus one model call.
+    timeout: 180,
+  },
 ];
 
 /**

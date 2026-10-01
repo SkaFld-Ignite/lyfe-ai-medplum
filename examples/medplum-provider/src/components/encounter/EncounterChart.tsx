@@ -12,10 +12,12 @@ import { SAVE_TIMEOUT_MS } from '../../config/constants';
 import { useEncounterChart } from '../../hooks/useEncounterChart';
 import { ChartNoteStatus } from '../../types/encounter';
 import { updateEncounterStatus } from '../../utils/encounter';
+import { inferSummaryKind } from '../../utils/encounter-ai-summary';
 import { showErrorNotification } from '../../utils/notifications';
 import { TaskDetailsModal } from '../tasks/TaskDetailsModal';
 import { TaskPanel } from '../tasks/encounter/TaskPanel';
 import { BillingTab } from './BillingTab';
+import { EncounterAiSummaryCard } from './EncounterAiSummaryCard';
 import { EncounterHeader } from './EncounterHeader';
 import { SignAddendum } from './SignAddendum';
 
@@ -141,6 +143,25 @@ export const EncounterChart = (props: EncounterChartProps): JSX.Element => {
     debouncedPatchChartNote(e.target.value);
   };
 
+  // "Pull into note" from the AI summary card. Prod appended the rendered summary
+  // to `ClinicalNote.appointmentNotes`; the equivalent field here is the one the
+  // Textarea above edits, so the text lands where the provider is already
+  // looking. Appended, never overwritten, and only on an explicit click.
+  const handlePullIntoNote = useCallback(
+    async (text: string): Promise<void> => {
+      if (!clinicalImpression) {
+        throw new Error('No chart note available for this encounter');
+      }
+      const merged = [chartNote?.trim(), text].filter(Boolean).join('\n\n');
+      await medplum.patchResource('ClinicalImpression', clinicalImpression.id, [
+        { op: 'add', path: '/note', value: [{ text: merged }] },
+      ]);
+      noteOnServerRef.current = true;
+      setChartNote(merged);
+    },
+    [chartNote, clinicalImpression, medplum]
+  );
+
   const handleSign = async (practitioner: Reference<Practitioner>, lock: boolean): Promise<void> => {
     if (!encounter) {
       return;
@@ -243,6 +264,20 @@ export const EncounterChart = (props: EncounterChartProps): JSX.Element => {
           {activeTab === 'notes' && (
             <Stack gap="md">
               <SignAddendum encounter={encounter} provenances={provenances} chartNoteStatus={chartNoteStatus} />
+
+              <EncounterAiSummaryCard
+                encounterId={encounter.id}
+                patientId={patientResource.id}
+                kind={inferSummaryKind(encounter)}
+                // Nothing to pull into without a chart note, and a locked note
+                // must not be appended to, so the button is absent rather than
+                // present and failing.
+                onPullIntoNote={
+                  clinicalImpression && chartNoteStatus !== ChartNoteStatus.SignedAndLocked
+                    ? handlePullIntoNote
+                    : undefined
+                }
+              />
 
               {clinicalImpression && (
                 <Card withBorder shadow="sm" mt="md">
