@@ -28,9 +28,22 @@ import { getCredentialValues, readCredentialRecord, writeCredentialRecord } from
 
 const TOKEN_URL = 'https://drchrono.com/o/token/';
 
+/**
+ * A write to DrChrono: a method other than GET, and a JSON body.
+ *
+ * Retrying a write after a token refresh is safe only because a 401 means the
+ * request was rejected before DrChrono looked at the body — nothing was created.
+ * Any other failure is returned to the caller unretried.
+ */
+export interface DrChronoRequest {
+  method: 'POST' | 'PATCH' | 'PUT';
+  /** Serialised as JSON with the matching `Content-Type`. */
+  body: unknown;
+}
+
 export interface DrChronoClient {
-  /** Issue an authenticated request, refreshing once on a 401. */
-  readonly fetch: (path: string) => Promise<Response>;
+  /** Issue an authenticated request, refreshing once on a 401. GET unless `request` says otherwise. */
+  readonly fetch: (path: string, request?: DrChronoRequest) => Promise<Response>;
   /** True when this client had to refresh, i.e. the stored pair was rotated. */
   readonly didRefresh: () => boolean;
 }
@@ -136,21 +149,26 @@ export async function createDrChronoClient(props: {
     return body.access_token;
   }
 
-  const call = async (path: string, token: string): Promise<Response> =>
+  const call = async (path: string, token: string, request?: DrChronoRequest): Promise<Response> =>
     fetch(path.startsWith('http') ? path : `${apiUrl}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      method: request?.method ?? 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(request && { 'Content-Type': 'application/json' }),
+      },
+      ...(request && { body: JSON.stringify(request.body) }),
     });
 
   return {
-    fetch: async (path: string): Promise<Response> => {
+    fetch: async (path: string, request?: DrChronoRequest): Promise<Response> => {
       if (!accessToken) {
         accessToken = await refresh();
       }
-      const first = await call(path, accessToken);
+      const first = await call(path, accessToken, request);
       if (first.status !== 401 || refreshed) {
         return first;
       }
-      return call(path, await refresh());
+      return call(path, await refresh(), request);
     },
     didRefresh: () => refreshed,
   };
