@@ -232,8 +232,13 @@ function LyfeAiEmptyState({
   onStarter: (question: string) => void;
 }): JSX.Element {
   const heading = isPatientMode ? 'Ask anything about this patient' : 'Ask anything about your patients';
+  // Not "Every claim is cited", which this cannot promise and the prompts deliberately do not
+  // demand: an empty search, a failed request and a total worked out across several records have no
+  // one source, and the summary prompt is explicitly told to write no marker rather than invent an
+  // index. The honest claim is about where a citation points, not about how many there are. The
+  // documents it reads are the indexed text of scanned ones, not only their metadata.
   const body = isPatientMode
-    ? "I can read this patient's active meds, conditions, allergies, vitals, labs, encounters, and documents. Every claim is cited."
+    ? "I can read this patient's active meds, conditions, allergies, vitals, labs, encounters, and the text of their scanned documents. Claims are cited to the records they came from."
     : 'I can check your schedule, search your patient panel, find patients by condition, and analyze population trends.';
   const starters = isPatientMode ? PATIENT_STARTER_QUESTIONS : GLOBAL_STARTER_QUESTIONS;
 

@@ -306,8 +306,16 @@ function referenceStringOf(value: unknown): string | undefined {
  * de-duplication changes, every citation silently shifts. The test for this function is the
  * tripwire.
  *
+ * `search_documents` results are in the same numbering rather than a namespace of their own. A
+ * chunk in the RAG index is keyed by the `DocumentReference.id` it was extracted from, so a
+ * document hit already has a FHIR identity, and the UI pushes `DocumentReference/<id>` per hit in
+ * hit order — see `toDocumentSearchToolResult` in `src/utils/spaceMessaging.ts`. Reading the
+ * reference each hit already carries, rather than rebuilding it from an id here, is what keeps the
+ * two sides to one line each: there is no second copy of the rule for one of them to get wrong.
+ *
  * Tool responses that carry no resource — an error payload, a `set_visualization`
- * acknowledgement, an empty bundle — contribute nothing, which is also what the UI does.
+ * acknowledgement, an empty bundle, a document search that matched nothing — contribute nothing,
+ * which is also what the UI does.
  * @param messages - The conversation, including the tool responses the loop collected.
  * @returns The citable references, in citation order, de-duplicated.
  */
@@ -326,6 +334,21 @@ export function collectCitableSources(messages: readonly ChatMessage[]): string[
       continue;
     }
     if (!isRecord(result)) {
+      continue;
+    }
+
+    // Document search, matched on its own wrapper key rather than on the shape of what is inside
+    // it, so it can never be confused with a FHIR resource that happens to carry a `hits` field.
+    if (isRecord(result.documentSearch)) {
+      const hits = result.documentSearch.hits;
+      if (Array.isArray(hits)) {
+        for (const hit of hits) {
+          const ref = referenceStringOf(hit);
+          if (ref) {
+            refs.push(ref);
+          }
+        }
+      }
       continue;
     }
 

@@ -4,6 +4,8 @@ import type { MedplumClient } from '@medplum/core';
 import { getDisplayString, getReferenceString, isNotFound, OperationOutcomeError } from '@medplum/core';
 import type { Bundle, Communication, Identifier, Patient, Reference, Resource, ResourceType } from '@medplum/fhirtypes';
 import type { useMedplum } from '@medplum/react';
+import type { DocumentSearchResult } from '../services/document-search';
+import { searchPatientDocuments } from '../services/document-search';
 import type { Message } from '../types/spaces';
 import type { ReasoningEffort } from './spaceModels';
 import { createConversationTopic, saveMessage } from './spacePersistence';
@@ -42,9 +44,116 @@ interface FhirRequestArgs {
   body?: unknown;
 }
 
+interface SearchDocumentsArgs {
+  patientId: string;
+  query: string;
+  topK?: number;
+}
+
 export interface ExecuteToolCallsResult {
   messages: Message[];
   resourceRefs: string[];
+}
+
+/** One chunk, as the model is shown it. */
+export interface DocumentSearchToolHit {
+  /** `DocumentReference/<id>` — the same string the citation numbering uses. */
+  reference: string;
+  title: string | null;
+  date: string | null;
+  chunk: number;
+  text: string;
+}
+
+/** The `search_documents` tool result, as it is stored on the tool message. */
+export interface DocumentSearchToolResult {
+  documentSearch: {
+    patientId: string;
+    hits: DocumentSearchToolHit[];
+    /** Present only when nothing matched, where it says why. */
+    note?: string;
+  };
+}
+
+/**
+ * The reference a document hit is cited as.
+ *
+ * The RAG index keys a chunk by its `DocumentReference.id`, so a hit already
+ * has a FHIR identity and needs no new one. That is what lets document hits
+ * join the single `[doc:Sn]` numbering instead of needing a namespace of their
+ * own — see {@link toDocumentSearchToolResult}.
+ * @param documentId - The `DocumentReference` id from a hit.
+ * @returns The reference string.
+ */
+export function documentReferenceString(documentId: string): string {
+  return `DocumentReference/${documentId}`;
+}
+
+/**
+ * Turn a worker search result into the tool result the model reads.
+ *
+ * ## One numbering, and why the worker's own numbers are dropped
+ *
+ * `[doc:Sn]` means "the nth entry of this message's `resources` array" and
+ * nothing else (`src/components/lyfe-ai/citations.ts`). That array is built
+ * here, by walking tool results in order and de-duplicating, so a document hit
+ * becomes citable simply by being a reference in it —
+ * `DocumentReference/<documentId>` — interleaved with the FHIR resources
+ * `fhir_request` returned. Documents and resources therefore share one
+ * numbering by construction, and a pill resolves to a real source card because
+ * `DocumentReference` is a real resource the signed-in user can open.
+ *
+ * The worker's digest (`asText`) already labels its hits `[doc:S1]`, `[doc:S2]`
+ * … but those numbers are **local to one search**: they count from 1 whatever
+ * else the loop has fetched. Showing them to the model would invite it to copy
+ * `[doc:S1]` for a document that is globally S7 — and a citation pointing at
+ * the wrong record does not look like an error to a clinician, it looks like a
+ * fact. So the digest's numbering is not forwarded. The hits are forwarded as
+ * structured JSON, like every other tool result in this loop, each carrying its
+ * reference string; the authoritative numbers are the `Sn = Type/id` list the
+ * summary bot computes with `collectCitableSources` and appends to its own
+ * prompt, and the model matches a snippet to a number through that reference.
+ *
+ * `asText` is still used when nothing matched, because there it is prose rather
+ * than a numbered list and it is the only thing that distinguishes "no document
+ * is relevant" from "the embedding call failed" — a difference the model is
+ * required to report honestly rather than as an absence of data.
+ * @param result - What the worker returned.
+ * @param patientId - The patient searched, echoed so the model can see it.
+ * @returns The tool result.
+ */
+export function toDocumentSearchToolResult(
+  result: DocumentSearchResult,
+  patientId: string
+): DocumentSearchToolResult {
+  const hits = result.hits.map((hit) => ({
+    reference: documentReferenceString(hit.documentId),
+    title: hit.title,
+    date: hit.documentDate,
+    chunk: hit.chunkIndex,
+    text: hit.snippet,
+  }));
+  return {
+    documentSearch: {
+      patientId,
+      hits,
+      ...(hits.length === 0 && { note: result.asText }),
+    },
+  };
+}
+
+/**
+ * Read a tool call's arguments, whichever form they arrived in.
+ *
+ * `$ai` parses them into an object; a replayed conversation carries the JSON
+ * string OpenAI's schema requires. Both reach here.
+ * @param toolCall - The call.
+ * @returns The arguments.
+ */
+function toolArguments<T>(toolCall: ToolCall): T {
+  return typeof toolCall.function.arguments === 'string'
+    ? (JSON.parse(toolCall.function.arguments) as T)
+    : (toolCall.function.arguments as unknown as T);
 }
 
 async function executeFhirRequest(medplum: ReturnType<typeof useMedplum>, args: FhirRequestArgs): Promise<Resource> {
@@ -152,10 +261,7 @@ export async function executeToolCalls(
 
   for (const toolCall of toolCalls) {
     if (toolCall.function.name === 'fhir_request') {
-      const args =
-        typeof toolCall.function.arguments === 'string'
-          ? (JSON.parse(toolCall.function.arguments) as FhirRequestArgs)
-          : (toolCall.function.arguments as unknown as FhirRequestArgs);
+      const args = toolArguments<FhirRequestArgs>(toolCall);
 
       onFhirRequest(`${args.method} ${args.path}`);
 
@@ -181,6 +287,63 @@ export async function executeToolCalls(
           }),
         };
         messages.push(toolErrorMessage);
+      }
+    } else if (toolCall.function.name === 'search_documents') {
+      const args = toolArguments<SearchDocumentsArgs>(toolCall);
+
+      // A bare id, whatever the model sent. The pre-selected-patient system message gives it
+      // `Patient/<id>`, so it will sometimes pass that back despite the tool description — and
+      // `Patient/Patient/abc` is a 404, which reads to the user as "the AI cannot see my
+      // documents" rather than as a malformed request.
+      const patientId = String(args.patientId ?? '').replace(/^Patient\//, '');
+
+      onFhirRequest(`search documents: ${args.query}`);
+
+      try {
+        // The patient is read first, under the signed-in user's access policy,
+        // and the search only happens if that read succeeds.
+        //
+        // Everything else in this loop is bounded by that policy because
+        // Medplum applies it to each request. The document index is not: the
+        // worker scopes a search to the caller's *organization*, resolved from
+        // their own token, and has no view of their AccessPolicy. Without this
+        // read, a user restricted to a subset of their clinic's patients could
+        // reach documents belonging to a patient they cannot open — same
+        // clinic, but not theirs to see. Asking Medplum is the whole check;
+        // there is no role comparison here to get wrong.
+        await medplum.readResource('Patient', patientId);
+
+        const result = await searchPatientDocuments(medplum, {
+          patientId,
+          query: args.query,
+          ...(typeof args.topK === 'number' && { topK: args.topK }),
+        });
+
+        // In hit order, so the numbering follows relevance. Repeats — two
+        // chunks of one document — are collapsed by the same `Set` that
+        // de-duplicates FHIR refs, so both chunks cite one source card.
+        resourceRefs.push(...result.hits.map((hit) => documentReferenceString(hit.documentId)));
+
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(toDocumentSearchToolResult(result, patientId)),
+        });
+      } catch (err) {
+        // No refs are pushed on failure, so a failed search contributes nothing
+        // citable. The model is told it failed and answers from the structured
+        // chart instead, which is better than silently reading as "the patient
+        // has no documents".
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({
+            error: true,
+            message: `Unable to search documents for Patient/${patientId}`,
+            details: errorMessage,
+          }),
+        });
       }
     } else if (toolCall.function.name === 'set_visualization') {
       // Acknowledge visualization tool call (handled separately via visualize flag)

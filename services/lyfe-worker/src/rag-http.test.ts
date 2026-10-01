@@ -34,16 +34,17 @@ vi.mock('./rag/retrieve.ts', () => ({
 
 // The same Medplum stubs `trigger.test.ts` uses, so both endpoints are proved
 // against the same identity resolution rather than two different fakes.
+/** The caller's memberships, so a test can take their organization away. */
+const memberships = vi.fn(async (): Promise<unknown[]> => [
+  {
+    resourceType: 'ProjectMembership',
+    access: [{ parameter: [{ name: 'organization', valueReference: { reference: 'Organization/clinic-1' } }] }],
+  },
+]);
+
 vi.mock('./medplum.ts', () => ({
   requiredEnv: () => 'https://medplum.example.com/',
-  getMedplum: async () => ({
-    searchResources: async () => [
-      {
-        resourceType: 'ProjectMembership',
-        access: [{ parameter: [{ name: 'organization', valueReference: { reference: 'Organization/clinic-1' } }] }],
-      },
-    ],
-  }),
+  getMedplum: async () => ({ searchResources: async () => memberships() }),
 }));
 
 const validToken = vi.fn(async () => ({ profile: { resourceType: 'Practitioner', id: 'prac-1' } }));
@@ -110,6 +111,12 @@ function parsed(res: { body?: string }): Record<string, unknown> {
 beforeEach(() => {
   vi.clearAllMocks();
   validToken.mockResolvedValue({ profile: { resourceType: 'Practitioner', id: 'prac-1' } });
+  memberships.mockResolvedValue([
+    {
+      resourceType: 'ProjectMembership',
+      access: [{ parameter: [{ name: 'organization', valueReference: { reference: 'Organization/clinic-1' } }] }],
+    },
+  ]);
   searchPatientDocuments.mockResolvedValue({ hits: [], asText: 'nothing' });
   getIndexStatus.mockResolvedValue({ documents: {}, chunks: 0 });
 });
@@ -166,6 +173,38 @@ describe('handleRagSearch', () => {
     const [context] = searchPatientDocuments.mock.calls[0] as [{ organizationId: string; patientId: string }];
     expect(context.organizationId).toBe('clinic-1');
     expect(context.patientId).toBe('pat-1');
+  });
+
+  test('builds the retrieval context from nothing but the identity and the patient', async () => {
+    // Asserted on the keys, not only the values. The way this endpoint turns into a breach is a
+    // later edit spreading the body into the context — `{ ...body, organizationId }` — which keeps
+    // every other test here passing while handing the caller a say in the tenant filter. There are
+    // exactly two keys and both are derived server-side.
+    const res = response();
+    await handleRagSearch(
+      request({
+        patientId: 'pat-1',
+        query: 'q',
+        organizationId: 'clinic-2',
+        organization: 'Organization/clinic-2',
+      }),
+      res
+    );
+    const [context] = searchPatientDocuments.mock.calls[0] as [Record<string, unknown>];
+    expect(Object.keys(context).sort()).toStrictEqual(['organizationId', 'patientId']);
+    expect(context.organizationId).toBe('clinic-1');
+  });
+
+  test('a caller whose membership names no organization reads nothing at all', async () => {
+    // The one case where "no organization" must not become "no filter". A valid token with no
+    // clinic on it is refused before any query runs, rather than reaching the WHERE clause as an
+    // empty string — which would match no rows today and is one schema change away from matching
+    // every row.
+    memberships.mockResolvedValue([{ resourceType: 'ProjectMembership', access: [] }]);
+    const res = response();
+    await handleRagSearch(request({ patientId: 'pat-1', query: 'q' }), res);
+    expect(res.status).toBe(401);
+    expect(searchPatientDocuments).not.toHaveBeenCalled();
   });
 
   test('passes the patient through, because the org filter already bounds it', async () => {

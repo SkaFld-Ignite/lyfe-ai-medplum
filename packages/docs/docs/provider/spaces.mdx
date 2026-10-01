@@ -102,7 +102,7 @@ The Provider UI resolves each bot by `Identifier` (system `https://www.medplum.c
 
 | Identifier Value             | Role                                                                |
 | ---------------------------- | ------------------------------------------------------------------- |
-| `ai-fhir-request-tools`      | Translator. Emits `fhir_request` tool calls and a `visualize` flag.  |
+| `ai-fhir-request-tools`      | Translator. Emits `fhir_request` and `search_documents` tool calls, and a `visualize` flag. |
 | `ai-resource-summary-sse`    | Streaming summary bot (Server-Sent Events).                          |
 | `ai-component-generator-sse` | Streaming Recharts / Mantine `Chart()` JSX generation.               |
 
@@ -180,6 +180,8 @@ All three bots are thin wrappers over [`$ai`](/docs/ai/ai-operation). They accep
 
 `ai-fhir-request-tools`. Converts the conversation history into one or more `fhir_request` tool calls. Each call carries an HTTP method (`GET` / `POST` / `PUT` / `DELETE`), a FHIR path, and an optional body. The bot also reports a `visualize` boolean, derived from the tool-call arguments, that tells the UI whether the final answer should be rendered as a chart.
 
+It declares a second tool, `search_documents`, taking a `patientId`, a `query` and an optional `topK`. That tool searches the full text of one patient's documents — the index the Lyfe worker builds over the `Binary` behind each `DocumentReference` — and answers with the matching passages, each naming the `DocumentReference` it was extracted from. `fhir_request` can establish that a document exists; only this tool can say what is written in it. The UI executes it like any other tool call: it reads the patient under the signed-in user's access policy first, then calls the worker with the user's own token, and the worker resolves which clinic to scope the search to from that token rather than from the request body.
+
 Inputs:
 
 | Parameter  | Type          | Required | Description                                                                  |
@@ -217,7 +219,7 @@ The loop in [`spaceMessaging.ts`](https://github.com/medplum/medplum/blob/main/e
 
 1. Invoke the translator with the current conversation.
 2. If it returns no tool calls, exit the loop with its `content` as the final answer.
-3. If it returns tool calls, execute each `fhir_request` against the FHIR API (`GET` / `POST` / `PUT` / `DELETE`), append the responses to the conversation, and go back to step 1.
+3. If it returns tool calls, execute each one — a `fhir_request` against the FHIR API (`GET` / `POST` / `PUT` / `DELETE`), or a `search_documents` against the document index — append the responses to the conversation, and go back to step 1.
 
 While the loop runs the UI surfaces the active call as `Step N: <METHOD> <path>` so users can see what the model is doing in real time.
 

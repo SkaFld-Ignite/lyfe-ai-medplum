@@ -138,11 +138,39 @@ describe('the visualizer prompt', () => {
 
 describe('what the prompts do not promise', () => {
   test('the summary prompt names the statements that cannot be cited', () => {
-    // The chat's patient-mode empty state says "Every claim is cited". That is not achievable for
-    // an empty search, a failed request, or a total worked out across records, and a prompt that
-    // demanded it would get an invented marker instead of an honest gap.
+    // The chat's patient-mode empty state used to say "Every claim is cited". That is not
+    // achievable for an empty search, a failed request, or a total worked out across records, and a
+    // prompt that demanded it would get an invented marker instead of an honest gap — so the copy
+    // now reads "Claims are cited to the records they came from", and this list is why.
     expect(SUMMARY).toMatch(/no source to cite/i);
     expect(SUMMARY).toMatch(/came back empty/i);
     expect(SUMMARY).toMatch(/request failed/i);
+  });
+});
+
+describe('the document-search tool', () => {
+  test('the translator prompt names the tool and says when to reach for it', () => {
+    // A tool the model is handed but never told about is a tool it does not call: the index would
+    // be built, queryable, and still never queried.
+    expect(TRANSLATOR).toContain('search_documents');
+    expect(TRANSLATOR).toMatch(/written inside a document rather than/i);
+  });
+
+  test('the translator prompt distinguishes it from a DocumentReference search', () => {
+    // The two are easy to confuse and answer different questions: one says a document exists, the
+    // other says what is in it.
+    expect(TRANSLATOR).toMatch(/tells you a document exists/i);
+  });
+
+  test('the summary prompt says how a document passage names its source', () => {
+    // Document hits share the one `[doc:Sn]` numbering by being `DocumentReference` references in
+    // the same source list. If the prompt stops saying so, passages stop being cited while
+    // everything else still is — which looks like the RAG results being untrustworthy.
+    expect(SUMMARY).toContain('DocumentReference');
+    expect(SUMMARY).toMatch(/in the numbered source list like any other/i);
+  });
+
+  test('the summary prompt does not let an old letter be read as the current value', () => {
+    expect(SUMMARY).toMatch(/never present a value read out of\s+an old letter as the current one/i);
   });
 });
