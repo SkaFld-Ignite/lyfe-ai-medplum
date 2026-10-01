@@ -1,0 +1,54 @@
+# What `railway up` uploads.
+#
+# The repository is a Medplum monorepo and runs to several gigabytes; the
+# worker's Dockerfile needs a small fraction of it. Uploading the rest times
+# out before a build ever starts, which reads as a Railway failure rather than
+# as "you sent three gigabytes".
+#
+# Keep this in step with docker/worker.Dockerfile: anything the Dockerfile
+# COPYs must not be excluded here.
+
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+.turbo/
+**/.turbo/
+coverage/
+**/coverage/
+*.tsbuildinfo
+
+# Documentation, the web apps and the other example projects are not part of
+# the worker image.
+docs/
+examples/foomedical/
+examples/medplum-chart-demo/
+examples/medplum-client-external-idp-demo/
+examples/medplum-demo-bots/
+examples/medplum-eligibility-demo/
+examples/medplum-fhircast-demo/
+examples/medplum-health-gorilla-demo/
+examples/medplum-hello-world/
+examples/medplum-live-chat-demo/
+examples/medplum-mso-demo/
+examples/medplum-multilingual-demo/
+examples/medplum-nextjs-demo/
+examples/medplum-patient-intake-demo/
+examples/medplum-photon-integration/
+examples/medplum-questionnaire-hooks/
+examples/medplum-react-native-example/
+examples/medplum-scheduling-demo/
+examples/medplum-smart-on-fhir-demo/
+examples/medplum-task-demo/
+examples/medplum-valueset-selector/
+examples/medplum-websocket-subscriptions-demo/
+
+# The worker needs the provider's bots, not its frontend.
+examples/medplum-provider/src/
+examples/medplum-provider/public/
+examples/medplum-provider/dist/
+
+*.log
+.DS_Store
