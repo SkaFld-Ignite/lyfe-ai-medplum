@@ -1,6 +1,7 @@
 # lyfe-worker
 
-Runs Lyfe's DrChrono and Zus imports as Inngest functions.
+Runs Lyfe's DrChrono and Zus imports, and the document RAG index, as Inngest
+functions.
 
 ## Why this exists
 
@@ -77,6 +78,102 @@ the clinic access policy **with an `organization` parameter**:
 Without it every import fails with _"... is not scoped to an organization"_,
 thrown by `bots/shared/tenant.ts`. Being a project admin is not enough — the
 check looks for the parameter, not for privilege.
+
+## Document RAG
+
+The third function indexes a patient's `DocumentReference`s so the AI can
+answer from the documents, not just the structured chart.
+
+### It lives here because Medplum cannot host it
+
+Medplum's `$ai` operation has no embeddings endpoint — it proxies chat
+completions — and it is gated behind a project feature plus an API key that has
+not been issued. The worker has neither constraint: it already runs on Railway
+with AWS credentials and an admin Medplum client. So everything is **Bedrock
+only**: `amazon.titan-embed-text-v2:0` for embeddings at 1024 dimensions, and
+Textract for OCR. No OpenAI, no new credentials.
+
+### `lyfe_rag` is an index, not a data model change
+
+This is the condition the whole thing rests on, and it is enforced by what the
+schema is allowed to contain rather than by convention:
+
+> **Nothing in `lyfe_rag` is a source of truth.** Every row is rebuildable from
+> a `DocumentReference` and its `Binary`. It is the same category as a search
+> index.
+
+Which means `DROP SCHEMA lyfe_rag CASCADE` followed by a re-ingest loses
+exactly nothing, and that is the supported way to change the chunk size or the
+embedding dimension — not an in-place migration of data that was never
+authoritative.
+
+The test to apply to any column added here: _can it be recomputed by re-reading
+FHIR?_ Chunk text, embeddings, titles, dates and page counts all can. Anything
+that cannot has turned the index into a record, and the rule has been broken.
+
+It is its own schema, not `public`, because Medplum owns `public` and migrates
+it on every upgrade. A table called `document_chunks` in `public` is a name
+collision waiting for a release.
+
+### Running it
+
+```bash
+# Index one patient's documents
+curl -X POST http://localhost:3020/api/rag/ingest \
+  -H "Authorization: Bearer $MEDPLUM_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"patientIds":["<patient-id>"]}'
+
+# Search them
+curl -X POST http://localhost:3020/api/rag/search \
+  -H "Authorization: Bearer $MEDPLUM_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"patientId":"<patient-id>","query":"most recent ejection fraction"}'
+
+# How much of a patient is indexed
+curl -X POST http://localhost:3020/api/rag/status \
+  -H "Authorization: Bearer $MEDPLUM_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"patientId":"<patient-id>"}'
+```
+
+The migration needs no separate step: `ensureRagSchema()` is idempotent,
+memoised per process, and runs as the first step of every ingest. It has to work
+this way — `RAG_DATABASE_URL` is a Railway internal host that does not resolve
+from a laptop, so the only process that can reach the database is the one that
+uses it.
+
+### Multi-tenant isolation is not optional
+
+`/api/rag/search` returns the text of clinical documents, which makes it the
+most sensitive endpoint in this service. Two rules, both enforced in code and
+pinned by tests:
+
+- the caller's **own Medplum token** is verified by asking Medplum who it
+  belongs to — the same `identify` the bulk-import endpoint uses, not a copy
+- the **organization comes from that identity**, resolved from the caller's
+  `ProjectMembership` by the worker's admin client, and goes straight into the
+  SQL `WHERE` clause as a bind parameter
+
+The body is trusted for `patientId` and `query` and nothing else. That is safe
+for exactly one reason: the retrieval query filters on organization **and**
+patient, so a patient id belonging to another clinic matches zero rows. A
+retrieval that can return another organization's chunks is a PHI breach, and the
+failure would be invisible in a single-tenant dev environment — which is why
+`src/rag/retrieve.test.ts` asserts the predicate rather than leaving it to
+review.
+
+### Degradation when Textract is not granted
+
+The AWS credentials on this service were provisioned for Bedrock. That Bedrock
+works says nothing about whether the same IAM identity holds
+`textract:AnalyzeDocument`, and the first anyone would know is at runtime.
+
+So the first permission failure latches, and every later OCR call refuses
+immediately rather than rediscovering it 734 times. Scanned PDFs and images are
+recorded as `skipped` with the reason; C-CDA XML, plain text and PDFs with a
+real text layer — most of the corpus — keep indexing. `/health` and the ingest's
+Task output both report it, so the gap is a number rather than a mystery.
 
 ## What is still Medplum's
 

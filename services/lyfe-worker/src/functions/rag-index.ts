@@ -1,0 +1,229 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
+import type { WithId } from '@medplum/core';
+import type { Task } from '@medplum/fhirtypes';
+import { NonRetriableError } from 'inngest';
+import { openOrAdoptTask } from '../../../../examples/medplum-provider/bots/shared/progress.ts';
+import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
+import { getMedplum } from '../medplum.ts';
+import { isRagConfigured } from '../rag/db.ts';
+import type { PatientDocument } from '../rag/ingest.ts';
+import { ingestDocument, listPatientDocuments } from '../rag/ingest.ts';
+import { getOcrUnavailableReason } from '../rag/ocr.ts';
+import { ensureRagSchema } from '../rag/schema.ts';
+import { withStepTimeout } from '../rate-limit.ts';
+import { completeTask, failTask, setPhase, startTask } from '../task.ts';
+import { classify } from './chart-import.ts';
+
+/**
+ * Build the document index for one patient.
+ *
+ * ## Why the work is sliced
+ *
+ * Inngest drives every step by making an HTTP request to this server, and
+ * Railway's proxy kills any request at 15 minutes. `withStepTimeout` fails at
+ * 12 so the error is ours and legible rather than a 502 with no step output.
+ *
+ * That budget is the whole reason this function is shaped the way it is. A
+ * single scanned PDF can cost 50 Textract calls plus 40 embeddings — minutes,
+ * for one document. The corpus is 2,823 documents; one step could not hold a
+ * fraction of it.
+ *
+ * So documents are ingested {@link DOCS_PER_STEP} at a time, each slice its own
+ * step. A slice that dies is retried alone, and the slices before it are
+ * memoised — Inngest does not re-run them, so a retry does not re-OCR
+ * everything that already succeeded. That is also why the per-document write is
+ * idempotent: a retried slice re-ingests its documents, and re-ingest must
+ * replace rather than duplicate.
+ *
+ * ## One Task, not two
+ *
+ * The run opens a Task if the event did not bring one, and otherwise adopts the
+ * caller's — `openOrAdoptTask`, the same helper the bots use. Two Tasks for one
+ * run is a bug this repo has already fixed once: it put two rows on the Imports
+ * page for one import, one of them permanently stuck at its opening phase.
+ */
+
+/**
+ * Documents per step.
+ *
+ * Four. Sized against the worst realistic document rather than the average:
+ * a 50-page scan at four concurrent Textract calls is a few minutes, so four
+ * of them is the most that reliably fits inside the 12-minute step budget. A
+ * patient whose documents are all C-CDA will finish a slice in seconds — the
+ * cost of a conservative number is more steps, and steps are cheap.
+ */
+export const DOCS_PER_STEP = 4;
+
+/**
+ * Hard cap on documents indexed in one run.
+ *
+ * Not a performance limit — a blast radius. The corpus averages well under this
+ * per patient, so a patient exceeding it means something upstream has gone
+ * wrong (a sync loop duplicating attachments, say), and discovering that
+ * through a Textract bill is the expensive way.
+ */
+export const MAX_DOCS_PER_RUN = 400;
+
+export const ragIndex = inngest.createFunction(
+  {
+    id: 'rag-document-index',
+    name: 'Document RAG index',
+    concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
+    // Matches the importers. Most of what fails here is a rate limit on
+    // Medplum, Bedrock or Textract, and those reschedule rather than spend an
+    // attempt usefully.
+    retries: 6,
+  },
+  { event: 'lyfe/rag.ingest.requested' },
+  async ({ event, step, runId, logger }) => {
+    const { organizationId, requester, patientId, taskId: callerTaskId, batchId } = event.data;
+    if (!isRagConfigured()) {
+      // Not retryable: no number of attempts adds an environment variable.
+      throw new NonRetriableError(
+        'RAG_DATABASE_URL is not set on this worker, so there is no index to write to. ' +
+          'On Railway it is a reference to the Medplum Postgres.'
+      );
+    }
+    const medplum = await getMedplum();
+    const organization = { reference: `Organization/${organizationId}` };
+
+    // `requester` is carried on the event and not used to pick the clinic here,
+    // for the same reason the importers carry it: the HTTP trigger already
+    // resolved the organization from the caller's own membership, and this
+    // function must not offer a second, weaker way to choose one.
+    logger.info('indexing documents', { patientId, organizationId, requester });
+
+    const taskId = await step.run('open-task', async () =>
+      withStepTimeout('open-task', async () => {
+        const task = await openOrAdoptTask({
+          medplum,
+          taskId: callerTaskId,
+          // `startTask` is typed `Promise<Task>` while `openOrAdoptTask` wants
+          // `Promise<WithId<Task>>`. A server-created resource always has an
+          // id, so this narrows rather than asserts — but it is checked, so a
+          // server that ever returned one without an id fails here saying so
+          // instead of writing `undefined` into every later patch path.
+          create: async () => {
+            const created = await startTask({ medplum, organization, code: 'rag-index', patientId, runId, batchId });
+            if (!created.id) {
+              throw new Error('Medplum created a Task with no id');
+            }
+            return created as WithId<Task>;
+          },
+        });
+        return task.id;
+      })
+    );
+
+    try {
+      // The migration runs here rather than at worker startup. At startup it
+      // would make RAG a precondition for the DrChrono and Zus imports, which
+      // do not use it; here it is idempotent, memoised per process, and a
+      // missing pgvector grant fails the run that needed it with a message
+      // naming the grant.
+      await step.run('ensure-schema', () => withStepTimeout('ensure-schema', () => ensureRagSchema()));
+
+      const documents = await step.run('list-documents', async () =>
+        withStepTimeout(`list documents for ${patientId}`, async () => {
+          await setPhase(medplum, taskId, 'finding documents');
+          return listPatientDocuments(medplum, patientId, MAX_DOCS_PER_RUN);
+        })
+      );
+
+      if (documents.length === 0) {
+        await step.run('complete-empty', () => completeTask(medplum, taskId, {}));
+        return { patientId, documents: 0, indexed: 0, skipped: 0, failed: 0, chunks: 0 };
+      }
+
+      const totals = { indexed: 0, skipped: 0, failed: 0, chunks: 0 };
+      const sliceCount = Math.ceil(documents.length / DOCS_PER_STEP);
+
+      for (let slice = 0; slice < sliceCount; slice++) {
+        const batch = documents.slice(slice * DOCS_PER_STEP, (slice + 1) * DOCS_PER_STEP);
+        const result = await step.run(`ingest-${slice}`, async () =>
+          withStepTimeout(`ingest slice ${slice + 1} of ${sliceCount}`, async () => {
+            await setPhase(
+              medplum,
+              taskId,
+              `indexing documents · ${slice * DOCS_PER_STEP + 1}-${slice * DOCS_PER_STEP + batch.length} of ${documents.length}`
+            );
+            return ingestSlice({ medplum, organizationId, patientId, batch });
+          })
+        );
+        totals.indexed += result.indexed;
+        totals.skipped += result.skipped;
+        totals.failed += result.failed;
+        totals.chunks += result.chunks;
+      }
+
+      // Reported on the Task so the Imports page can show what landed without
+      // anyone opening Inngest. `skipped` is its own number rather than folded
+      // into `failed`: a TIFF nobody can read and a PDF that errored need
+      // different responses.
+      await step.run('complete-task', async () =>
+        withStepTimeout('complete-task', async () => {
+          const ocrNote = getOcrUnavailableReason();
+          if (ocrNote) {
+            await setPhase(medplum, taskId, 'complete — OCR unavailable, scanned documents skipped');
+          }
+          await completeTask(medplum, taskId, {
+            'documents-indexed': totals.indexed,
+            'documents-skipped': totals.skipped,
+            'documents-failed': totals.failed,
+            chunks: totals.chunks,
+          });
+        })
+      );
+
+      return {
+        patientId,
+        documents: documents.length,
+        ...totals,
+        ocrUnavailable: getOcrUnavailableReason() ?? null,
+      };
+    } catch (err) {
+      await step
+        .run('record-failure', () =>
+          failTask(medplum, taskId, classify(err), err instanceof Error ? err.message : String(err))
+        )
+        .catch(() => undefined);
+      throw err;
+    }
+  }
+);
+
+/**
+ * Ingest one slice of documents, sequentially.
+ *
+ * Sequential on purpose. Each document already fans out internally — four
+ * Textract calls and eight Bedrock calls at a time — so running four documents
+ * concurrently would put 16 Textract and 32 Bedrock calls in flight and draw
+ * throttling that reads as a model failure. The parallelism is inside a
+ * document, not across them.
+ * @param props - Slice inputs.
+ * @param props.medplum - The worker's admin client.
+ * @param props.organizationId - The tenant written onto every chunk.
+ * @param props.patientId - The patient.
+ * @param props.batch - The documents in this slice.
+ * @returns Per-status counts for the slice.
+ */
+async function ingestSlice(props: {
+  medplum: Awaited<ReturnType<typeof getMedplum>>;
+  organizationId: string;
+  patientId: string;
+  batch: PatientDocument[];
+}): Promise<{ indexed: number; skipped: number; failed: number; chunks: number }> {
+  const totals = { indexed: 0, skipped: 0, failed: 0, chunks: 0 };
+  for (const document of props.batch) {
+    const result = await ingestDocument({
+      medplum: props.medplum,
+      organizationId: props.organizationId,
+      patientId: props.patientId,
+      document,
+    });
+    totals[result.status]++;
+    totals.chunks += result.chunkCount;
+  }
+  return totals;
+}
