@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  CITATION_LIMITS,
+  DOCUMENT_EXCERPT_CHARS,
+} from '../../../../examples/medplum-provider/bots/shared/ai-summary-prompt.ts';
 
 /**
  * The import chain: chart → documents indexed → AI summary, with nobody
@@ -128,6 +132,11 @@ vi.mock('../rag/ingest.ts', () => ({
 
 vi.mock('../rag/ocr.ts', () => ({ getOcrUnavailableReason: () => undefined }));
 
+const recentDocumentExcerpts = vi.fn();
+vi.mock('../rag/retrieve.ts', () => ({
+  recentDocumentExcerpts: (...args: unknown[]) => recentDocumentExcerpts(...args),
+}));
+
 // Imported for their side effect: each module registers its function with the
 // recorder above. Nothing is read off the exports.
 await import('./chart-import.ts');
@@ -160,10 +169,18 @@ async function run(
   id: string,
   data: Record<string, unknown>,
   options: { sendFails?: boolean } = {}
-): Promise<{ result?: unknown; error?: unknown; sent: SentEvent[] }> {
+): Promise<{ result?: unknown; error?: unknown; sent: SentEvent[]; stepOutput: unknown[] }> {
   const sent: SentEvent[] = [];
+  // Everything Inngest would persist to memoise a step. Collected so the
+  // "no clinical text in the event store" rule can actually be asserted
+  // rather than only reasoned about.
+  const stepOutput: unknown[] = [];
   const step = {
-    run: async (_stepId: string, body: () => unknown) => body(),
+    run: async (_stepId: string, body: () => unknown) => {
+      const output = await body();
+      stepOutput.push(output);
+      return output;
+    },
     sendEvent: async (stepId: string, event: { name: string; data: Record<string, unknown> }) => {
       sent.push({ id: stepId, name: event.name, data: event.data });
       if (options.sendFails) {
@@ -175,9 +192,9 @@ async function run(
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   try {
     const result = await registered[id].handler({ event: { data }, step, runId: `run-${id}`, logger });
-    return { result, sent };
+    return { result, sent, stepOutput };
   } catch (error) {
-    return { error, sent };
+    return { error, sent, stepOutput };
   }
 }
 
@@ -205,6 +222,28 @@ function only(sent: SentEvent[], name: string): SentEvent {
   return matches[0];
 }
 
+/**
+ * Re-register the summary function under a given `SUMMARY_DEBOUNCE_PERIOD`.
+ *
+ * The debounce is read from the environment at module load, which is the only
+ * moment it can be: `createFunction` is called once, at import. So reading it
+ * back for a different value means re-importing the module — and then putting
+ * the default registration back, so a test after this one drives the function
+ * the worker actually ships rather than this one's variant.
+ * @param period - The value to register with.
+ * @returns That registration's config.
+ */
+async function summaryConfigWith(period: string): Promise<CapturedFunction['config']> {
+  vi.resetModules();
+  vi.stubEnv('SUMMARY_DEBOUNCE_PERIOD', period);
+  const { patientSummary } = await import('./patient-summary.ts');
+  const config = (patientSummary as unknown as CapturedFunction).config;
+  vi.unstubAllEnvs();
+  vi.resetModules();
+  await import('./patient-summary.ts');
+  return config;
+}
+
 const CHART_EVENT = {
   organizationId: 'clinic-1',
   requester: 'Practitioner/prac-1',
@@ -228,6 +267,8 @@ beforeEach(() => {
   summaryHandler.mockResolvedValue({ ok: true, mode: 'generate', compositionId: 'comp-1', status: 'final' });
   listPatientDocuments.mockResolvedValue([]);
   ingestDocument.mockResolvedValue({ status: 'indexed', chunkCount: 3 });
+  recentDocumentExcerpts.mockResolvedValue([]);
+  isRagConfigured.mockReturnValue(true);
 });
 
 describe('every link of the chain is registered and triggered by the link before it', () => {
@@ -438,6 +479,33 @@ describe('the summary is debounced per patient', () => {
     expect(registered['patient-ai-summary'].config.debounce?.key).toBe('event.data.patientId');
   });
 
+  test('an operator can turn it off without a code change', async () => {
+    // Inngest refuses a *registration* asking for more than the plan allows —
+    // `inngest.ts` records the exact message for a concurrency of 20 against a
+    // plan limit of 5 — and a refusal means these functions do not register,
+    // which from outside looks identical to events nobody sent. There is no way
+    // to ask Inngest at build time whether debouncing is available, so the
+    // escape hatch is an environment variable: the chain keeps working and pays
+    // two model calls per patient instead of one, which is a bill rather than
+    // an outage.
+    expect(await summaryConfigWith('off')).not.toHaveProperty('debounce');
+  });
+
+  test('an empty value is the default, not off', async () => {
+    // `.env.example` ships the key with no value, so copying it must not
+    // silently double every patient's model calls. Only the literal `off`
+    // turns debouncing off.
+    expect((await summaryConfigWith('')).debounce).toMatchObject({ period: '10m' });
+  });
+
+  test('a retuned window is passed through as given', async () => {
+    expect((await summaryConfigWith('3m')).debounce).toEqual({
+      key: 'event.data.patientId',
+      period: '3m',
+      timeout: '30m',
+    });
+  });
+
   test('two index runs for one patient emit the same debounce key value', async () => {
     listPatientDocuments.mockResolvedValue([{ id: 'doc-1' }]);
     const first = await run('rag-document-index', INDEX_EVENT);
@@ -458,13 +526,112 @@ describe('the summary run', () => {
 
   test('generates through the bot handler and reports the Composition', async () => {
     const { result } = await run('patient-ai-summary', SUMMARY_EVENT);
-    expect(result).toEqual({ patientId: 'pat-1', compositionId: 'comp-1', status: 'final' });
+    expect(result).toEqual({ patientId: 'pat-1', compositionId: 'comp-1', status: 'final', documents: 0 });
     expect(summaryHandler).toHaveBeenCalledOnce();
     const event = summaryHandler.mock.calls[0][1] as { requester: { reference: string }; input: unknown };
     // The requester travels all the way down: the bot resolves the clinic it
     // files the Composition under from it, not from `organizationId`.
     expect(event.requester).toEqual({ reference: 'Practitioner/prac-1' });
-    expect(event.input).toEqual({ patientId: 'pat-1', mode: 'generate' });
+    expect(event.input).toEqual({ patientId: 'pat-1', mode: 'generate', documents: [] });
+  });
+
+  test('feeds the indexed documents into the summary as prompt context', async () => {
+    // The payload, not just the plumbing. Without this the chain is correctly
+    // ordered and carries nothing: the prompt's RECENT DOCUMENTS block renders
+    // "None extracted yet" and index-then-summarise changes nothing the model
+    // sees.
+    recentDocumentExcerpts.mockResolvedValue([
+      {
+        documentId: 'doc-1',
+        title: 'Nephrology consult',
+        documentDate: '2026-07-02',
+        excerpt: 'Impression: eGFR 38, progressive.',
+      },
+      { documentId: 'doc-2', title: null, documentDate: null, excerpt: 'Discharge summary text.' },
+    ]);
+
+    const { result } = await run('patient-ai-summary', SUMMARY_EVENT);
+    const input = (summaryHandler.mock.calls[0][1] as { input: { documents: unknown[] } }).input;
+
+    expect(input.documents).toEqual([
+      {
+        // A DocumentReference, because `buildCitationIndex` stores this as the
+        // `Dn` citation target — a chunk id here would produce a citation chip
+        // pointing at nothing a provider can open.
+        reference: { reference: 'DocumentReference/doc-1' },
+        title: 'Nephrology consult',
+        date: '2026-07-02',
+        excerpt: 'Impression: eGFR 38, progressive.',
+      },
+      {
+        reference: { reference: 'DocumentReference/doc-2' },
+        title: 'Untitled document',
+        excerpt: 'Discharge summary text.',
+      },
+    ]);
+    // Reported on the run, so "why does this summary not mention the referral
+    // letter" has an answer without opening a database.
+    expect(result).toMatchObject({ documents: 2 });
+  });
+
+  test('asks for exactly as many documents as the prompt will render', async () => {
+    // The prompt module's own constants, passed in rather than re-stated here,
+    // so the query cannot drift from what `buildChartPrompt` and
+    // `buildCitationIndex` actually read.
+    await run('patient-ai-summary', SUMMARY_EVENT);
+    expect(recentDocumentExcerpts).toHaveBeenCalledWith(
+      { organizationId: 'clinic-1', patientId: 'pat-1' },
+      { limit: CITATION_LIMITS.documents, excerptChars: DOCUMENT_EXCERPT_CHARS }
+    );
+  });
+
+  test('a patient with nothing indexed behaves exactly as before the seam', async () => {
+    recentDocumentExcerpts.mockResolvedValue([]);
+    const { result, error } = await run('patient-ai-summary', SUMMARY_EVENT);
+    expect(error).toBeUndefined();
+    const input = (summaryHandler.mock.calls[0][1] as { input: { documents: unknown[] } }).input;
+    // Empty list, no error, summary still generated — the prompt renders
+    // "None extracted yet" and the model is told to ignore the block.
+    expect(input.documents).toEqual([]);
+    expect(result).toMatchObject({ compositionId: 'comp-1', documents: 0 });
+  });
+
+  test('a worker with no index does not even query for context', async () => {
+    // RAG is an addition to this service, not a precondition. The deployed
+    // Medplum bot is in the same position by construction: it has no database,
+    // passes no documents, and still writes a summary.
+    isRagConfigured.mockReturnValue(false);
+    const { result } = await run('patient-ai-summary', SUMMARY_EVENT);
+    expect(recentDocumentExcerpts).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ compositionId: 'comp-1', documents: 0 });
+  });
+
+  test('an unreachable index costs the document block, not the summary', async () => {
+    // Quality versus availability, decided towards availability: a summary
+    // without its document block is worse than one with it, and far better
+    // than none. The degradation is logged and the count is on the run.
+    recentDocumentExcerpts.mockRejectedValue(new Error('connection terminated unexpectedly'));
+    const { result, error } = await run('patient-ai-summary', SUMMARY_EVENT);
+    expect(error).toBeUndefined();
+    expect(result).toMatchObject({ compositionId: 'comp-1', documents: 0 });
+  });
+
+  test('the document text never becomes Inngest step output', async () => {
+    // Inngest persists every step's return value to memoise it, so a
+    // `step.run` that returned excerpts would write the text of clinical
+    // documents into the event store — the thing `events.ts` says this worker
+    // never does. The read happens inside the model step; what the step
+    // returns is a Composition id.
+    recentDocumentExcerpts.mockResolvedValue([
+      { documentId: 'doc-1', title: 'Consult', documentDate: '2026-07-02', excerpt: 'SECRET CLINICAL TEXT' },
+    ]);
+    const { result, stepOutput } = await run('patient-ai-summary', SUMMARY_EVENT);
+    // The excerpt did reach the model …
+    const input = (summaryHandler.mock.calls[0][1] as { input: { documents: { excerpt: string }[] } }).input;
+    expect(input.documents[0].excerpt).toBe('SECRET CLINICAL TEXT');
+    // … and did not reach anything Inngest keeps.
+    expect(JSON.stringify(stepOutput)).not.toContain('SECRET CLINICAL TEXT');
+    expect(JSON.stringify(result)).not.toContain('SECRET CLINICAL TEXT');
   });
 
   test('opens no Task, so no import row is created or touched', async () => {

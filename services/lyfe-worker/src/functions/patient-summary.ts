@@ -1,9 +1,17 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
+import type { Logger } from 'inngest';
 import { handler as summaryHandler } from '../../../../examples/medplum-provider/bots/patient-ai-summary.ts';
+import type { SummaryDocument } from '../../../../examples/medplum-provider/bots/shared/ai-summary-prompt.ts';
+import {
+  CITATION_LIMITS,
+  DOCUMENT_EXCERPT_CHARS,
+} from '../../../../examples/medplum-provider/bots/shared/ai-summary-prompt.ts';
 import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
+import { isRagConfigured } from '../rag/db.ts';
+import { recentDocumentExcerpts } from '../rag/retrieve.ts';
 import { withStepTimeout } from '../rate-limit.ts';
 
 /**
@@ -31,6 +39,29 @@ import { withStepTimeout } from '../rate-limit.ts';
  * The deployed bot stays deployed, because it still serves the path this
  * function does not: the `Subscription` that marks a summary stale when the
  * chart changes underneath it.
+ *
+ * ## Why the worker reads the document context and the bot does not
+ *
+ * The summary's RECENT DOCUMENTS block comes from `lyfe_rag`, which only this
+ * service can reach. The bot cannot read it and must not be able to: the same
+ * file is also deployed into the Medplum server's `vmcontext` runtime, which
+ * has no database access and should not acquire one for a schema it does not
+ * own. So the index stays on this side of the line and the excerpts are handed
+ * across as `BotEvent` input. A caller with no index passes nothing and the
+ * block renders "None extracted yet" — which is still the deployed bot's
+ * behaviour, unchanged.
+ *
+ * ## The document text never becomes step output
+ *
+ * {@link readDocumentContext} is called *inside* the `generate-summary` step,
+ * not as a step of its own, and that is a privacy constraint rather than a
+ * stylistic one. Inngest persists every step's return value to memoise it, so a
+ * `step.run('read-documents')` returning excerpts would write the text of
+ * clinical documents into the event store — the exact thing `events.ts` says
+ * this worker never does, which is why its events carry ids and not charts. In
+ * here the only thing the step returns is a Composition id. The cost is that a
+ * retry re-reads; it is one indexed query with no embedding call, so that is
+ * the cheap half of the trade.
  *
  * ## No Task
  *
@@ -77,8 +108,13 @@ import { withStepTimeout } from '../rate-limit.ts';
  * Nobody is watching a progress bar for this. The summary is read when a
  * provider opens the chart, which is minutes-to-days after an import, so trading
  * ten minutes of latency for halving the model calls is the right way round.
+ *
+ * Overridable with `SUMMARY_DEBOUNCE_PERIOD`; see {@link summaryDebounce}. An
+ * **empty** value falls back to this default rather than disabling, because
+ * `.env.example` ships the key with no value and copying it must not silently
+ * double every patient's model calls. Only the literal `off` turns it off.
  */
-export const SUMMARY_DEBOUNCE_PERIOD = '10m';
+export const SUMMARY_DEBOUNCE_PERIOD = (process.env.SUMMARY_DEBOUNCE_PERIOD ?? '').trim() || '10m';
 
 /**
  * Ceiling on how long debouncing may keep deferring a summary.
@@ -90,7 +126,52 @@ export const SUMMARY_DEBOUNCE_PERIOD = '10m';
  * windows: long enough that a normal import never reaches it, short enough that
  * reaching it is still the same visit.
  */
-export const SUMMARY_DEBOUNCE_TIMEOUT = '30m';
+export const SUMMARY_DEBOUNCE_TIMEOUT = '30m' as const;
+
+/**
+ * The debounce this function registers with, or `undefined` to register none.
+ *
+ * ## Why this is configurable at all
+ *
+ * Inngest refuses a *registration* that asks for more than the plan allows, and
+ * this project has already met that wall once — `inngest.ts` records the exact
+ * message for a concurrency of 20 against a plan limit of 5. A refusal is a
+ * sync failure, not a runtime one: the functions in this file do not register,
+ * and an endpoint whose functions did not register looks from the outside
+ * exactly like events nobody sent. That is the worst possible shape for this
+ * particular failure, because the chain would go quiet rather than loud.
+ *
+ * There is no way to *ask* Inngest at build time whether debouncing is
+ * available, so the next best thing is an operator being able to turn it off in
+ * one environment variable instead of needing a code change and a deploy to get
+ * imports working again. `SUMMARY_DEBOUNCE_PERIOD=off` registers the function
+ * with no debounce: the chain still works end to end and costs two model calls
+ * per patient instead of one, which is a bill rather than an outage. Anything
+ * else is passed through as the period, so the window can also just be retuned.
+ *
+ * The default is on, and turning it off is logged at startup, because a worker
+ * quietly paying double would otherwise only show up on an invoice.
+ */
+export const summaryDebounce =
+  SUMMARY_DEBOUNCE_PERIOD === 'off'
+    ? undefined
+    : {
+        key: 'event.data.patientId',
+        // Cast because Inngest types the period as a template-literal union of
+        // duration strings and an environment variable is a plain `string`. An
+        // unparseable value is rejected by Inngest at registration with a
+        // message naming it, which is a better error than anything a local
+        // regex would produce.
+        period: SUMMARY_DEBOUNCE_PERIOD as '10m',
+        timeout: SUMMARY_DEBOUNCE_TIMEOUT,
+      };
+
+if (!summaryDebounce) {
+  console.warn(
+    'lyfe-worker: SUMMARY_DEBOUNCE_PERIOD is off, so patient-ai-summary runs once per indexing completion. ' +
+      'Expect two model calls per imported patient — one for the chart index, one for the network index.'
+  );
+}
 
 /**
  * Failures that mean "no summary yet" rather than "something is broken".
@@ -139,7 +220,7 @@ export const patientSummary = inngest.createFunction(
     // already holds that state for us and keeps the *last* event of the window,
     // which is also the one we want: the request that arrived after the most
     // recent indexing run is the one whose chart is most complete.
-    debounce: { key: 'event.data.patientId', period: SUMMARY_DEBOUNCE_PERIOD, timeout: SUMMARY_DEBOUNCE_TIMEOUT },
+    ...(summaryDebounce ? { debounce: summaryDebounce } : {}),
     // Four, not the importers' six. One model call is a much narrower failure
     // surface than a multi-hour network pull, and a rate limit still costs no
     // attempt — `withStepTimeout` turns it into a `RetryAfterError`.
@@ -159,11 +240,22 @@ export const patientSummary = inngest.createFunction(
     // being called again. Throwing in here retries the call.
     const outcome = await step.run('generate-summary', async () =>
       withStepTimeout(`ai summary ${patientId}`, async () => {
+        // Read in here, not as its own step, so the document text is never
+        // persisted as step output. See the note at the top of this file.
+        const documents = await readDocumentContext({ organizationId, patientId, logger });
         // The bot returns its failures rather than throwing them, so there is
         // no try/catch to write here — `res.ok` is the error channel.
-        const res = await summaryHandler(medplum, botEvent(requester, { patientId, mode: 'generate' as const }));
+        const res = await summaryHandler(
+          medplum,
+          botEvent(requester, { patientId, mode: 'generate' as const, documents })
+        );
         if (res.ok) {
-          return { ok: true as const, compositionId: res.compositionId, status: res.status };
+          return {
+            ok: true as const,
+            compositionId: res.compositionId,
+            status: res.status,
+            documents: documents.length,
+          };
         }
         const message = res.error ?? 'The summary bot reported failure without a reason';
         if (isSummaryUnavailable(message)) {
@@ -180,6 +272,73 @@ export const patientSummary = inngest.createFunction(
       return { patientId, skipped: true, reason: outcome.reason };
     }
 
-    return { patientId, compositionId: outcome.compositionId, status: outcome.status };
+    return {
+      patientId,
+      compositionId: outcome.compositionId,
+      status: outcome.status,
+      // Reported on the run so "why does this summary not mention the referral
+      // letter" has an answer that does not require a database. A zero here
+      // with documents known to be indexed points at the read below, not at
+      // the model.
+      documents: outcome.documents,
+    };
   }
 );
+
+/**
+ * The document context for one patient, or an empty list.
+ *
+ * Degrades rather than fails, and the choice is worth stating because it is a
+ * quality-versus-availability call. A summary without its document block is
+ * worse than one with it — that block is the only place a finding from a
+ * scanned referral can come from. A patient with *no summary at all* is worse
+ * still: the structured chart is the bulk of what the model is given, and the
+ * whole point of this chain is that nobody has to ask for a summary twice.
+ *
+ * So a RAG index that is unconfigured, unreachable or empty yields `[]` and the
+ * summary is written from FHIR alone, exactly as it was before this seam was
+ * fed. The degradation is logged and the document count is returned on the run,
+ * so a silently thinner summary is still a visible one.
+ * @param props - Lookup inputs.
+ * @param props.organizationId - The tenant filter. Never from a request body.
+ * @param props.patientId - The patient.
+ * @param props.logger - The run's logger.
+ * @returns Bounded excerpts for the prompt, newest first.
+ */
+async function readDocumentContext(props: {
+  organizationId: string;
+  patientId: string;
+  logger: Logger;
+}): Promise<SummaryDocument[]> {
+  const { organizationId, patientId, logger } = props;
+  if (!isRagConfigured()) {
+    // Not a warning. RAG is an addition to this service, not a precondition,
+    // and a worker deployed without it is a supported configuration.
+    return [];
+  }
+  try {
+    const excerpts = await recentDocumentExcerpts(
+      { organizationId, patientId },
+      // The prompt module's own numbers, passed in rather than defaulted, so
+      // there is one place that decides how many documents the prompt renders
+      // and how much of each — and no way for the query to drift from it.
+      { limit: CITATION_LIMITS.documents, excerptChars: DOCUMENT_EXCERPT_CHARS }
+    );
+    return excerpts.map((excerpt) => ({
+      // The citation target. `buildCitationIndex` stores this as the `Dn`
+      // source, so it has to be the DocumentReference itself and not the chunk
+      // — `document_id` is that id, which is what makes this a reference and
+      // not a lookup.
+      reference: { reference: `DocumentReference/${excerpt.documentId}` },
+      title: excerpt.title ?? 'Untitled document',
+      ...(excerpt.documentDate ? { date: excerpt.documentDate } : {}),
+      excerpt: excerpt.excerpt,
+    }));
+  } catch (err) {
+    logger.warn('document context unavailable, summarising from the structured chart alone', {
+      patientId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}

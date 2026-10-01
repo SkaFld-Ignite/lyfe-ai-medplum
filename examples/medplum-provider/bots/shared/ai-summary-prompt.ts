@@ -34,20 +34,34 @@ import { stripNullBytes } from './ai-summary.ts';
 /**
  * A document excerpt, for the seam below.
  *
- * ───────────────────────── DOCUMENT CONTEXT SEAM ─────────────────────────
+ * ──────────────────── DOCUMENT CONTEXT SEAM — NOW FED ────────────────────
  * lyfe-provider-ui spliced a 600-character excerpt from each of the ten most
  * recent `DocumentExtraction` rows into the prompt as `[D1]`…`[D10]`, so the
  * model could surface a finding that only exists in a scanned referral letter or
- * an imaging report. There is no document-extraction pipeline in this repo yet,
- * so `PatientChart.documents` is always empty and the RECENT DOCUMENTS block
- * renders as "None extracted yet".
+ * an imaging report. This repo now does the same thing from a different source:
+ * `services/lyfe-worker` reads the ten most recent documents out of the
+ * `lyfe_rag` pgvector index — chunk 0 of each, by document date — and hands them
+ * to the bot as `SummaryInput.documents`.
  *
- * To light it up, populate `documents` in the bot — one entry per extracted
- * DocumentReference, `reference` pointing at the DocumentReference itself — and
- * nothing else needs to change: the tag letter `D`, the citation index, the
- * system prompt's RECENT DOCUMENTS rules and the UI's citation chip all already
- * handle it. Keep `excerpt` at {@link DOCUMENT_EXCERPT_CHARS} and run it through
- * `stripNullBytes`: extracted OCR text contains NUL.
+ * Selected by **recency, not similarity**, deliberately. A summary asks no
+ * question; it is asked to describe the whole patient, so there is no query to
+ * embed and nothing for a nearest-neighbour search to be near. Recency is also
+ * what the production implementation used, and it makes a summary reproducible:
+ * the same chart yields the same ten excerpts.
+ *
+ * The excerpts arrive as **input rather than being read here**, because this
+ * file runs in two places. Inside `lyfe-worker` it has `RAG_DATABASE_URL`;
+ * deployed as a Medplum bot on `vmcontext` it has no database at all, and must
+ * not acquire one for a schema the Medplum server does not own. A caller with no
+ * index passes nothing, `documents` is empty, and the RECENT DOCUMENTS block
+ * renders "None extracted yet" exactly as it did before — which is still a live
+ * path, not a historical one.
+ *
+ * Nothing else about the seam changed: the tag letter `D`, the citation index,
+ * the system prompt's RECENT DOCUMENTS rules and the UI's citation chip all
+ * handled it already. `excerpt` is capped at {@link DOCUMENT_EXCERPT_CHARS} and
+ * run through `stripNullBytes` by `normaliseDocuments` in the bot — extracted
+ * OCR text contains NUL, and Postgres will not store it.
  * ─────────────────────────────────────────────────────────────────────────
  */
 export interface SummaryDocument {
@@ -77,7 +91,7 @@ export interface PatientChart {
   encounters: Encounter[];
   /** Future only, soonest first. */
   appointments: Appointment[];
-  /** See the seam above. Empty until document extraction exists. */
+  /** See the seam above. Handed in by the caller; empty when it has no index. */
   documents: SummaryDocument[];
 }
 
@@ -210,7 +224,8 @@ export function buildChartPrompt(chart: PatientChart, now: Date): string {
     return `- [E${i + 1}] ${encounterLabel(encounter)}${reason}`;
   });
 
-  // See the DOCUMENT CONTEXT SEAM on SummaryDocument: always empty for now.
+  // See the DOCUMENT CONTEXT SEAM on SummaryDocument. Fed by the worker from
+  // the `lyfe_rag` index; empty when the caller has no index to read.
   const documents = chart.documents.slice(0, CITATION_LIMITS.documents).map((document, i) => {
     const excerpt = document.excerpt.replace(/\s+/g, ' ').trim().slice(0, DOCUMENT_EXCERPT_CHARS);
     return `- [D${i + 1}] ${document.date ?? 'undated'} | ${document.title}\n  ${excerpt || '(no text extracted)'}`;
