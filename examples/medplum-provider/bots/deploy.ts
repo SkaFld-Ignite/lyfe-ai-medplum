@@ -145,6 +145,14 @@ const BOTS: BotDefinition[] = [
     // Same shape of work as the patient summary: one chart read plus one model call.
     timeout: 180,
   },
+  {
+    name: 'lyfe-soap-note',
+    description: "Draft an encounter's SOAP note as a Composition, and push the approved note to DrChrono.",
+    source: 'soap-note.ts',
+    // One encounter read plus one model call, or one DrChrono round trip — the
+    // same shape of work as the AI summary, so the same ceiling.
+    timeout: 180,
+  },
 ];
 
 /**

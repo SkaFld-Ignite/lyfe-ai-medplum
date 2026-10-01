@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Box, Card, Stack, Textarea, Title } from '@mantine/core';
-import { useDebouncedCallback } from '@mantine/hooks';
+import { Box, Button, Card, Group, Stack, Textarea, Title } from '@mantine/core';
+import { useDebouncedCallback, useDisclosure } from '@mantine/hooks';
 import type { WithId } from '@medplum/core';
-import { createReference, getReferenceString } from '@medplum/core';
+import { createReference, formatHumanName, getReferenceString } from '@medplum/core';
 import type { Encounter, Practitioner, Provenance, Reference, Task } from '@medplum/fhirtypes';
 import { Loading, useMedplum } from '@medplum/react';
+import { IconFileText } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SAVE_TIMEOUT_MS } from '../../config/constants';
@@ -20,6 +21,7 @@ import { BillingTab } from './BillingTab';
 import { EncounterAiSummaryCard } from './EncounterAiSummaryCard';
 import { EncounterHeader } from './EncounterHeader';
 import { SignAddendum } from './SignAddendum';
+import { SoapNoteDrawer } from './SoapNoteDrawer';
 
 const FHIR_ACT_REASON_SYSTEM = 'http://terminology.hl7.org/CodeSystem/v3-ActReason';
 const FHIR_PROVENANCE_PARTICIPANT_TYPE_SYSTEM = 'http://terminology.hl7.org/CodeSystem/provenance-participant-type';
@@ -57,6 +59,7 @@ export const EncounterChart = (props: EncounterChartProps): JSX.Element => {
     setClinicalImpression,
   } = useEncounterChart(encounterProp);
 
+  const [soapOpened, { open: openSoap, close: closeSoap }] = useDisclosure(false);
   const [chartNote, setChartNote] = useState(clinicalImpression?.note?.[0]?.text);
   const [provenances, setProvenances] = useState<Provenance[]>([]);
   const [chartNoteStatus, setChartNoteStatus] = useState(ChartNoteStatus.Unsigned);
@@ -279,6 +282,12 @@ export const EncounterChart = (props: EncounterChartProps): JSX.Element => {
                 }
               />
 
+              <Group>
+                <Button variant="default" leftSection={<IconFileText size={16} />} onClick={openSoap}>
+                  SOAP note
+                </Button>
+              </Group>
+
               {clinicalImpression && (
                 <Card withBorder shadow="sm" mt="md">
                   <Title>Fill chart note</Title>
@@ -319,6 +328,13 @@ export const EncounterChart = (props: EncounterChartProps): JSX.Element => {
       {taskProp && (
         <TaskDetailsModal key={getReferenceString(taskProp)} task={taskProp} onUpdateTask={updateTaskList} />
       )}
+      <SoapNoteDrawer
+        encounterId={encounter.id}
+        patientName={patientResource.name?.[0] ? formatHumanName(patientResource.name[0]) : 'Unknown patient'}
+        encounterDate={encounter.period?.start}
+        opened={soapOpened}
+        onClose={closeSoap}
+      />
     </>
   );
 };
