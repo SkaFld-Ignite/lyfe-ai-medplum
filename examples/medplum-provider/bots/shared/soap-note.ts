@@ -899,8 +899,7 @@ export function decideClinicalNoteWrite(props: {
   }
   return {
     kind: 'refuse',
-    reason:
-      `DrChrono clinical note ${note.id} already has content that Lyfe did not write. ` + 'Refusing to overwrite it.',
+    reason: `DrChrono clinical note ${note.id} already has content that Lyfe did not write. Refusing to overwrite it.`,
   };
 }
 

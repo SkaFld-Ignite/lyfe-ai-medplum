@@ -74,12 +74,17 @@ export function useSoapNote(encounterId: string): SoapNoteState {
       if (!composition?.id) {
         return {};
       }
-      // Awaited after the Composition rather than alongside it: it needs the id,
-      // and concurrent Medplum searches auto-batch, which the drawer gains
-      // nothing from here.
-      const provenances = await medplum.searchResources('Provenance', `target=Composition/${composition.id}`, {
-        cache: 'no-cache',
-      });
+      // Awaited after the Composition rather than alongside it: it needs the id.
+      //
+      // A failure here is swallowed on purpose. This read only decides whether a
+      // badge says the note is already in DrChrono; losing the whole note to it
+      // would be the worse outcome, and a denied Provenance search is exactly the
+      // kind of access-policy gap that turns one optional surface into a blank
+      // panel. The push does not trust this value — the bot re-reads the
+      // Provenance server-side before it writes anything.
+      const provenances = await medplum
+        .searchResources('Provenance', `target=Composition/${composition.id}`, { cache: 'no-cache' })
+        .catch(() => []);
       return { note: parseSoapComposition(composition), drChronoNoteId: drChronoNoteIdOf(provenances) };
     };
 

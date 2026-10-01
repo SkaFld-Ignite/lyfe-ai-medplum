@@ -50,6 +50,13 @@ const COMPARTMENT_SCOPED = [
   'ClinicalImpression',
   'ChargeItem',
   'Provenance',
+  // Where every AI document lives: the patient summary, the pre/post-visit
+  // encounter summaries and the encounter SOAP note. Absent until now, which
+  // means a clinic user got a bare `Forbidden` from each of those cards' own
+  // searches — the bots write them fine, because a bot runs under its own
+  // project-admin membership, so the resources exist and are simply invisible to
+  // the people they were written for.
+  'Composition',
   // Written by the Zus importer and invisible without this: a clinic user got
   // a bare 403 on any chart surface that touched them.
   'CarePlan',
