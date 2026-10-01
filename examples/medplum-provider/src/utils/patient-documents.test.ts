@@ -93,13 +93,15 @@ describe('filterDocuments', () => {
   });
 
   test('filters by source and category', () => {
-    expect(titles({ source: 'zus' })).toEqual(['Zus summary']);
-    expect(titles({ source: 'other' })).toEqual(['Uploaded scan']);
+    // Two sources, not three: the network-sourced summary and the document
+    // uploaded here are both Lyfe.
+    expect(titles({ source: 'lyfe' })).toEqual(['Zus summary', 'Uploaded scan']);
+    expect(titles({ source: 'drchrono' })).toEqual(['Alpha labs', 'Beta note']);
     expect(titles({ categories: ['Notes'] })).toEqual(['Beta note']);
   });
 
   test('counts sources and categories, and formats a copyable list', () => {
-    expect(countBySource(rows)).toEqual({ drchrono: 2, zus: 1, other: 1 });
+    expect(countBySource(rows)).toEqual({ drchrono: 2, lyfe: 2 });
     expect(collectCategories(rows)).toEqual([{ label: 'Notes', count: 1 }]);
     expect(formatDocumentList(rows.slice(1, 2), 'US/Pacific')).toBe('2026-03-01 — Alpha labs — Lab');
   });

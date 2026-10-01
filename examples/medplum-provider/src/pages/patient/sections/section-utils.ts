@@ -6,7 +6,7 @@ import type { RecordBadge, RecordTone } from '../../../components/patient-shell/
 import type { DataSource } from '../../../utils/patient-timeline';
 import { getDataSource } from '../../../utils/patient-timeline';
 
-const SOURCE_TONES: Record<DataSource, RecordTone> = { drchrono: 'emerald', zus: 'blue', other: 'violet' };
+const SOURCE_TONES: Record<DataSource, RecordTone> = { drchrono: 'emerald', lyfe: 'violet' };
 
 /**
  * A concept's display text: its text, else the first coding's display, else its code.
@@ -86,12 +86,12 @@ export function matchesQuery(query: string, texts: (string | undefined)[]): bool
 }
 
 /**
- * The "From DrChrono" / "From Zus/HIE" / "Added in Lyfe" badge for a record, as on Documents.
+ * The "From DrChrono" / "From Lyfe" badge for a record, as on Documents.
  * @param resource - The record.
  * @returns The badge.
  */
 export function sourceBadge(resource: Resource): RecordBadge {
   const source = getDataSource(resource);
-  const label = DOCUMENT_SOURCES.find((s) => s.source === source)?.badge ?? 'Added in Lyfe';
+  const label = DOCUMENT_SOURCES.find((s) => s.source === source)?.badge ?? 'From Lyfe';
   return { label, tone: SOURCE_TONES[source] };
 }

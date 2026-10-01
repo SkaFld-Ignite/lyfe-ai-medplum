@@ -9,10 +9,15 @@ export const DOCUMENTS_PER_PAGE = 25;
 /** Category chips shown on a row before "+N more". */
 export const VISIBLE_CATEGORY_COUNT = 4;
 
-/** Filter chip order, and the label and color for each source. */
+/**
+ * Filter chip order, and the label and color for each source.
+ *
+ * Two sources, matching {@link DataSource}: Lyfe (anything not from the
+ * connected EHR, whether it arrived over the Lyfe Data Network or was created
+ * here) and DrChrono.
+ */
 export const DOCUMENT_SOURCES: { source: DataSource; label: string; badge: string; color: MantineColor }[] = [
-  { source: 'zus', label: 'Zus/HIE', badge: 'From Zus/HIE', color: 'blue' },
-  { source: 'other', label: 'Lyfe', badge: 'Added in Lyfe', color: 'violet' },
+  { source: 'lyfe', label: 'Lyfe', badge: 'From Lyfe', color: 'violet' },
   { source: 'drchrono', label: 'DrChrono', badge: 'From DrChrono', color: 'green' },
 ];
 

@@ -4,10 +4,10 @@ import type { WithId } from '@medplum/core';
 import { getDisplayString, getReferenceString } from '@medplum/core';
 import type { Attachment, DocumentReference } from '@medplum/fhirtypes';
 import { getDocumentTypeDisplay } from '../pages/patient/DocumentReference.utils';
+import { fhirDayKey } from './clinic-time';
 import { getAttachmentContentType } from './document-file-type';
 import type { DataSource } from './patient-timeline';
 import { getDataSource, toDayKey } from './patient-timeline';
-import { fhirDayKey } from './clinic-time';
 
 /** What kind of file a document holds, for its icon. */
 export type DocumentFileKind = 'pdf' | 'image' | 'text' | 'other';
@@ -161,7 +161,7 @@ export function filterDocuments(rows: DocumentRow[], filters: DocumentFilters): 
  * @returns Count per source.
  */
 export function countBySource(rows: DocumentRow[]): Record<DataSource, number> {
-  const counts: Record<DataSource, number> = { drchrono: 0, zus: 0, other: 0 };
+  const counts: Record<DataSource, number> = { drchrono: 0, lyfe: 0 };
   for (const row of rows) {
     counts[row.source]++;
   }

@@ -23,7 +23,7 @@ import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LyfePageHeader } from '../../components/brand/LyfePageHeader';
 import type { DomainCounts, ImportRun } from '../../services/imports';
-import { countPatientDomains, listImportRuns, resolvePatientNames } from '../../services/imports';
+import { countPatientDomains, listImportRuns, resolvePatientNames, SOURCE_LABELS } from '../../services/imports';
 
 /** Uppercase micro-label, matching the roster and directory pages. */
 const MICRO_LABEL = {
@@ -221,8 +221,8 @@ function RunRows(props: RunRowsProps): JSX.Element {
           </Text>
         </Table.Td>
         <Table.Td>
-          <Badge variant="light" radius="sm" color={run.source === 'zus' ? 'cyan' : 'indigo'} style={BADGE}>
-            {run.source === 'zus' ? 'Zus' : 'DrChrono'}
+          <Badge variant="light" radius="sm" color={run.source === 'zus' ? 'violet' : 'indigo'} style={BADGE}>
+            {SOURCE_LABELS[run.source]}
           </Badge>
         </Table.Td>
         <Table.Td>
@@ -370,7 +370,7 @@ function RunDetail(props: { run: ImportRun }): JSX.Element {
                 <Table.Tr>
                   <Table.Th style={MICRO_LABEL}>Domain</Table.Th>
                   <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>DrChrono</Table.Th>
-                  <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>Zus</Table.Th>
+                  <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>{SOURCE_LABELS.zus}</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -434,7 +434,7 @@ const BADGE = { textTransform: 'none', fontWeight: 500 } as const;
  * @returns A label, or undefined when there is nothing to show.
  */
 function sourceLabel(run: ImportRun): string | undefined {
-  return run.sourceId ? `${run.source === 'zus' ? 'Zus' : 'DrChrono'} #${run.sourceId}` : undefined;
+  return run.sourceId ? `${SOURCE_LABELS[run.source]} #${run.sourceId}` : undefined;
 }
 
 /**

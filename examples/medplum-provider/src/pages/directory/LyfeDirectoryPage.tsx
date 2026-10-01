@@ -222,7 +222,7 @@ export function LyfeDirectoryPage(): JSX.Element {
         title="Offices"
         emptyHint="No offices yet. Use “Pull from DrChrono” to load them."
         detailHeading="Address"
-        hint="Import controls whether appointments are pulled at all. Zus enrolment is separate: only patients seen at a Zus office are sent to Zus."
+        hint="Import controls whether appointments are pulled at all. Lyfe enrolment is separate: only patients seen at an enrolled office are shared with the Lyfe network."
         loading={!directory}
         rows={locations}
         pending={pending}
@@ -245,7 +245,7 @@ interface DirectorySectionProps {
   readonly rows: DirectoryRow[];
   readonly pending: ReadonlySet<string>;
   readonly section: Section;
-  /** Offices only: render the second, Zus-enrolment switch. */
+  /** Offices only: render the second, Lyfe-enrolment switch. */
   readonly showZusColumn?: boolean;
   readonly onToggle: (section: Section, field: Field, row: DirectoryRow, value: boolean) => Promise<void>;
 }
@@ -274,7 +274,7 @@ function DirectorySection(props: DirectorySectionProps): JSX.Element {
           )}
           {!props.loading && props.showZusColumn && (
             <Badge variant="light" color="teal" radius="sm">
-              {zusCount} enrolling in Zus
+              {zusCount} enrolling in Lyfe
             </Badge>
           )}
         </Group>
@@ -308,7 +308,9 @@ function DirectorySection(props: DirectorySectionProps): JSX.Element {
               <Table.Th style={MICRO_LABEL}>{props.detailHeading}</Table.Th>
               <Table.Th style={MICRO_LABEL}>DrChrono ID</Table.Th>
               <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>Import</Table.Th>
-              {props.showZusColumn && <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>Zus enrolment</Table.Th>}
+              {props.showZusColumn && (
+                <Table.Th style={{ ...MICRO_LABEL, textAlign: 'right' }}>Lyfe enrolment</Table.Th>
+              )}
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -346,10 +348,10 @@ function DirectorySection(props: DirectorySectionProps): JSX.Element {
                       color="teal"
                       checked={row.zusEnabled}
                       // An office we do not import from cannot produce the
-                      // encounters that make its patients Zus-eligible, so
+                      // encounters that make its patients eligible, so
                       // offering the switch there would promise nothing.
                       disabled={!row.enabled || props.pending.has(`${props.section}:zusEnabled:${row.id}`)}
-                      aria-label={`Enrol ${row.name} patients in Zus`}
+                      aria-label={`Enrol ${row.name} patients in Lyfe`}
                       onChange={(e) => {
                         props.onToggle(props.section, 'zusEnabled', row, e.target.checked).catch(() => undefined);
                       }}

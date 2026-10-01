@@ -257,7 +257,7 @@ export function LyfeOnboardingPage(): JSX.Element {
                                     runZus(String(patient.id), imported[String(patient.id)].medplumId as string)
                                   }
                                 >
-                                  Pull from Zus
+                                  Pull from Lyfe
                                 </Button>
                               )}
                               {zusResult[String(patient.id)] && (

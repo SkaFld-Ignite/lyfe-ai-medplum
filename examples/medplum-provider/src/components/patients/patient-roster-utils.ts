@@ -7,7 +7,7 @@ import { clinicToday } from '../../utils/clinic-time';
 /** Identifier systems the roster knows how to label as an MRN. */
 const MRN_SYSTEMS: { system: string; label: string }[] = [
   { system: 'https://drchrono.com/patients', label: 'DRCHRONO' },
-  { system: 'https://zusapi.com/fhir/identifier/universal-id', label: 'ZUS' },
+  { system: 'https://zusapi.com/fhir/identifier/universal-id', label: 'LYFE' },
 ];
 
 /**

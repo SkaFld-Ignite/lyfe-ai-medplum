@@ -129,7 +129,7 @@ describe('buildPatientTimeline', () => {
     // The appointment status wins over the encounter status.
     expect(visit.status).toBe('cancelled');
     expect(visit.reason).toBe('Fatty liver follow-up');
-    expect(visit.sources.sort()).toEqual(['drchrono', 'zus']);
+    expect(visit.sources.sort()).toEqual(['drchrono', 'lyfe']);
   });
 
   test('shows appointments without an encounter as their own visits', () => {
@@ -234,7 +234,7 @@ describe('buildPatientTimeline', () => {
     const [event] = events as ConditionEvent[];
     expect(events).toHaveLength(1);
     expect(event.copies).toBe(2);
-    expect(event.sources.sort()).toEqual(['drchrono', 'zus']);
+    expect(event.sources.sort()).toEqual(['drchrono', 'lyfe']);
     expect(event.detail).toBe('K21.9');
     expect(event.clinicalStatus).toBe('active');
   });
@@ -397,8 +397,11 @@ describe('helpers', () => {
 
   test('data source from tags', () => {
     expect(getDataSource({ resourceType: 'Patient', meta: tag('drchrono') })).toBe('drchrono');
-    expect(getDataSource({ resourceType: 'Patient', meta: tag('ZUS') })).toBe('zus');
-    expect(getDataSource({ resourceType: 'Patient' })).toBe('other');
+    // Everything that is not DrChrono is Lyfe. The Lyfe Data Network's `zus`
+    // provenance tag stays in the data, but it is not a third source: a record
+    // pulled over the network and one created in Lyfe both read as Lyfe.
+    expect(getDataSource({ resourceType: 'Patient', meta: tag('ZUS') })).toBe('lyfe');
+    expect(getDataSource({ resourceType: 'Patient' })).toBe('lyfe');
   });
 
   test('status labels and chart paths', () => {

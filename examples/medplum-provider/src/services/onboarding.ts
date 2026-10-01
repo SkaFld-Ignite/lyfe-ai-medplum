@@ -368,8 +368,8 @@ async function awaitZusImport(
 ): Promise<ZusImportResult> {
   return awaitBotJob<ZusImportResult>(medplum, jobId, {
     maxPolls: ZUS_MAX_POLLS,
-    label: 'Zus',
-    timeoutMessage: 'Zus import is still running after 25 minutes; check the Task.',
+    label: 'Lyfe',
+    timeoutMessage: 'Lyfe import is still running after 25 minutes; check the Task.',
     onProgress,
   });
 }
@@ -508,7 +508,8 @@ export function describeNetworkPull(zus: ZusImportResult | undefined): {
  * import without a human pasting ids.
  *
  * Whether the patient is eligible at all is decided server-side from the
- * office their encounters are at — see the Directory page's Zus column. An
+ * office their encounters are at — see the Directory page's Lyfe enrolment
+ * column. An
  * ineligible patient comes back `ok: false` with the reason, having cost
  * nothing. That is the whole reason callers can simply always ask: there is no
  * eligibility rule to mirror in the browser, and mirroring one would be a
