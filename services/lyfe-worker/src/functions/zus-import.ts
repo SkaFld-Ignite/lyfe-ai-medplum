@@ -94,8 +94,9 @@ export const zusImport = inngest.createFunction(
       await step.run('complete-task', () => completeTask(medplum, taskId, counts));
       return { counts, empty: total(result) === 0 };
     } catch (err) {
-      // Recorded on the Task before rethrowing, so the patient-keyed view shows
-      // the failure even while Inngest is still retrying the run.
+      // Reached only once the step has exhausted its retries, so the Task is
+      // marked failed for a run that really is over — and the patient-keyed
+      // view shows it without anyone opening Inngest.
       await step
         .run('record-failure', () =>
           failTask(medplum, taskId, classify(err), err instanceof Error ? err.message : String(err))

@@ -5,7 +5,7 @@ import { handler as drchronoHandler } from '../../../../examples/medplum-provide
 import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
-import { completeTask, failTask, setPhase, startTask } from '../task.ts';
+import { attachPatient, completeTask, failTask, setPhase, startTask } from '../task.ts';
 
 /**
  * Import one DrChrono chart.
@@ -33,64 +33,85 @@ export const chartImport = inngest.createFunction(
     const medplum = await getMedplum();
     const organization = { reference: `Organization/${organizationId}` };
 
-    // The chart import resolves the Medplum patient itself, so the Task cannot
-    // be opened against a patient until the import has run at least far enough
-    // to find or create one. Rather than guess, the import runs first and the
-    // Task is opened from its result — which is also what makes the Task
-    // patient-keyed rather than DrChrono-keyed.
-    const result = await step.run('import-chart', async () => {
-      logger.info('importing chart', { drchronoPatientId, organizationId });
-      return drchronoHandler(medplum, botEvent(requester, { action: 'import', drchronoPatientId }));
-    });
-
-    if (!result.ok) {
-      // A chart that DrChrono will never return is not worth three attempts.
-      // Anything else — a timeout, a 429, a blip — is, and throwing a plain
-      // Error lets Inngest retry with backoff.
-      const message = 'error' in result ? String(result.error) : 'import failed';
-      if (/not found|no patient|invalid/i.test(message)) {
-        throw new NonRetriableError(message);
-      }
-      throw new Error(message);
-    }
-
-    const patientId = 'medplumPatientId' in result ? (result.medplumPatientId as string) : undefined;
-    if (!patientId) {
-      throw new NonRetriableError('Import reported success without a patient id');
-    }
-
-    // Recorded after the fact rather than streamed: this function's phases are
-    // visible in Inngest as steps, and the Task's job is to be the patient-keyed
-    // record of what landed, not a second progress bar.
-    await step.run('record-task', async () => {
+    // The Task is opened BEFORE the import, not after it.
+    //
+    // It used to be created from the import's result, which meant a failed
+    // import left no Medplum record at all — invisible on the Imports page,
+    // findable only in Inngest. A 104-patient run made that concrete: 40
+    // patients were created and only 28 had a Task, so twelve failures were
+    // untraceable from the patient-keyed view that exists precisely to answer
+    // "what happened to this patient".
+    //
+    // A chart import does not know its patient yet — the importer finds or
+    // creates one — so the Task opens without `for`, carrying the DrChrono id
+    // so it is still findable, and the patient is attached once resolved.
+    const taskId = await step.run('open-task', async () => {
       const task = await startTask({
         medplum,
         organization,
         code: 'drchrono-import',
-        patientId,
+        sourceId: drchronoPatientId,
         runId,
         batchId,
       });
-      await setPhase(medplum, task.id as string, 'chart imported');
-      await completeTask(
-        medplum,
-        task.id as string,
-        ('counts' in result ? result.counts : {}) as Record<string, number>
-      );
-      return task.id;
+      return task.id as string;
     });
 
-    // Sent as its own event rather than awaited inline, so a Zus failure never
-    // marks a chart that imported perfectly well as failed, and either half can
-    // be retried without the other.
-    if (withZus) {
-      await step.sendEvent('request-zus', {
-        name: 'lyfe/zus.import.requested',
-        data: { organizationId, requester, medplumPatientId: patientId, batchId },
-      });
-    }
+    try {
+      // The success check lives INSIDE the step, not after it.
+      //
+      // A throw in the function body retries the whole function, and Inngest
+      // replays `import-chart` from its memoized result — so a failed import
+      // would rethrow the same cached error three times without ever calling
+      // DrChrono again. Throwing inside the step retries the step, which is
+      // what a 429 or a timeout actually needs.
+      const { patientId, counts } = await step.run('import-chart', async () => {
+        logger.info('importing chart', { drchronoPatientId, organizationId });
+        await setPhase(medplum, taskId, 'importing chart');
+        const res = await drchronoHandler(medplum, botEvent(requester, { action: 'import', drchronoPatientId }));
 
-    return { patientId, counts: 'counts' in result ? result.counts : {} };
+        if (!res.ok) {
+          const message = 'error' in res ? String(res.error) : 'import failed';
+          // A chart DrChrono will never return is not worth three attempts.
+          // Anything else — a timeout, a 429, a blip — is, and a plain Error
+          // lets Inngest retry the step with backoff.
+          throw /not found|no patient|invalid/i.test(message) ? new NonRetriableError(message) : new Error(message);
+        }
+
+        const id = 'medplumPatientId' in res ? (res.medplumPatientId) : undefined;
+        if (!id) {
+          throw new NonRetriableError('Import reported success without a patient id');
+        }
+        return { patientId: id, counts: ('counts' in res ? res.counts : {}) as Record<string, number> };
+      });
+
+      await step.run('complete-task', async () => {
+        await attachPatient(medplum, taskId, patientId);
+        await completeTask(medplum, taskId, counts);
+      });
+
+      // Sent as its own event rather than awaited inline, so a Zus failure
+      // never marks a chart that imported perfectly well as failed, and either
+      // half can be retried without the other.
+      if (withZus) {
+        await step.sendEvent('request-zus', {
+          name: 'lyfe/zus.import.requested',
+          data: { organizationId, requester, medplumPatientId: patientId, batchId },
+        });
+      }
+
+      return { patientId, counts };
+    } catch (err) {
+      // Reached only once the step has exhausted its retries, so the Task is
+      // marked failed for a run that really is over — and the patient-keyed
+      // view shows it without anyone opening Inngest.
+      await step
+        .run('record-failure', () =>
+          failTask(medplum, taskId, classify(err), err instanceof Error ? err.message : String(err))
+        )
+        .catch(() => undefined);
+      throw err;
+    }
   }
 );
 

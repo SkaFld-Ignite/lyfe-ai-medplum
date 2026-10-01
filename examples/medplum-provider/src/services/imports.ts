@@ -24,6 +24,9 @@ export type ImportSource = 'drchrono' | 'zus';
 /** Coding system the bots use for a failure reason. */
 const IMPORT_ERROR_SYSTEM = 'https://lyfe.com/import-error';
 
+/** Identifier carrying the source-system id, on a run with no patient yet. */
+const SOURCE_ID_IDENTIFIER = 'https://lyfe.com/source-id';
+
 /** Task codes the two importers write. */
 const TASK_CODES: Record<ImportSource, string> = {
   drchrono: 'drchrono-import',
@@ -40,6 +43,14 @@ export interface ImportRun {
   readonly phase?: string;
   readonly patientReference?: string;
   readonly patientName?: string;
+  /**
+   * The id in the source system, when there is no Medplum patient to show.
+   *
+   * A chart import opens its Task before it knows the patient — the importer
+   * finds or creates one — so a run that fails early never gets a `for`. The
+   * row would read "—", which is exactly the run someone needs to identify.
+   */
+  readonly sourceId?: string;
   readonly startedAt?: string;
   readonly endedAt?: string;
   /** Wall-clock duration in ms, from the execution period or the run's own report. */
@@ -140,6 +151,7 @@ function toRun(task: Task): ImportRun | undefined {
     phase: task.businessStatus?.text,
     patientReference,
     patientName: task.for?.display,
+    sourceId: task.identifier?.find((i) => i.system === SOURCE_ID_IDENTIFIER)?.value,
     startedAt: start,
     endedAt: end,
     durationMs,

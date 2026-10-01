@@ -46,5 +46,5 @@ export function botEvent<T>(requester: string, input: T): BotEvent<T> {
     secrets: { [ENCRYPTION_KEY_SECRET]: { name: ENCRYPTION_KEY_SECRET, valueString: material } },
     requester: { reference: requester },
     input,
-  } as BotEvent<T>;
+  };
 }

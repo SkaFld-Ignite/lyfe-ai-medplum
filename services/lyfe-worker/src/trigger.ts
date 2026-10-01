@@ -43,12 +43,14 @@ interface BulkImportBody {
  * Handle `POST /api/imports/bulk`.
  * @param req - The request.
  * @param res - The response.
+ * @returns Nothing; the reply is written to `res`.
  */
 export async function handleBulkImport(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const token = bearerToken(req);
     if (!token) {
-      return send(res, 401, { error: 'Missing bearer token' });
+      send(res, 401, { error: 'Missing bearer token' });
+      return;
     }
 
     // Verified by asking Medplum, rather than by decoding the token here.
@@ -56,16 +58,19 @@ export async function handleBulkImport(req: IncomingMessage, res: ServerResponse
     // to answer — a local check would drift from it.
     const caller = await identify(token);
     if (!caller) {
-      return send(res, 401, { error: 'Token is not valid' });
+      send(res, 401, { error: 'Token is not valid' });
+      return;
     }
 
     const body = (await readJson(req)) as BulkImportBody;
     const ids = (body?.drchronoPatientIds ?? []).map(String).filter(Boolean);
     if (ids.length === 0) {
-      return send(res, 400, { error: 'drchronoPatientIds is required and must not be empty' });
+      send(res, 400, { error: 'drchronoPatientIds is required and must not be empty' });
+      return;
     }
     if (ids.length > MAX_PATIENTS_PER_REQUEST) {
-      return send(res, 400, { error: `At most ${MAX_PATIENTS_PER_REQUEST} patients per request` });
+      send(res, 400, { error: `At most ${MAX_PATIENTS_PER_REQUEST} patients per request` });
+      return;
     }
 
     // One batch id for the whole run, so the patients of a run can be found as

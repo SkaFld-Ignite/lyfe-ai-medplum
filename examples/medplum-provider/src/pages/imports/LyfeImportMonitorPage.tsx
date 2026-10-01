@@ -217,7 +217,7 @@ function RunRows(props: RunRowsProps): JSX.Element {
         </Table.Td>
         <Table.Td>
           <Text size="sm" fw={500}>
-            {props.name ?? run.patientName ?? run.patientReference ?? '—'}
+            {props.name ?? run.patientName ?? run.patientReference ?? sourceLabel(run) ?? '—'}
           </Text>
         </Table.Td>
         <Table.Td>
@@ -424,6 +424,18 @@ function CountCell(props: { value: number }): JSX.Element {
 }
 
 const BADGE = { textTransform: 'none', fontWeight: 500 } as const;
+
+/**
+ * How to name a run whose patient is not known yet.
+ *
+ * A chart import that failed before resolving its patient still has the id it
+ * was asked to import, which is what the person looking at the row is holding.
+ * @param run - The run.
+ * @returns A label, or undefined when there is nothing to show.
+ */
+function sourceLabel(run: ImportRun): string | undefined {
+  return run.sourceId ? `${run.source === 'zus' ? 'Zus' : 'DrChrono'} #${run.sourceId}` : undefined;
+}
 
 /**
  * Short failure description for the list.
