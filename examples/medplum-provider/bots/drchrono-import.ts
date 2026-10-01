@@ -49,14 +49,12 @@ import type {
   Appointment,
   Attachment,
   AuditEvent,
-  Communication,
   Condition,
   Coverage,
   DiagnosticReport,
   DocumentReference,
   Encounter,
   Extension,
-  FamilyMemberHistory,
   Immunization,
   Location,
   MedicationRequest,
@@ -169,10 +167,6 @@ export interface ImportCounts {
   procedures: number;
   /** Vaccine records written as Immunization. */
   immunizations: number;
-  /** Family history rows written as FamilyMemberHistory. */
-  familyHistories: number;
-  /** Social history rows written as Observation. */
-  socialHistoryObs: number;
   /** Lab orders written as ServiceRequest. */
   labOrders: number;
   /** Lab results written as DiagnosticReport. */
@@ -193,10 +187,6 @@ export interface ImportCounts {
   observations: number;
   /** Locked/unlocked visit notes written as DocumentReference. */
   clinicalNotes: number;
-  /** Inbox messages written as Communication. */
-  communications: number;
-  /** DrChrono tasks written as Task. */
-  tasks: number;
 }
 
 /** Returned when the import ran to completion. */
@@ -283,14 +273,6 @@ export const IDENTIFIER_SYSTEMS = {
   labObservation: 'https://drchrono.com/lab-observations',
   /** DrChrono lab document id. */
   labDocument: 'https://drchrono.com/lab-documents',
-  /** DrChrono family history row id. */
-  familyHistory: 'https://drchrono.com/family-history',
-  /** Social history Observations, keyed `<row>-<topic>`. */
-  socialHistory: 'https://drchrono.com/social-history',
-  /** DrChrono message id. */
-  communication: 'https://drchrono.com/messages',
-  /** DrChrono task id. */
-  task: 'https://drchrono.com/tasks',
   /** The tracking Task for one import run. */
   syncJob: 'https://lyfe.health/sync-jobs',
   /** Payer ids as DrChrono's clearinghouse reports them. */
@@ -588,47 +570,6 @@ interface DrLabDocument {
   timestamp?: string;
   /** Raw HL7 v2 ORU^R01 message, present when `type === 'RES'`. */
   hl7?: string | null;
-}
-
-interface DrFamilyHistory {
-  id: number;
-  patient: number;
-  relationship?: string;
-  member_name?: string;
-  condition?: string;
-  icd10_code?: string;
-  date_of_onset?: string;
-  notes?: string;
-}
-
-interface DrSocialHistory {
-  id: number;
-  patient: number;
-  smoking_status?: string;
-  smoking_status_code?: string;
-  alcohol_use?: string;
-  recorded_date?: string;
-}
-
-interface DrMessage {
-  id: number;
-  patient?: number;
-  title?: string;
-  type?: string;
-  read?: boolean;
-  archived?: boolean;
-  received_at?: string;
-  updated_at?: string;
-}
-
-interface DrTask {
-  id: number;
-  title?: string;
-  due_date?: string;
-  notes?: string;
-  assignee?: number;
-  associated_items?: { type: string; value: number }[];
-  created_at?: string;
 }
 
 /** One page of a DrChrono list endpoint. */
@@ -1030,8 +971,6 @@ function emptyCounts(): ImportCounts {
     conditions: 0,
     procedures: 0,
     immunizations: 0,
-    familyHistories: 0,
-    socialHistoryObs: 0,
     labOrders: 0,
     labReports: 0,
     labObservations: 0,
@@ -1042,8 +981,6 @@ function emptyCounts(): ImportCounts {
     documents: 0,
     observations: 0,
     clinicalNotes: 0,
-    communications: 0,
-    tasks: 0,
   };
 }
 
@@ -2649,206 +2586,6 @@ function mapDocument(
   };
 }
 
-/** HL7 v3 RoleCode values for the family relationships DrChrono records. */
-const FAMILY_RELATIONSHIP_MAP: Record<string, { code: string; display: string }> = {
-  mother: { code: 'MTH', display: 'Mother' },
-  father: { code: 'FTH', display: 'Father' },
-  brother: { code: 'BRO', display: 'Brother' },
-  sister: { code: 'SIS', display: 'Sister' },
-  son: { code: 'SON', display: 'Son' },
-  daughter: { code: 'DAU', display: 'Daughter' },
-  grandfather: { code: 'GRFTH', display: 'Grandfather' },
-  grandmother: { code: 'GRMTH', display: 'Grandmother' },
-  aunt: { code: 'AUNT', display: 'Aunt' },
-  uncle: { code: 'UNCLE', display: 'Uncle' },
-};
-
-/**
- * Map a DrChrono family history row onto a FamilyMemberHistory.
- * @param f - The DrChrono family history payload.
- * @param patient - Reference to the imported patient.
- * @param organization - The calling clinic.
- * @returns The FamilyMemberHistory resource.
- */
-function mapFamilyMemberHistory(
-  f: DrFamilyHistory,
-  patient: Reference<Patient>,
-  organization: Reference<Organization>
-): FamilyMemberHistory {
-  const rel = f.relationship ? FAMILY_RELATIONSHIP_MAP[f.relationship.toLowerCase()] : undefined;
-  return {
-    resourceType: 'FamilyMemberHistory',
-    meta: buildMeta(organization),
-    identifier: [{ system: IDENTIFIER_SYSTEMS.familyHistory, value: String(f.id) }],
-    status: 'completed',
-    patient,
-    name: f.member_name,
-    relationship: rel
-      ? {
-          coding: [
-            { system: 'http://terminology.hl7.org/CodeSystem/v3-RoleCode', code: rel.code, display: rel.display },
-          ],
-          text: f.relationship,
-        }
-      : { text: f.relationship || 'Unknown' },
-    condition: f.condition
-      ? [
-          {
-            code: {
-              coding: f.icd10_code
-                ? [{ system: 'http://hl7.org/fhir/sid/icd-10-cm', code: f.icd10_code, display: f.condition }]
-                : [],
-              text: f.condition,
-            },
-            onsetString: f.date_of_onset,
-            note: f.notes ? [{ text: f.notes }] : undefined,
-          },
-        ]
-      : undefined,
-  };
-}
-
-/**
- * Map a DrChrono social history row onto one Observation per recorded topic.
- *
- * Smoking status is the one that matters for quality measures, so it carries the
- * LOINC code and the SNOMED answer coding when DrChrono supplies one.
- * @param s - The DrChrono social history payload.
- * @param patient - Reference to the imported patient.
- * @param organization - The calling clinic.
- * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
- * @returns Zero, one or two Observations.
- */
-function mapSocialHistory(
-  s: DrSocialHistory,
-  patient: Reference<Patient>,
-  organization: Reference<Organization>,
-  timeZone: string
-): Observation[] {
-  const category = {
-    coding: [
-      {
-        system: 'http://terminology.hl7.org/CodeSystem/observation-category',
-        code: 'social-history',
-        display: 'Social History',
-      },
-    ],
-  };
-  const effectiveDateTime = toInstant(s.recorded_date, timeZone) ?? new Date().toISOString();
-  const out: Observation[] = [];
-
-  if (s.smoking_status) {
-    out.push({
-      resourceType: 'Observation',
-      meta: buildMeta(organization),
-      identifier: [{ system: IDENTIFIER_SYSTEMS.socialHistory, value: `${s.id}-smoking` }],
-      status: 'final',
-      category: [category],
-      code: {
-        coding: [{ system: 'http://loinc.org', code: '72166-2', display: 'Tobacco smoking status' }],
-        text: 'Smoking Status',
-      },
-      subject: patient,
-      effectiveDateTime,
-      valueCodeableConcept: {
-        coding: s.smoking_status_code
-          ? [{ system: 'http://snomed.info/sct', code: s.smoking_status_code, display: s.smoking_status }]
-          : [],
-        text: s.smoking_status,
-      },
-    });
-  }
-
-  if (s.alcohol_use) {
-    out.push({
-      resourceType: 'Observation',
-      meta: buildMeta(organization),
-      identifier: [{ system: IDENTIFIER_SYSTEMS.socialHistory, value: `${s.id}-alcohol` }],
-      status: 'final',
-      category: [category],
-      code: {
-        coding: [{ system: 'http://loinc.org', code: '11331-6', display: 'Alcohol use [Reported]' }],
-        text: 'Alcohol Use',
-      },
-      subject: patient,
-      effectiveDateTime,
-      valueString: s.alcohol_use,
-    });
-  }
-
-  return out;
-}
-
-/**
- * Map a DrChrono inbox message onto a Communication.
- * @param m - The DrChrono message payload.
- * @param patient - Reference to the imported patient.
- * @param organization - The calling clinic.
- * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
- * @returns The Communication resource.
- */
-function mapCommunication(
-  m: DrMessage,
-  patient: Reference<Patient>,
-  organization: Reference<Organization>,
-  timeZone: string
-): Communication {
-  // FHIR has no "unread" status; an unread message is one still in progress.
-  const status: Communication['status'] = m.archived || m.read ? 'completed' : 'in-progress';
-  return {
-    resourceType: 'Communication',
-    meta: buildMeta(organization),
-    identifier: [{ system: IDENTIFIER_SYSTEMS.communication, value: String(m.id) }],
-    status,
-    subject: patient,
-    sent: toInstant(m.received_at, timeZone),
-    received: m.read ? toInstant(m.updated_at, timeZone) : undefined,
-    category: m.type
-      ? [{ coding: [{ system: IDENTIFIER_SYSTEMS.messageType, code: m.type, display: m.type }] }]
-      : undefined,
-    payload: m.title ? [{ contentString: m.title }] : undefined,
-  };
-}
-
-/**
- * Map a DrChrono task onto a FHIR Task.
- *
- * DrChrono's `status` is a numeric foreign key into a per-practice TaskStatus
- * table, so without a second lookup there is no way to tell open from done.
- * `requested` is the safe answer: it never marks outstanding work as finished.
- * @param t - The DrChrono task payload.
- * @param patient - Reference to the imported patient.
- * @param organization - The calling clinic.
- * @param practitioners - DrChrono doctor id to Practitioner reference.
- * @param encounters - DrChrono appointment id to Encounter reference.
- * @param timeZone - The zone naive DrChrono timestamps are wall-clock in.
- * @returns The Task resource.
- */
-function mapDrTask(
-  t: DrTask,
-  patient: Reference<Patient>,
-  organization: Reference<Organization>,
-  practitioners: Map<string, Reference<Practitioner>>,
-  encounters: Map<string, Reference<Encounter>>,
-  timeZone: string
-): Task {
-  const appointmentLink = t.associated_items?.find((a) => a.type === 'appointment');
-  return {
-    resourceType: 'Task',
-    meta: buildMeta(organization),
-    identifier: [{ system: IDENTIFIER_SYSTEMS.task, value: String(t.id) }],
-    status: 'requested',
-    intent: 'order',
-    description: t.title || t.notes || `DrChrono task ${t.id}`,
-    for: patient,
-    encounter: appointmentLink ? lookup(encounters, appointmentLink.value) : undefined,
-    owner: t.assignee ? lookup(practitioners, t.assignee) : undefined,
-    authoredOn: toInstant(t.created_at, timeZone),
-    restriction: t.due_date ? { period: { end: t.due_date } } : undefined,
-    note: t.notes && t.notes !== t.title ? [{ text: t.notes }] : undefined,
-  };
-}
-
 // ─── Provenance and AuditEvent ───────────────────────────────────────────────
 
 /**
@@ -3768,39 +3505,19 @@ async function importHistories(ctx: ImportContext, patient: Reference<Patient>):
   ctx.counts.immunizations = vaccineResult.wrote;
   trackRefs(ctx, 'Immunization', vaccineResult.ids);
 
-  const family = await drchronoOptional<DrFamilyHistory>(ctx.client, '/family_history', {
-    patient: ctx.drchronoPatientId,
-  });
-  const familyResult = await write(
-    ctx.medplum,
-    family.map((f) => ({
-      resourceType: 'FamilyMemberHistory',
-      resource: mapFamilyMemberHistory(f, patient, ctx.organization),
-      system: IDENTIFIER_SYSTEMS.familyHistory,
-      value: String(f.id),
-    })),
-    'family-history'
-  );
-  ctx.counts.familyHistories = familyResult.wrote;
-  trackRefs(ctx, 'FamilyMemberHistory', familyResult.ids);
-
-  const social = await drchronoOptional<DrSocialHistory>(ctx.client, '/social_history', {
-    patient: ctx.drchronoPatientId,
-  });
-  const socialEntries: UpsertEntry[] = [];
-  for (const s of social) {
-    for (const obs of mapSocialHistory(s, patient, ctx.organization, ctx.timeZone)) {
-      socialEntries.push({
-        resourceType: 'Observation',
-        resource: obs,
-        system: IDENTIFIER_SYSTEMS.socialHistory,
-        value: obs.identifier?.[0]?.value as string,
-      });
-    }
-  }
-  const socialResult = await write(ctx.medplum, socialEntries, 'social-history');
-  ctx.counts.socialHistoryObs = socialResult.wrote;
-  trackRefs(ctx, 'Observation', socialResult.ids);
+  // DrChrono's /family_history and /social_history are deliberately not
+  // imported either, for a different reason worth distinguishing.
+  //
+  // Unlike messages and tasks these ARE clinical, and the project does hold
+  // family and social history — 8 and 116 records at the time of writing. Every
+  // one of them came from Zus. DrChrono answered 404 for both endpoints on
+  // every patient of a 104-patient run and has never written a single resource
+  // through either.
+  //
+  // So this is not a judgement that the data does not matter. It is that this
+  // account does not expose it and Zus already supplies it. If a clinic turns
+  // up whose DrChrono does serve these, restoring them is small — the mappers
+  // are kept for exactly that reason.
 }
 
 /**
@@ -4047,12 +3764,6 @@ async function rehostDocumentFiles<T extends { id: number; document?: string }>(
   return files;
 }
 
-/** Cap on inbox messages per run. */
-const MAX_MESSAGES = 200;
-
-/** Cap on DrChrono tasks per run. */
-const MAX_TASKS = 200;
-
 /**
  * Import chart documents, inbox messages and open tasks.
  * @param ctx - The import context.
@@ -4078,43 +3789,17 @@ async function importAdministrative(ctx: ImportContext, patient: Reference<Patie
   ctx.counts.documents = documentResult.wrote;
   trackRefs(ctx, 'DocumentReference', documentResult.ids);
 
-  const messages = await drchronoOptional<DrMessage>(
-    ctx.client,
-    '/messages',
-    { patient: ctx.drchronoPatientId },
-    { maxRecords: MAX_MESSAGES, sectionTimeoutMs: 60_000 }
-  );
-  const messageResult = await write(
-    ctx.medplum,
-    messages.map((m) => ({
-      resourceType: 'Communication',
-      resource: mapCommunication(m, patient, ctx.organization, ctx.timeZone),
-      system: IDENTIFIER_SYSTEMS.communication,
-      value: String(m.id),
-    })),
-    'communications'
-  );
-  ctx.counts.communications = messageResult.wrote;
-  trackRefs(ctx, 'Communication', messageResult.ids);
-
-  const tasks = await drchronoOptional<DrTask>(
-    ctx.client,
-    '/tasks',
-    { patient: ctx.drchronoPatientId },
-    { maxRecords: MAX_TASKS, sectionTimeoutMs: 60_000 }
-  );
-  const taskResult = await write(
-    ctx.medplum,
-    tasks.map((t) => ({
-      resourceType: 'Task',
-      resource: mapDrTask(t, patient, ctx.organization, ctx.practitioners, ctx.encounters, ctx.timeZone),
-      system: IDENTIFIER_SYSTEMS.task,
-      value: String(t.id),
-    })),
-    'tasks'
-  );
-  ctx.counts.tasks = taskResult.wrote;
-  trackRefs(ctx, 'Task', taskResult.ids);
+  // DrChrono's /messages and /tasks are deliberately not imported.
+  //
+  // Both answer 403 for this account — the scopes are not granted — and across
+  // a 104-patient production run they produced zero resources, as they always
+  // had. The platform this replaces defines an `AdministrativeResource` for
+  // them too, wires it into its service object, and never calls it from any
+  // sync.
+  //
+  // They are also administrative rather than clinical: an inbox message and a
+  // staff to-do are not part of the chart a clinician reads. Fetching them cost
+  // two failed round trips per patient, with retries, for nothing.
 }
 
 /*
