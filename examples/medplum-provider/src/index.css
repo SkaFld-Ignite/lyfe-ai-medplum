@@ -2,40 +2,104 @@
   transform: none;
 }
 
-/* Pill-style tabs used across Tasks, Messages, Labs, and Patient tabs */
-.pill-tabs .mantine-Tabs-list {
-  display: flex;
-  gap: 4px;
+/*
+ * Lyfe tab bars: a soft grey track with the active tab as a raised white chip.
+ * One look for every horizontal tab bar in the app:
+ *   - `.pill-tabs` (Medications, lab order detail),
+ *   - Mantine `variant="pills"` tabs (record pages' Details / Edit / History, onboarding),
+ *   - Medplum's list/detail boards (Orders, Tasks, Messages), whose tabs carry ListWithDetailPane's
+ *     `pillTabs` class and cannot take a className.
+ */
+:is(
+    .pill-tabs,
+    .mantine-Tabs-root[data-variant='pills'][data-orientation='horizontal'],
+    .mantine-Tabs-root[class*='_pillTabs_']
+  )
+  > .mantine-Tabs-list {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 10px;
+  background: light-dark(#f1f5f9, var(--mantine-color-dark-6));
+
+  &::before {
+    display: none;
+  }
 }
 
-.pill-tabs .mantine-Tabs-tab {
-  height: 32px;
-  padding: 0 12px;
-  border-radius: var(--mantine-radius-xl);
-  font-size: var(--mantine-font-size-sm);
-  font-weight: 450;
-  background-color: transparent;
-  color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-gray-4));
+:is(
+    .pill-tabs,
+    .mantine-Tabs-root[data-variant='pills'][data-orientation='horizontal'],
+    .mantine-Tabs-root[class*='_pillTabs_']
+  )
+  .mantine-Tabs-tab {
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: light-dark(#64748b, var(--mantine-color-gray-4));
+  background: transparent;
   transition:
     background-color 150ms ease,
-    color 150ms ease;
+    color 150ms ease,
+    box-shadow 150ms ease;
+
+  & a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  &:hover {
+    color: light-dark(#0f172a, var(--mantine-color-white));
+    background: light-dark(rgb(255 255 255 / 0.6), var(--mantine-color-dark-5));
+  }
+
+  &[data-active],
+  &[data-active]:hover {
+    color: light-dark(#1d4ed8, var(--mantine-color-white));
+    background: light-dark(#fff, var(--mantine-color-dark-4));
+    box-shadow:
+      0 1px 2px rgb(15 23 42 / 0.08),
+      0 0 0 1px rgb(15 23 42 / 0.04);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 1px;
+  }
 }
 
-.pill-tabs .mantine-Tabs-tab:hover {
-  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-gray-8));
+/* Segmented switches (Timeline Date/Condition, scheduling views) share the tab bars' look. */
+.mantine-SegmentedControl-root {
+  padding: 3px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 10px;
+  background: light-dark(#f1f5f9, var(--mantine-color-dark-6));
 }
 
-.pill-tabs .mantine-Tabs-tab[data-active] {
-  background-color: light-dark(var(--mantine-color-gray-1), var(--mantine-color-gray-7));
-  color: light-dark(var(--mantine-color-gray-9), var(--mantine-color-white));
+.mantine-SegmentedControl-indicator {
+  border-radius: 7px;
+  background: light-dark(#fff, var(--mantine-color-dark-4));
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 0.08),
+    0 0 0 1px rgb(15 23 42 / 0.04);
 }
 
-.pill-tabs .mantine-Tabs-tab[data-active]:hover {
-  background-color: light-dark(var(--mantine-color-gray-1), var(--mantine-color-gray-7));
-  color: light-dark(var(--mantine-color-gray-9), var(--mantine-color-white));
+.mantine-SegmentedControl-label {
+  font-weight: 600;
+  color: light-dark(#64748b, var(--mantine-color-gray-4));
+
+  &[data-active],
+  &[data-active]:hover {
+    color: light-dark(#1d4ed8, var(--mantine-color-white));
+  }
 }
 
 /* Outline-style ActionIcon buttons (filter, delete, lock, etc.) */

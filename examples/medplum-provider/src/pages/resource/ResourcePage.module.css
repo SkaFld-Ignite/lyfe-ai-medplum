@@ -16,33 +16,6 @@
   font-weight: 600;
 }
 
-/* LinkTabs: Lyfe's pill tabs. */
-.list {
-  gap: 4px;
-}
-
-.tab {
-  padding: 6px 14px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: light-dark(#475569, var(--mantine-color-gray-4));
-
-  & a {
-    color: inherit;
-  }
-
-  &:hover {
-    background: light-dark(#f1f5f9, var(--mantine-color-dark-6));
-  }
-
-  &[data-active],
-  &[data-active]:hover {
-    color: var(--mantine-color-white);
-    background: light-dark(#0f172a, var(--mantine-color-blue-7));
-  }
-}
-
 .body {
   padding: 8px 20px 20px;
 }

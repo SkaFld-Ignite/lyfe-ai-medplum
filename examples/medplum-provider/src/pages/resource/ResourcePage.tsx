@@ -74,7 +74,7 @@ export function ResourcePage(): JSX.Element | null {
         }
         toolbar={
           <Group justify="space-between" wrap="nowrap">
-            <LinkTabs variant="pills" baseUrl={baseUrl} tabs={tabs} classNames={classes} />
+            <LinkTabs variant="pills" baseUrl={baseUrl} tabs={tabs} />
             {section && (
               <Anchor component={MedplumLink} to={`/Patient/${patientId}/${section.url}`} className={classes.back}>
                 <IconArrowLeft size={14} />
