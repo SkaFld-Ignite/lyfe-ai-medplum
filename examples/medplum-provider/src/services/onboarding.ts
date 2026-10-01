@@ -156,7 +156,25 @@ export interface ImportResult {
   readonly taskId?: string;
   readonly durationMs?: number;
   readonly error?: string;
+  /**
+   * The network pull that follows every chart import.
+   *
+   * Present whenever the chart landed, because the pull is then always
+   * attempted. `ok: false` on it is an ordinary outcome — most often "this
+   * office is not enrolled" — and deliberately does **not** make `ok` above
+   * false: the chart imported.
+   */
+  readonly zus?: ZusImportResult;
 }
+
+/**
+ * Which half of an import a progress message is about.
+ *
+ * Callers show the two differently — a chart import and a network pull are
+ * minutes apart and fail for unrelated reasons — and the alternative was
+ * matching on the text of the message, which is not a contract.
+ */
+export type ImportStage = 'chart' | 'network';
 
 /**
  * Bot ids, looked up once per session.
@@ -287,11 +305,15 @@ const ZUS_MAX_POLLS = 300;
 
 /**
  * Start one DrChrono chart import, without waiting for it.
+ *
+ * Deliberately not exported. A caller holding this could import a chart and
+ * stop there, which is precisely the bug: the only exported way in is
+ * {@link importDrChronoPatient}, which also pulls the patient's network record.
  * @param medplum - Authenticated Medplum client.
  * @param drchronoPatientId - The DrChrono patient id to import.
  * @returns The AsyncJob id, already running server-side.
  */
-export async function startDrChronoImport(medplum: MedplumClient, drchronoPatientId: number | string): Promise<string> {
+async function startDrChronoImport(medplum: MedplumClient, drchronoPatientId: number | string): Promise<string> {
   return startBotJob(medplum, IMPORT_BOT_IDENTIFIER, {
     action: 'import',
     drchronoPatientId: String(drchronoPatientId),
@@ -305,7 +327,7 @@ export async function startDrChronoImport(medplum: MedplumClient, drchronoPatien
  * @param onProgress - Called with a human-readable status while the job runs.
  * @returns The bot's result, including per-resource-type counts on success.
  */
-export async function awaitDrChronoImport(
+async function awaitDrChronoImport(
   medplum: MedplumClient,
   jobId: string,
   onProgress?: (status: string) => void
@@ -320,11 +342,15 @@ export async function awaitDrChronoImport(
 
 /**
  * Start one Zus pull, without waiting for it.
+ *
+ * Private for the same reason as the DrChrono pair above: callers go through
+ * {@link importZusRecord}, or through {@link pullNetworkRecord} when they want
+ * every outcome reported rather than thrown.
  * @param medplum - Authenticated Medplum client.
  * @param medplumPatientId - The Medplum Patient to import onto.
  * @returns The AsyncJob id, already running server-side.
  */
-export async function startZusImport(medplum: MedplumClient, medplumPatientId: string): Promise<string> {
+async function startZusImport(medplum: MedplumClient, medplumPatientId: string): Promise<string> {
   return startBotJob(medplum, ZUS_BOT_IDENTIFIER, { action: 'import', medplumPatientId });
 }
 
@@ -335,7 +361,7 @@ export async function startZusImport(medplum: MedplumClient, medplumPatientId: s
  * @param onProgress - Called with a human-readable status while the job runs.
  * @returns The bot's result.
  */
-export async function awaitZusImport(
+async function awaitZusImport(
   medplum: MedplumClient,
   jobId: string,
   onProgress?: (status: string) => void
@@ -349,23 +375,80 @@ export async function awaitZusImport(
 }
 
 /**
- * Import one DrChrono patient's chart into Medplum.
+ * Import one DrChrono patient's chart into Medplum, then their network record.
  *
- * The bot does the work server-side against the calling clinic's own DrChrono
- * credentials, and records a FHIR Task so a long import stays inspectable after
- * the browser has moved on.
+ * **This is the only way to import a chart, and the two halves are one call on
+ * purpose.** Before, the chaining existed in exactly one place — the import
+ * worker's bulk function — so a patient imported from the search screen got a
+ * complete DrChrono chart and no outside record at all. The chart looked fine,
+ * which is what made it hard to notice: 220 resources imported, nothing from
+ * the network, no error anywhere. Putting the chain here means a caller cannot
+ * import half a record by forgetting a second call.
+ *
+ * The pull is never conditional. Whether this patient qualifies is decided
+ * server-side inside the importer, from the office their encounters are at —
+ * see {@link importZusRecord} — so there is nothing for a caller to decide and
+ * nothing to ask the user. An ineligible patient is refused there having cost
+ * nothing.
+ *
+ * A failed or empty network half never fails the import: `ok` reports the
+ * chart, and the network outcome is reported separately in `zus`.
  * @param medplum - Authenticated Medplum client.
  * @param drchronoPatientId - The DrChrono patient id to import.
- * @param onProgress - Called with a human-readable status while the job runs.
- * @returns The bot's result, including per-resource-type counts on success.
+ * @param onProgress - Called with a human-readable status, and which half it is about.
+ * @returns The chart result, carrying the network outcome in `zus`.
  */
 export async function importDrChronoPatient(
   medplum: MedplumClient,
   drchronoPatientId: number | string,
-  onProgress?: (status: string) => void
+  onProgress?: (status: string, stage: ImportStage) => void
 ): Promise<ImportResult> {
   const jobId = await startDrChronoImport(medplum, drchronoPatientId);
-  return awaitDrChronoImport(medplum, jobId, onProgress);
+  const chart = await awaitDrChronoImport(medplum, jobId, (status) => onProgress?.(status, 'chart'));
+  if (!chart.ok || !chart.medplumPatientId) {
+    // Nothing to pull a record onto. The network half needs the Medplum patient
+    // the chart import created.
+    return chart;
+  }
+  const zus = await pullNetworkRecord(medplum, chart.medplumPatientId, (status) => onProgress?.(status, 'network'));
+  return { ...chart, zus };
+}
+
+/**
+ * Pull a patient's network record, reporting every outcome as a result.
+ *
+ * Wraps {@link importZusRecord} so that nothing it does can escape as a thrown
+ * error. That matters because the only callers are chart imports that have
+ * already succeeded: a chart with thousands of resources in it must not be
+ * reported as a failure because the outside record was unreachable, ineligible,
+ * or simply not aggregated yet.
+ *
+ * Three outcomes are all normal here, and none of them is a failed import:
+ *
+ * - **refused** — the patient's office does not have enrolment switched on, so
+ *   there is no record to pull. `ok: false` with the reason.
+ * - **empty** — the patient was just enrolled and the networks have not
+ *   answered; they come back over hours. `ok: true` with no counts.
+ * - **populated** — `ok: true` with counts.
+ *
+ * The empty case is why the import worker re-pulls on a 30m/2h/6h ladder. A
+ * direct call like this one gets the first attempt only, so an empty result
+ * here means *pending*, not *absent*.
+ * @param medplum - Authenticated Medplum client.
+ * @param medplumPatientId - The Medplum Patient to import onto.
+ * @param onProgress - Called with a human-readable status while the job runs.
+ * @returns The outcome, never thrown.
+ */
+export async function pullNetworkRecord(
+  medplum: MedplumClient,
+  medplumPatientId: string,
+  onProgress?: (status: string) => void
+): Promise<ZusImportResult> {
+  try {
+    return await importZusRecord(medplum, medplumPatientId, onProgress);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** Identifier of the bot that mirrors a patient's Zus record into Medplum. */
@@ -379,6 +462,44 @@ export interface ZusImportResult {
 }
 
 /**
+ * What a finished network pull amounts to, for a screen to show.
+ *
+ * Three states rather than ok/not-ok, because two of the three are perfectly
+ * healthy and showing either of them as a failure is how a working import ends
+ * up looking broken:
+ *
+ * - `pulled` — records landed.
+ * - `pending` — the patient was enrolled and the networks have not answered
+ *   yet; they come back over hours. Nothing is wrong and nothing is missing.
+ * - `skipped` — the patient does not qualify, almost always because their
+ *   office does not have enrolment switched on in the Directory. A
+ *   configuration choice, not an error to triage.
+ */
+export type NetworkPullState = 'pulled' | 'pending' | 'skipped';
+
+/**
+ * Classify a network pull, so no screen has to decide what `ok: false` means.
+ * @param zus - The pull's result, or undefined when none was attempted.
+ * @returns The state and a line of text describing it.
+ */
+export function describeNetworkPull(zus: ZusImportResult | undefined): {
+  readonly state: NetworkPullState;
+  readonly detail: string;
+} {
+  if (!zus) {
+    return { state: 'skipped', detail: 'no record pull was attempted' };
+  }
+  if (!zus.ok) {
+    return { state: 'skipped', detail: zus.error ?? 'not eligible' };
+  }
+  const total = Object.values(zus.counts ?? {}).reduce((sum, n) => sum + n, 0);
+  if (total === 0) {
+    return { state: 'pending', detail: 'awaiting records — the networks answer over hours, not seconds' };
+  }
+  return { state: 'pulled', detail: `${total} records pulled` };
+}
+
+/**
  * Pull a patient's Zus record into Medplum.
  *
  * Takes only the Medplum patient id: the bot resolves the two Zus ids itself,
@@ -389,7 +510,13 @@ export interface ZusImportResult {
  * Whether the patient is eligible at all is decided server-side from the
  * office their encounters are at — see the Directory page's Zus column. An
  * ineligible patient comes back `ok: false` with the reason, having cost
- * nothing.
+ * nothing. That is the whole reason callers can simply always ask: there is no
+ * eligibility rule to mirror in the browser, and mirroring one would be a
+ * second copy of a clinic's configuration that could disagree with the first.
+ *
+ * Normal callers should use {@link importDrChronoPatient}, which runs this
+ * automatically; this is exported for re-running the pull on a patient whose
+ * chart is already in — see {@link pullNetworkRecord}.
  * @param medplum - Authenticated Medplum client.
  * @param medplumPatientId - The Medplum Patient to import onto.
  * @param onProgress - Called with a human-readable status while the job runs.

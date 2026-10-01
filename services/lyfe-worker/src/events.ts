@@ -41,8 +41,6 @@ export interface ChartImportRequested {
     requester: string;
     /** DrChrono's patient id. */
     drchronoPatientId: string;
-    /** Pull the Zus record once the chart lands. */
-    withZus: boolean;
     /** Groups the patients of one bulk run, so a run can be found as a whole. */
     batchId?: string;
   };
@@ -56,6 +54,14 @@ export interface ChartImportRequested {
  * DrChrono, a Zus pull on eligibility or the network. Keeping them apart means
  * a Zus failure never masks a chart that imported perfectly well, and either
  * can be retried alone.
+ *
+ * Separate, but not optional. Every chart import emits this once the chart
+ * lands — there is no flag, and there was never a good reason for one. Whether
+ * the patient may actually be enrolled is decided inside the importer, from the
+ * office their encounters are at (the Directory page's Zus column), which is
+ * the only place that can decide it correctly. An ineligible patient comes back
+ * refused, having cost nothing, and the run closes as skipped rather than
+ * failed.
  */
 export interface ZusImportRequested {
   name: 'lyfe/zus.import.requested';

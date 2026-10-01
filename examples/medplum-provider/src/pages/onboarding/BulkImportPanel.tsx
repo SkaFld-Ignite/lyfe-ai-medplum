@@ -6,7 +6,6 @@ import {
   Badge,
   Box,
   Button,
-  Checkbox,
   Group,
   Paper,
   SimpleGrid,
@@ -16,20 +15,18 @@ import {
   TextInput,
 } from '@mantine/core';
 import { useMedplum } from '@medplum/react';
-import { IMPORT_WORKER_URL, queueBulkImport } from '../../services/bulk-import';
 import { IconAlertCircle, IconDatabase, IconSearch } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useState } from 'react';
 import { Link } from 'react-router';
-import type { BulkImportCandidate } from '../../services/onboarding';
+import { IMPORT_WORKER_URL, queueBulkImport } from '../../services/bulk-import';
+import type { BulkImportCandidate, NetworkPullState } from '../../services/onboarding';
 import {
-  awaitDrChronoImport,
-  awaitZusImport,
+  describeNetworkPull,
   DRCHRONO_IDENTIFIER_SYSTEM,
   formatDrChronoName,
+  importDrChronoPatient,
   previewBulkImport,
-  startDrChronoImport,
-  startZusImport,
 } from '../../services/onboarding';
 
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -40,11 +37,24 @@ const RUN_STATUS_COLOR: Record<RunRow['status'], string> = {
   importing: 'blue',
   zus: 'cyan',
   done: 'teal',
+  waiting: 'cyan',
   skipped: 'yellow',
   failed: 'red',
 };
 
 const RUN_BADGE = { textTransform: 'none', fontWeight: 500 } as const;
+
+/**
+ * The row state each network-pull outcome lands on.
+ *
+ * None of the three is `failed`, which is the whole point: the chart is in
+ * either way, and only the wording about the outside record differs.
+ */
+const NETWORK_ROW_STATUS: Record<NetworkPullState, RunRow['status']> = {
+  pulled: 'done',
+  pending: 'waiting',
+  skipped: 'skipped',
+};
 
 /**
  * Explain the gap between appointments scanned and patients found.
@@ -117,7 +127,13 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item
 interface RunRow {
   readonly drchronoId: string;
   readonly name: string;
-  status: 'pending' | 'importing' | 'zus' | 'done' | 'failed' | 'skipped';
+  /**
+   * `waiting` and `skipped` both mean the chart is fully imported. They describe
+   * the network half only: `waiting` is a fresh enrolment the networks have not
+   * answered yet, `skipped` an office without enrolment switched on. Neither is
+   * a failure, and neither should ever be shown as one.
+   */
+  status: 'pending' | 'importing' | 'zus' | 'done' | 'waiting' | 'failed' | 'skipped';
   detail?: string;
 }
 
@@ -148,7 +164,6 @@ export function BulkImportPanel(): JSX.Element {
   const [preview, setPreview] = useState<PreviewState>();
   const [run, setRun] = useState<RunRow[]>();
   const [running, setRunning] = useState(false);
-  const [withZus, setWithZus] = useState(true);
 
   const runPreview = useCallback(() => {
     setLoading(true);
@@ -218,8 +233,7 @@ export function BulkImportPanel(): JSX.Element {
       try {
         const queued = await queueBulkImport(
           medplum,
-          todo.map((c) => String(c.id)),
-          withZus
+          todo.map((c) => String(c.id))
         );
         setRun((prev) =>
           prev?.map((r) => ({ ...r, status: 'importing' as const, detail: `queued · ${queued.batchId}` }))
@@ -229,9 +243,7 @@ export function BulkImportPanel(): JSX.Element {
       } catch (err) {
         // A worker that is unreachable must not strand the run: fall through to
         // driving it from the page, which is slower but still works.
-        setRun((prev) =>
-          prev?.map((r) => ({ ...r, detail: err instanceof Error ? err.message : String(err) }))
-        );
+        setRun((prev) => prev?.map((r) => ({ ...r, detail: err instanceof Error ? err.message : String(err) })));
       }
     }
 
@@ -243,39 +255,31 @@ export function BulkImportPanel(): JSX.Element {
       const id = String(candidate.id);
       update(id, { status: 'importing', detail: 'starting…' });
       try {
-        // Started and awaited separately so the lane count above is the only
-        // thing deciding concurrency, rather than a function that could hold
-        // only one import open at a time.
-        const jobId = await startDrChronoImport(medplum, id);
-        const result = await awaitDrChronoImport(medplum, jobId, (status) => update(id, { detail: status }));
+        // One call for both halves. The network pull is part of importing a
+        // chart rather than something this loop decides to add, so there is no
+        // longer a branch here that could skip it — see `importDrChronoPatient`.
+        const result = await importDrChronoPatient(medplum, id, (status, stage) =>
+          update(id, { status: stage === 'network' ? 'zus' : 'importing', detail: status })
+        );
         if (!result.ok || !result.medplumPatientId) {
           update(id, { status: 'failed', detail: result.error ?? 'import failed' });
           return;
         }
 
-        if (!withZus) {
-          update(id, { status: 'done', detail: 'chart imported' });
-          return;
-        }
-
-        update(id, { status: 'zus', detail: 'enrolling…' });
-        const zusJob = await startZusImport(medplum, result.medplumPatientId);
-        const zus = await awaitZusImport(medplum, zusJob, (status) => update(id, { detail: status }));
-        if (zus.ok) {
-          const total = Object.values(zus.counts ?? {}).reduce((sum, n) => sum + n, 0);
-          update(id, { status: 'done', detail: `chart + ${total} Zus resources` });
-        } else {
-          // Not a failure of the run: the office may simply not be enrolled in
-          // Zus, which is a configuration choice rather than an error.
-          update(id, { status: 'skipped', detail: zus.error ?? 'Zus skipped' });
-        }
+        // The chart is in. What the network half did only changes the wording,
+        // never whether this row counts as a failure.
+        const network = describeNetworkPull(result.zus);
+        update(id, {
+          status: NETWORK_ROW_STATUS[network.state],
+          detail: `chart imported — ${network.detail}`,
+        });
       } catch (err) {
         update(id, { status: 'failed', detail: err instanceof Error ? err.message : String(err) });
       }
     });
 
     setRunning(false);
-  }, [medplum, preview, withZus]);
+  }, [medplum, preview]);
 
   return (
     <Stack gap="md">
@@ -421,13 +425,18 @@ export function BulkImportPanel(): JSX.Element {
           )}
 
           <Group justify="space-between" mt="md">
-            <Checkbox
-              checked={withZus}
-              disabled={running}
-              onChange={(e) => setWithZus(e.target.checked)}
-              label="Also pull each patient's Zus record"
-              description="Only offices with Zus enrolment switched on in the Directory are sent to Zus."
-            />
+            {/* What used to be a checkbox here. The record pull is not a choice:
+                it always follows the chart, and which patients qualify is read
+                from the Directory server-side. So this says what will happen
+                rather than asking whether it should. */}
+            <Text size="xs" c="gray.6" maw={420}>
+              Each chart is followed by a record pull for patients seen at an office with Zus enrolment switched on in
+              the{' '}
+              <Anchor component={Link} to="/directory">
+                Directory
+              </Anchor>
+              .
+            </Text>
             <Button
               loading={running}
               disabled={newCount === 0}
@@ -445,9 +454,13 @@ export function BulkImportPanel(): JSX.Element {
                 <Text fw={600} size="sm">
                   Import progress
                 </Text>
+                {/* `done`, `waiting` and `skipped` are all imported charts, so
+                    they are counted apart from `failed` rather than lumped in
+                    with it. */}
                 <Text size="sm" c="dimmed">
                   {run.filter((r) => r.status === 'done').length} done ·{' '}
-                  {run.filter((r) => r.status === 'skipped').length} Zus skipped ·{' '}
+                  {run.filter((r) => r.status === 'waiting').length} awaiting records ·{' '}
+                  {run.filter((r) => r.status === 'skipped').length} not enrolled ·{' '}
                   {run.filter((r) => r.status === 'failed').length} failed · {run.length} total
                 </Text>
               </Group>

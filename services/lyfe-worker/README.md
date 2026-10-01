@@ -50,9 +50,14 @@ Then open http://localhost:8288 and send an event:
 ```json
 {
   "name": "lyfe/chart.import.requested",
-  "data": { "organizationId": "<id>", "drchronoPatientId": "120118105", "withZus": true }
+  "data": { "organizationId": "<id>", "requester": "Practitioner/<id>", "drchronoPatientId": "120118105" }
 }
 ```
+
+The Zus pull is not a separate thing to ask for: a finished chart import always
+emits `lyfe/zus.import.requested` for that patient. Whether the patient may be
+enrolled is decided inside the importer from the office their encounters are at
+(the Directory page's Zus column), and an ineligible one closes as skipped.
 
 ## Required: the worker's client must be org-scoped
 
