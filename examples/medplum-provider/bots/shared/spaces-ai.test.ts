@@ -18,7 +18,9 @@ import {
   SseFrameParser,
   buildAiParameters,
   buildSystemPrompt,
+  collectCitableSources,
   deriveVisualize,
+  formatSourceList,
   formatSseFrame,
   normalizeToolCallArguments,
   parseSpacesInput,
@@ -392,5 +394,129 @@ describe('toContentParameters', () => {
 
   test('is a valid empty Parameters when the model said nothing', () => {
     expect(toContentParameters(undefined)).toStrictEqual({ resourceType: 'Parameters', parameter: [] });
+  });
+});
+
+describe('collectCitableSources', () => {
+  /**
+   * A tool response, as `executeToolCalls` records it.
+   * @param result - The FHIR result the UI received.
+   * @returns The tool message.
+   */
+  function toolMessage(result: unknown): Record<string, unknown> {
+    return { role: 'tool', tool_call_id: 'c1', content: JSON.stringify(result) };
+  }
+
+  /**
+   * A search bundle.
+   * @param refs - `Type/id` strings to turn into entries.
+   * @returns The bundle.
+   */
+  function bundle(refs: string[]): unknown {
+    return {
+      resourceType: 'Bundle',
+      type: 'searchset',
+      entry: refs.map((ref) => {
+        const [resourceType, id] = ref.split('/');
+        return { resource: { resourceType, id } };
+      }),
+    };
+  }
+
+  test('numbers sources in bundle order, across tool responses in conversation order', () => {
+    // This ordering is the whole contract: S1 is the first entry of the first bundle. Anything else
+    // points [doc:Sn] at the wrong record.
+    expect(
+      collectCitableSources([
+        { role: 'user', content: 'vitals and meds?' },
+        toolMessage(bundle(['Observation/o1', 'Observation/o2'])),
+        toolMessage(bundle(['MedicationRequest/m1'])),
+      ])
+    ).toStrictEqual(['Observation/o1', 'Observation/o2', 'MedicationRequest/m1']);
+  });
+
+  test('de-duplicates, keeping the first position', () => {
+    // Mirrors `[...new Set(allResourceRefs)]`. A resource fetched twice must not take two numbers,
+    // or everything after it shifts.
+    expect(
+      collectCitableSources([
+        toolMessage(bundle(['Patient/p1', 'Observation/o1'])),
+        toolMessage(bundle(['Patient/p1', 'Observation/o2'])),
+      ])
+    ).toStrictEqual(['Patient/p1', 'Observation/o1', 'Observation/o2']);
+  });
+
+  test('reads a single resource that was not wrapped in a bundle', () => {
+    expect(collectCitableSources([toolMessage({ resourceType: 'Patient', id: 'p1' })])).toStrictEqual(['Patient/p1']);
+  });
+
+  test('skips bundle entries with no resource, as the UI does', () => {
+    expect(
+      collectCitableSources([
+        toolMessage({
+          resourceType: 'Bundle',
+          entry: [{ resource: { resourceType: 'Patient', id: 'p1' } }, { search: { mode: 'outcome' } }, {}],
+        }),
+      ])
+    ).toStrictEqual(['Patient/p1']);
+  });
+
+  test('skips a resource with no id, which has no reference to cite', () => {
+    expect(collectCitableSources([toolMessage(bundle([])), toolMessage({ resourceType: 'Patient' })])).toStrictEqual(
+      []
+    );
+  });
+
+  test('cites a bundle with no entry as itself, which is what the UI does', () => {
+    // `extractResourceRefs` branches on `resourceType === 'Bundle' && result.entry`, so a bundle
+    // with the key absent falls through to its else. Mirrored on purpose, bug-for-bug.
+    expect(collectCitableSources([toolMessage({ resourceType: 'Bundle', id: 'b1' })])).toStrictEqual(['Bundle/b1']);
+  });
+
+  test('contributes nothing for a failed request', () => {
+    // The UI only collects refs on success, so an error payload must not take a number.
+    expect(
+      collectCitableSources([
+        toolMessage({ error: true, message: 'Unable to execute GET: Patient/nope', details: 'Not found' }),
+      ])
+    ).toStrictEqual([]);
+  });
+
+  test('contributes nothing for a set_visualization acknowledgement', () => {
+    expect(collectCitableSources([toolMessage({ acknowledged: true })])).toStrictEqual([]);
+  });
+
+  test('ignores assistant and user turns, and unparseable tool content', () => {
+    expect(
+      collectCitableSources([
+        { role: 'system', content: 'be useful' },
+        { role: 'user', content: 'who is Patient/p1?' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', function: { name: 'fhir_request' } }] },
+        { role: 'tool', tool_call_id: 'c1', content: 'not json' },
+        { role: 'tool', tool_call_id: 'c2', content: undefined },
+      ])
+    ).toStrictEqual([]);
+  });
+
+  test('prefers an existing reference property, as getReferenceString does', () => {
+    expect(
+      collectCitableSources([
+        toolMessage({ resourceType: 'Bundle', entry: [{ resource: { reference: 'Patient/p9' } }] }),
+      ])
+    ).toStrictEqual(['Patient/p9']);
+  });
+
+  test('is empty when nothing was fetched, so no source list is sent at all', () => {
+    expect(collectCitableSources([])).toStrictEqual([]);
+  });
+});
+
+describe('formatSourceList', () => {
+  test('numbers from 1, matching the Sn the UI resolves', () => {
+    expect(formatSourceList(['Patient/p1', 'Observation/o1'])).toBe('S1 = Patient/p1\nS2 = Observation/o1');
+  });
+
+  test('is undefined for no sources, so the bot omits the message rather than sending an empty one', () => {
+    expect(formatSourceList([])).toBeUndefined();
   });
 });

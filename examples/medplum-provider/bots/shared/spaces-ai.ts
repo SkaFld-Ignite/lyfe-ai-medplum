@@ -267,6 +267,104 @@ function readToolCallArguments(args: unknown): Record<string, unknown> | undefin
 }
 
 /**
+ * The reference string for one resource out of a tool response.
+ *
+ * A deliberate mirror of `getReferenceString` from `@medplum/core`, down to preferring an existing
+ * `reference` property over `resourceType/id`, because the numbering it feeds has to agree with the
+ * UI's exactly. Not imported, because the bot sees tool responses as parsed JSON rather than as
+ * typed resources, and the real function's overloads reject that.
+ * @param value - A resource, as it appears inside a tool response.
+ * @returns The reference string, or undefined when the resource has no identity.
+ */
+function referenceStringOf(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (typeof value.reference === 'string' && value.reference !== '') {
+    return value.reference;
+  }
+  const { resourceType, id } = value;
+  if (typeof resourceType === 'string' && resourceType !== '' && typeof id === 'string' && id !== '') {
+    return `${resourceType}/${id}`;
+  }
+  return undefined;
+}
+
+/**
+ * The sources a `[doc:Sn]` citation can point at, numbered the way the UI numbers them.
+ *
+ * This exists because the model cannot be asked to work the numbering out for itself. `Sn` is a
+ * 1-based index into the `resources` array the UI attaches to the finished message, and the UI
+ * builds that array *after* the summary bot has run, by walking every tool response in order,
+ * taking each bundle entry's resource, and de-duplicating. A model asked to reproduce that over a
+ * few hundred bundle entries will occasionally be off by one — and an off-by-one here does not
+ * fail, it silently attributes a clinical statement to the wrong record, which is the one outcome
+ * worse than no citation at all. So the bot computes the list and tells the model the numbers.
+ *
+ * It is therefore a mirror of `extractResourceRefs` and the `[...new Set(...)]` in
+ * `processMessage` (`src/utils/spaceMessaging.ts`), and has to stay one: if that ordering or
+ * de-duplication changes, every citation silently shifts. The test for this function is the
+ * tripwire.
+ *
+ * Tool responses that carry no resource — an error payload, a `set_visualization`
+ * acknowledgement, an empty bundle — contribute nothing, which is also what the UI does.
+ * @param messages - The conversation, including the tool responses the loop collected.
+ * @returns The citable references, in citation order, de-duplicated.
+ */
+export function collectCitableSources(messages: readonly ChatMessage[]): string[] {
+  const refs: string[] = [];
+
+  for (const message of messages) {
+    if (message.role !== 'tool' || typeof message.content !== 'string') {
+      continue;
+    }
+
+    let result: unknown;
+    try {
+      result = JSON.parse(message.content);
+    } catch {
+      continue;
+    }
+    if (!isRecord(result)) {
+      continue;
+    }
+
+    // The UI branches on `resourceType === 'Bundle' && entry`, so a bundle with no `entry` at all
+    // falls through to being cited as itself. Mirrored, including that.
+    if (result.resourceType === 'Bundle' && result.entry) {
+      if (Array.isArray(result.entry)) {
+        for (const entry of result.entry) {
+          const ref = referenceStringOf(isRecord(entry) ? entry.resource : undefined);
+          if (ref) {
+            refs.push(ref);
+          }
+        }
+      }
+      continue;
+    }
+
+    const ref = referenceStringOf(result);
+    if (ref) {
+      refs.push(ref);
+    }
+  }
+
+  return [...new Set(refs)];
+}
+
+/**
+ * Renders the numbered source list the model cites against.
+ * @param refs - The citable references, in order, from {@link collectCitableSources}.
+ * @returns One `Sn = Type/id` line per source, or undefined when there is nothing citable.
+ */
+export function formatSourceList(refs: readonly string[]): string | undefined {
+  if (refs.length === 0) {
+    return undefined;
+  }
+  return refs.map((ref, index) => `S${index + 1} = ${ref}`).join('\n');
+}
+
+/**
  * Whether the answer should be rendered as a chart.
  *
  * The translator reports this as a `visualize` argument on a tool call rather than as a separate

@@ -23,6 +23,8 @@ import type { Parameters } from '@medplum/fhirtypes';
 import {
   buildSystemPrompt,
   callAi,
+  collectCitableSources,
+  formatSourceList,
   getBotProjectId,
   loadSystemPrompt,
   normalizeToolCallArguments,
@@ -40,6 +42,25 @@ import {
 const BOT_ID = 'ai-resource-summary-sse';
 
 /**
+ * The message that tells the model what each `[doc:Sn]` marker means.
+ *
+ * States the upper bound explicitly. A model given a list of three and asked to cite thoroughly
+ * will reach for a fourth; the UI drops an unresolvable marker, so that costs a citation rather
+ * than correctness, but it is cheap to prevent.
+ * @param count - How many sources there are.
+ * @param sourceList - The rendered `Sn = Type/id` lines.
+ * @returns The system message content.
+ */
+function sourceListMessage(count: number, sourceList: string): string {
+  return [
+    'The sources you may cite, numbered. [doc:S1] is the first in this list, [doc:S2] the second,',
+    `and so on. There are ${count}: S1 to S${count}, and nothing beyond S${count} exists.`,
+    '',
+    sourceList,
+  ].join('\n');
+}
+
+/**
  * Entry point.
  * @param medplum - The bot's Medplum client, used to load the prompt and to call `$ai`.
  * @param event - Carries the `Parameters` input, the requester, and the response stream when the
@@ -54,10 +75,20 @@ export async function handler(medplum: MedplumClient, event: BotEvent): Promise<
   const projectId = await getBotProjectId(medplum);
   const prompt = await loadSystemPrompt(medplum, BOT_ID, projectId);
 
+  // The numbering behind every [doc:Sn] the prompt asks for. Computed here rather than left to the
+  // model, because an off-by-one does not fail — it attributes a clinical statement to the wrong
+  // record, and the reader opens it and believes it. See `collectCitableSources`.
+  const sources = collectCitableSources(input.messages);
+  const sourceList = formatSourceList(sources);
+
   const request = {
     messages: [
       { role: 'system', content: buildSystemPrompt(prompt, event.requester) },
       ...normalizeToolCallArguments(input.messages),
+      // Appended last so it is the most recent thing the model read before answering. Omitted
+      // entirely when nothing was fetched, rather than sent empty: an empty list invites the model
+      // to cite anyway, and the upper bound is stated for the same reason.
+      ...(sourceList ? [{ role: 'system', content: sourceListMessage(sources.length, sourceList) }] : []),
     ],
     model: input.model,
     reasoningEffort: input.reasoningEffort,
