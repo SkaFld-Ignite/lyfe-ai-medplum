@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { MedplumClient } from '@medplum/core';
 import type { CodeableConcept, Organization, Reference, Task, TaskOutput } from '@medplum/fhirtypes';
+import { withMedplum429Retry } from '../../../examples/medplum-provider/bots/shared/batch.ts';
 
 /**
  * The Medplum half of the run's visibility.
@@ -33,6 +34,9 @@ export const INNGEST_RUN_IDENTIFIER = 'https://lyfe.com/inngest/run';
 /** Identifier system carrying the batch a Task belongs to. */
 export const BATCH_IDENTIFIER = 'https://lyfe.com/import-batch';
 
+/** Identifier carrying the source-system id, for a Task with no patient yet. */
+export const SOURCE_ID_IDENTIFIER = 'https://lyfe.com/source-id';
+
 /** Coding system for a coded failure reason, matching what the bots wrote. */
 export const IMPORT_ERROR_SYSTEM = 'https://lyfe.com/import-error';
 
@@ -41,8 +45,17 @@ export interface StartTaskProps {
   organization: Reference<Organization>;
   /** `drchrono-import` or `zus-import`; the Imports page groups on this. */
   code: string;
-  /** The patient this run is about. */
-  patientId: string;
+  /**
+   * The patient this run is about, when it is already known.
+   *
+   * A chart import does not know it yet: the patient is found or created by
+   * the import itself. The Task is still opened first and the patient attached
+   * once resolved, because a Task that only appears on success cannot report a
+   * failure — and a run that fails invisibly is worse than one that fails.
+   */
+  patientId?: string;
+  /** The source-system id, so a Task is findable before it has a patient. */
+  sourceId?: string;
   /** Inngest's run id, so the patient links to the run. */
   runId: string;
   batchId?: string;
@@ -59,21 +72,29 @@ export interface StartTaskProps {
  */
 export async function startTask(props: StartTaskProps): Promise<Task> {
   const now = new Date().toISOString();
-  return props.medplum.createResource<Task>({
-    resourceType: 'Task',
-    meta: { account: props.organization, accounts: [props.organization] },
-    status: 'in-progress',
-    intent: 'order',
-    code: { text: props.code },
-    for: { reference: `Patient/${props.patientId}` },
-    identifier: [
-      { system: INNGEST_RUN_IDENTIFIER, value: props.runId },
-      ...(props.batchId ? [{ system: BATCH_IDENTIFIER, value: props.batchId }] : []),
-    ],
-    authoredOn: now,
-    lastModified: now,
-    executionPeriod: { start: now },
-  });
+  // Every Medplum call here goes through the bots' own 429 helper. These are
+  // the run's bookkeeping, not its work: a Task write losing a race with the
+  // import's own writes for the same quota must not be what ends the run.
+  return withMedplum429Retry(
+    () =>
+      props.medplum.createResource<Task>({
+        resourceType: 'Task',
+        meta: { account: props.organization, accounts: [props.organization] },
+        status: 'in-progress',
+        intent: 'order',
+        code: { text: props.code },
+        ...(props.patientId ? { for: { reference: `Patient/${props.patientId}` } } : {}),
+        identifier: [
+          { system: INNGEST_RUN_IDENTIFIER, value: props.runId },
+          ...(props.batchId ? [{ system: BATCH_IDENTIFIER, value: props.batchId }] : []),
+          ...(props.sourceId ? [{ system: SOURCE_ID_IDENTIFIER, value: props.sourceId }] : []),
+        ],
+        authoredOn: now,
+        lastModified: now,
+        executionPeriod: { start: now },
+      }),
+    `startTask ${props.code}`
+  );
 }
 
 /**
@@ -87,11 +108,12 @@ export async function startTask(props: StartTaskProps): Promise<Task> {
  * @param phase - Human-readable phase, e.g. "3 of 11 · encounters".
  */
 export async function setPhase(medplum: MedplumClient, taskId: string, phase: string): Promise<void> {
-  await medplum
-    .patchResource('Task', taskId, [{ op: 'add', path: '/businessStatus', value: { text: phase } }])
-    .catch(() => {
-      // Losing a progress update must never fail the import it is describing.
-    });
+  await withMedplum429Retry(
+    () => medplum.patchResource('Task', taskId, [{ op: 'add', path: '/businessStatus', value: { text: phase } }]),
+    'setPhase'
+  ).catch(() => {
+    // Losing a progress update must never fail the import it is describing.
+  });
 }
 
 /** Per-resource-type counts, as the Imports page reads them. */
@@ -119,15 +141,19 @@ export async function completeTask(medplum: MedplumClient, taskId: string, count
   // `for` and `identifier` are read back and rewritten deliberately: a bare
   // update built from a stale copy silently dropped `Task.for` once, which
   // detached a finished run from its patient.
-  const current = await medplum.readResource('Task', taskId);
-  await medplum.updateResource<Task>({
-    ...current,
-    status: 'completed',
-    businessStatus: { text: 'complete' },
-    output: countsToOutput(counts),
-    lastModified: now,
-    executionPeriod: { ...current.executionPeriod, end: now },
-  });
+  const current = await withMedplum429Retry(() => medplum.readResource('Task', taskId), 'completeTask read');
+  await withMedplum429Retry(
+    () =>
+      medplum.updateResource<Task>({
+        ...current,
+        status: 'completed',
+        businessStatus: { text: 'complete' },
+        output: countsToOutput(counts),
+        lastModified: now,
+        executionPeriod: { ...current.executionPeriod, end: now },
+      }),
+    'completeTask write'
+  );
 }
 
 /**
@@ -146,17 +172,40 @@ export async function failTask(
   counts: CountMap = {}
 ): Promise<void> {
   const now = new Date().toISOString();
-  const current = await medplum.readResource('Task', taskId);
+  const current = await withMedplum429Retry(() => medplum.readResource('Task', taskId), 'failTask read');
   const statusReason: CodeableConcept = {
     coding: [{ system: IMPORT_ERROR_SYSTEM, code: reason }],
     text: message.slice(0, 500),
   };
-  await medplum.updateResource<Task>({
-    ...current,
-    status: 'failed',
-    statusReason,
-    output: countsToOutput(counts),
-    lastModified: now,
-    executionPeriod: { ...current.executionPeriod, end: now },
+  await withMedplum429Retry(
+    () =>
+      medplum.updateResource<Task>({
+        ...current,
+        status: 'failed',
+        statusReason,
+        output: countsToOutput(counts),
+        lastModified: now,
+        executionPeriod: { ...current.executionPeriod, end: now },
+      }),
+    'failTask write'
+  );
+}
+
+/**
+ * Attach the patient to a Task that was opened before one was known.
+ * @param medplum - Authenticated Medplum client.
+ * @param taskId - The Task to update.
+ * @param patientId - The resolved Medplum patient.
+ */
+export async function attachPatient(medplum: MedplumClient, taskId: string, patientId: string): Promise<void> {
+  await withMedplum429Retry(
+    () =>
+      medplum.patchResource('Task', taskId, [
+        { op: 'add', path: '/for', value: { reference: `Patient/${patientId}` } },
+      ]),
+    'attachPatient'
+  ).catch(() => {
+    // A Task that cannot be re-pointed is still a record of the run; losing
+    // the link must not fail the import that succeeded.
   });
 }

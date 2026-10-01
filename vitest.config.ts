@@ -13,6 +13,7 @@ export default defineConfig({
       // app keeps dev (vite.config.ts) and test (vitest.config.ts) configs separate
       '!packages/app/vite.config.ts',
       'examples/*/vite{,st}.config.ts',
+      'services/*/vite{,st}.config.ts',
     ],
     coverage: {
       provider: 'v8',
