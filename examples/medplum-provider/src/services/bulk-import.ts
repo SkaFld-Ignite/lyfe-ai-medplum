@@ -18,7 +18,7 @@ import type { MedplumClient } from '@medplum/core';
  */
 
 /** Where the import worker is, when one is deployed. */
-export const IMPORT_WORKER_URL: string | undefined = import.meta.env.IMPORT_WORKER_URL || undefined;
+export const IMPORT_WORKER_URL: string | undefined = import.meta.env.LYFE_IMPORT_WORKER_URL || undefined;
 
 /** What the worker reports back when a run is queued. */
 export interface BulkRunQueued {

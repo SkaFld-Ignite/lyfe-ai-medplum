@@ -31,7 +31,10 @@ const alias: NonNullable<UserConfig['resolve']>['alias'] = Object.fromEntries(
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  envPrefix: ['MEDPLUM_', 'GOOGLE_', 'RECAPTCHA_'],
+  // `LYFE_` covers settings that are ours rather than Medplum's, e.g. where
+  // the import worker lives. Without it the variable is silently absent in the
+  // browser and the feature it gates looks disabled rather than misconfigured.
+  envPrefix: ['MEDPLUM_', 'GOOGLE_', 'RECAPTCHA_', 'LYFE_'],
   plugins: [react(), lyfeOnboardingDevApi()],
   server: {
     host: 'localhost',
