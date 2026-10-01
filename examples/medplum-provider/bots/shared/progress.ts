@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import type { MedplumClient } from '@medplum/core';
+import type { MedplumClient, WithId } from '@medplum/core';
 import type { CodeableConcept, Task, TaskOutput } from '@medplum/fhirtypes';
 
 /**
@@ -119,6 +119,45 @@ export function countsToOutput(counts: ImportCountMap): TaskOutput[] {
  * Construct it once the Task exists, call {@link phase} as the import moves
  * through its steps, and close with {@link finish} or {@link fail}.
  */
+/**
+ * Use the Task the caller already opened, or open one.
+ *
+ * An import can be started two ways, and until now each opened its own Task.
+ * The worker opens one before invoking the bot — so that a run which dies
+ * before the bot is even reached still leaves a record — and then the bot
+ * opened a second one for the same import. Both landed on the Imports page, so
+ * one import showed as two rows: the worker's stuck at its opening phase with
+ * no counts, the bot's carrying the real progress. Neither row was complete on
+ * its own.
+ *
+ * So the caller's Task is adopted when there is one. The bot writes its phases,
+ * its patient and its counts to that Task, which already carries the Inngest
+ * run id and the batch id, and one row ends up with all of it.
+ *
+ * A caller-supplied id that cannot be read falls back to opening a new Task
+ * rather than throwing: losing the bookkeeping is bad, but failing an import
+ * over it would be worse.
+ * @param props - Resolution inputs.
+ * @param props.medplum - Bot-scoped Medplum client.
+ * @param props.taskId - The Task the caller opened, when it opened one.
+ * @param props.create - Opens a new Task; called only when there is nothing to adopt.
+ * @returns The Task to report against.
+ */
+export async function openOrAdoptTask(props: {
+  medplum: MedplumClient;
+  taskId: string | undefined;
+  create: () => Promise<WithId<Task>>;
+}): Promise<WithId<Task>> {
+  if (props.taskId) {
+    try {
+      return await props.medplum.readResource('Task', props.taskId);
+    } catch {
+      // Fall through and open our own.
+    }
+  }
+  return props.create();
+}
+
 export class ImportProgress {
   private readonly medplum: MedplumClient;
   private readonly taskId: string | undefined;
