@@ -16,11 +16,27 @@
  *     in `section.entry`; if either moves, the card and the subscription both
  *     stop working, and neither fails loudly.
  */
-import type { AllergyIntolerance, Condition, MedicationRequest, Observation, Reference } from '@medplum/fhirtypes';
+import type { BotEvent, MedplumClient } from '@medplum/core';
+import type {
+  AllergyIntolerance,
+  Composition,
+  Condition,
+  MedicationRequest,
+  Observation,
+  Parameters,
+  Reference,
+  Resource,
+} from '@medplum/fhirtypes';
 import { describe, expect, test } from 'vitest';
-import { isInvalidation, resolvePatientId } from './patient-ai-summary.ts';
-import type { PatientChart } from './shared/ai-summary-prompt.ts';
-import { buildChartPrompt, buildCitationIndex } from './shared/ai-summary-prompt.ts';
+import type { SummaryInput } from './patient-ai-summary.ts';
+import { handler, isInvalidation, normaliseDocuments, resolvePatientId } from './patient-ai-summary.ts';
+import type { PatientChart, SummaryDocument } from './shared/ai-summary-prompt.ts';
+import {
+  buildChartPrompt,
+  buildCitationIndex,
+  CITATION_LIMITS,
+  DOCUMENT_EXCERPT_CHARS,
+} from './shared/ai-summary-prompt.ts';
 import type { CitationSource } from './shared/ai-summary.ts';
 import {
   AI_SUMMARY_IDENTIFIER_SYSTEM,
@@ -30,6 +46,7 @@ import {
   parseSummaryDraft,
   PATIENT_SUMMARY_LOINC,
   rewriteCitations,
+  SECTION_TITLES,
   summarySearchQuery,
 } from './shared/ai-summary.ts';
 
@@ -448,13 +465,15 @@ describe('isInvalidation', () => {
 // ---------------------------------------------------------------------------
 
 describe('document context seam', () => {
-  test('reports no documents when none are supplied, which is every call today', () => {
+  test('reports no documents when the caller had no index to read', () => {
+    // Still a live path, not a historical one: the deployed bot has no database
+    // and the app's refresh passes no excerpts, so both render this.
     expect(buildChartPrompt(chart(), new Date('2026-09-01T00:00:00Z'))).toContain(
       'RECENT DOCUMENTS (0):\nNone extracted yet'
     );
   });
 
-  test('is ready for excerpts the moment extraction exists', () => {
+  test('renders excerpts the worker handed in, and makes them citable', () => {
     const withDocs = chart({
       documents: [
         {
@@ -472,6 +491,207 @@ describe('document context seam', () => {
       reference: 'DocumentReference/doc-1',
       display: 'Nephrology consult',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The document context handed in by the worker
+// ---------------------------------------------------------------------------
+
+/**
+ * Excerpts arrive as bot *input*, because they come from a pgvector index only
+ * `services/lyfe-worker` can reach and this same file is also deployed into the
+ * Medplum server, which has no database. So the input is untrusted in the
+ * ordinary sense — its size and shape are whatever a caller sent — and every
+ * cap asserted here exists because the value does not stay in the prompt: the
+ * title is written into a stored `Composition`'s citation display, and the
+ * excerpt shares a context window with the whole structured chart.
+ */
+describe('normaliseDocuments', () => {
+  const excerpt = (overrides: Partial<SummaryDocument> = {}): SummaryDocument => ({
+    reference: { reference: 'DocumentReference/doc-1' },
+    title: 'Nephrology consult',
+    date: '2026-07-02',
+    excerpt: 'Impression: eGFR 38, progressive.',
+    ...overrides,
+  });
+
+  test('passes a well-formed excerpt through unchanged', () => {
+    expect(normaliseDocuments([excerpt()])).toEqual([excerpt()]);
+  });
+
+  test('a caller with no index yields an empty list, not an error', () => {
+    // The deployed bot and the app's refresh both take this path, so it is the
+    // behaviour that must not change: empty list, no throw, summary still
+    // generated from the structured chart.
+    expect(normaliseDocuments(undefined)).toEqual([]);
+    expect(normaliseDocuments([])).toEqual([]);
+  });
+
+  test('caps the count at what the prompt and the citation index will render', () => {
+    // An eleventh document is prompt weight that can never be cited, because
+    // buildChartPrompt and buildCitationIndex both stop at the same limit.
+    const many = Array.from({ length: 25 }, (_unused, i) =>
+      excerpt({ reference: { reference: `DocumentReference/doc-${i}` } })
+    );
+    const kept = normaliseDocuments(many);
+    expect(kept).toHaveLength(CITATION_LIMITS.documents);
+    expect(kept[0].reference.reference).toBe('DocumentReference/doc-0');
+  });
+
+  test('caps the excerpt at the budget the prompt was written against', () => {
+    const kept = normaliseDocuments([excerpt({ excerpt: 'x'.repeat(5000) })]);
+    expect(kept[0].excerpt).toHaveLength(DOCUMENT_EXCERPT_CHARS);
+  });
+
+  test('caps the title, which is the field that becomes durable FHIR', () => {
+    const kept = normaliseDocuments([excerpt({ title: 'T'.repeat(1000) })]);
+    expect(kept[0].title.length).toBeLessThanOrEqual(200);
+  });
+
+  test('strips NUL bytes, which Textract and PDF text layers both emit', () => {
+    // Postgres will not store a NUL in a text column and JSON.stringify sends
+    // it to the model happily, so it has to die before either.
+    const kept = normaliseDocuments([excerpt({ title: 'Con\u0000sult', excerpt: 'eGFR\u000038' })]);
+    expect(kept[0].title).toBe('Consult');
+    expect(kept[0].excerpt).toBe('eGFR38');
+  });
+
+  test('drops a document with no text rather than rendering an empty tag', () => {
+    // A citable [Dn] with nothing behind it invites the model to cite it.
+    expect(normaliseDocuments([excerpt({ excerpt: '   ' })])).toEqual([]);
+  });
+
+  test('drops a document with no reference, which could not be cited anyway', () => {
+    expect(normaliseDocuments([excerpt({ reference: {} })])).toEqual([]);
+  });
+
+  test('falls back to a readable title rather than an empty citation chip', () => {
+    expect(normaliseDocuments([excerpt({ title: '' })])[0].title).toBe('Untitled document');
+  });
+
+  test('truncates a dateTime to the date the prompt renders', () => {
+    expect(normaliseDocuments([excerpt({ date: '2026-07-02T14:31:09.000Z' })])[0].date).toBe('2026-07-02');
+  });
+
+  test('omits the date entirely when there is none', () => {
+    expect(normaliseDocuments([excerpt({ date: undefined })])[0]).not.toHaveProperty('date');
+  });
+});
+
+/**
+ * The whole generate path, with Medplum and `$ai` stubbed.
+ *
+ * The unit tests above prove each piece — `normaliseDocuments` keeps the
+ * excerpts, `buildChartPrompt` renders `[D1]`, `buildCitationIndex` resolves it.
+ * None of them proves the *wiring*: that `handler` actually takes
+ * `input.documents` and puts it on the chart it prompts with. That is precisely
+ * the failure that would look done and not be — a correctly ordered chain
+ * carrying nothing — so it is asserted against the real entry point.
+ */
+describe('handler, generate with document context', () => {
+  /** What the stub records about a run. */
+  interface Capture {
+    /** The user message sent to `$ai`, i.e. the rendered chart context. */
+    prompt?: string;
+    /** Everything the run upserted, in order: the author Device, then the Composition. */
+    upserted: Resource[];
+  }
+
+  /**
+   * A Medplum client with nothing in it but one patient and one membership.
+   * @param capture - Receives the prompt and the upserted resources.
+   * @returns The stub.
+   */
+  function stub(capture: Capture): MedplumClient {
+    return {
+      searchResources: async (type: string) =>
+        type === 'ProjectMembership'
+          ? [
+              {
+                resourceType: 'ProjectMembership',
+                access: [
+                  { parameter: [{ name: 'organization', valueReference: { reference: 'Organization/clinic-1' } }] },
+                ],
+              },
+            ]
+          : [],
+      searchOne: async () => undefined,
+      readResource: async () => ({ resourceType: 'Patient', id: 'p1', birthDate: '1970-04-01', gender: 'female' }),
+      fhirUrl: () => 'https://medplum.example.com/fhir/R4/$ai',
+      post: async (_url: unknown, body: Parameters) => {
+        const messages = JSON.parse(body.parameter?.find((p) => p.name === 'messages')?.valueString ?? '[]') as {
+          role: string;
+          content: string;
+        }[];
+        capture.prompt = messages.find((m) => m.role === 'user')?.content;
+        return {
+          resourceType: 'Parameters',
+          parameter: [
+            {
+              name: 'content',
+              valueString: JSON.stringify({ narrative: 'eGFR has fallen to 38 per the nephrology consult [D1].' }),
+            },
+          ],
+        };
+      },
+      upsertResource: async (resource: Resource) => {
+        capture.upserted.push(resource);
+        return { ...resource, id: resource.resourceType === 'Device' ? 'dev-1' : 'comp-1' };
+      },
+    } as unknown as MedplumClient;
+  }
+
+  const event = (documents?: SummaryDocument[]): BotEvent<SummaryInput> => ({
+    bot: { reference: 'Bot/lyfe-worker' },
+    contentType: 'application/json',
+    secrets: {},
+    requester: { reference: 'Practitioner/prac-1' },
+    input: { patientId: 'p1', mode: 'generate', ...(documents ? { documents } : {}) },
+  });
+
+  const CONSULT: SummaryDocument = {
+    reference: { reference: 'DocumentReference/doc-1' },
+    title: 'Nephrology consult',
+    date: '2026-07-02',
+    excerpt: 'Impression: eGFR 38, progressive decline since March.',
+  };
+
+  test('puts the excerpts the caller passed into the prompt it sends', async () => {
+    const capture: Capture = { upserted: [] };
+    const result = await handler(stub(capture), event([CONSULT]));
+
+    expect(result.ok).toBe(true);
+    expect(capture.prompt).toContain('RECENT DOCUMENTS (1):');
+    expect(capture.prompt).toContain('[D1] 2026-07-02 | Nephrology consult');
+    expect(capture.prompt).toContain('Impression: eGFR 38, progressive decline since March.');
+  });
+
+  test('resolves a [D1] the model wrote into a real DocumentReference citation', async () => {
+    // The end of the chain. A document excerpt is only worth putting in the
+    // prompt if a finding that came from it can be traced back to the document
+    // a provider can open — otherwise it is an unattributable claim in a
+    // clinical note.
+    const capture: Capture = { upserted: [] };
+    await handler(stub(capture), event([CONSULT]));
+
+    const composition = capture.upserted.find((r) => r.resourceType === 'Composition') as Composition;
+    const narrative = composition.section?.find((s) => s.title === SECTION_TITLES.narrative);
+    expect(narrative?.entry).toContainEqual({
+      reference: 'DocumentReference/doc-1',
+      display: 'Nephrology consult',
+    });
+  });
+
+  test('a caller that passes no documents generates exactly as before', async () => {
+    // The deployed Medplum bot's path: no database, no excerpts, and a summary
+    // all the same.
+    const capture: Capture = { upserted: [] };
+    const result = await handler(stub(capture), event());
+
+    expect(result.ok).toBe(true);
+    expect(capture.prompt).toContain('RECENT DOCUMENTS (0):\nNone extracted yet');
+    expect(capture.upserted.some((r) => r.resourceType === 'Composition')).toBe(true);
   });
 });
 

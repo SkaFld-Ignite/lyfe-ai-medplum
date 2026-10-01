@@ -62,4 +62,16 @@ describe('failTask', () => {
     await failTask(medplum, 't1', 'unknown', 'step failed');
     expect(medplum.updateResource).not.toHaveBeenCalled();
   });
+
+  test('does not restate a finished run as a failed one', async () => {
+    // Every function in this worker closes its Task and *then* hands off to the
+    // next stage with `step.sendEvent`. A hand-off that cannot be delivered
+    // throws into the function's catch, which calls this — so without the guard
+    // a chart that imported perfectly would be marked failed because the stage
+    // after it could not be started. The undelivered hand-off belongs in
+    // Inngest as a replayable run, not on the patient's row as a failed import.
+    const medplum = client({ status: 'completed' });
+    await failTask(medplum, 't1', 'unknown', 'could not send lyfe/rag.ingest.requested');
+    expect(medplum.updateResource).not.toHaveBeenCalled();
+  });
 });

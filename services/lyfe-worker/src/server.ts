@@ -4,6 +4,7 @@ import { serve } from 'inngest/node';
 import type { ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { chartImport } from './functions/chart-import.ts';
+import { patientSummary } from './functions/patient-summary.ts';
 import { ragIndex } from './functions/rag-index.ts';
 import { zusImport } from './functions/zus-import.ts';
 import { inngest } from './inngest.ts';
@@ -21,7 +22,11 @@ import { handleBulkImport } from './trigger.ts';
  */
 const PORT = Number(process.env.PORT ?? 3020);
 
-const handler = serve({ client: inngest, functions: [chartImport, zusImport, ragIndex] });
+// Every link of the import chain is registered here, and a link that is not
+// registered is a link that silently never runs: Inngest delivers an event only
+// to the functions this endpoint declares, so a missing entry looks exactly
+// like an event nobody sent.
+const handler = serve({ client: inngest, functions: [chartImport, zusImport, ragIndex, patientSummary] });
 
 /** Browser origins allowed to start a run. */
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:3001').split(',').map((o) => o.trim());
@@ -90,7 +95,7 @@ createServer((req, res) => {
       JSON.stringify({
         ok: ready,
         medplum: ready ? 'connected' : (startupError ?? 'connecting'),
-        functions: ['drchrono-chart-import', 'zus-record-import', 'rag-document-index'],
+        functions: ['drchrono-chart-import', 'zus-record-import', 'rag-document-index', 'patient-ai-summary'],
         // Reported rather than inferred. RAG is optional — the worker runs the
         // imports fine without it — so "the search endpoint 503s" needs a way
         // to be told apart from "the worker is down".

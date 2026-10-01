@@ -43,6 +43,18 @@
  * Medplum delivers the changed resource as `event.input`; `resolvePatientId`
  * below pulls the patient off its `subject`/`patient` and the run invalidates.
  *
+ * DOCUMENT CONTEXT ARRIVES AS INPUT
+ * ---------------------------------
+ * The RECENT DOCUMENTS block of the prompt is fed by `SummaryInput.documents`,
+ * which the caller supplies. It is not read here, and that is a deployment
+ * constraint rather than a preference: this file runs both in-process inside
+ * `services/lyfe-worker`, which can reach the `lyfe_rag` pgvector index, and as
+ * a deployed Medplum bot on `vmcontext`, which has no database access and must
+ * not gain any for a schema the Medplum server does not own. The worker reads
+ * the index and passes the excerpts in; every other caller passes none and the
+ * block renders "None extracted yet", which is the behaviour this bot had
+ * before the seam was fed and still has on the Subscription path.
+ *
  * NO `Promise.all` AROUND SEARCHES
  * -------------------------------
  * Concurrent Medplum searches auto-batch and the batch flush uses `setTimeout`,
@@ -67,11 +79,12 @@ import type {
   Reference,
   Resource,
 } from '@medplum/fhirtypes';
-import type { PatientChart } from './shared/ai-summary-prompt.ts';
+import type { PatientChart, SummaryDocument } from './shared/ai-summary-prompt.ts';
 import {
   buildChartPrompt,
   buildCitationIndex,
   CITATION_LIMITS,
+  DOCUMENT_EXCERPT_CHARS,
   SUMMARY_SYSTEM_PROMPT,
 } from './shared/ai-summary-prompt.ts';
 import type { SummaryDraft } from './shared/ai-summary.ts';
@@ -79,6 +92,7 @@ import {
   AI_SUMMARY_DEVICE_IDENTIFIER_SYSTEM,
   buildSummaryComposition,
   parseSummaryDraft,
+  stripNullBytes,
   summarySearchQuery,
 } from './shared/ai-summary.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
@@ -100,6 +114,15 @@ export const DEFAULT_SUMMARY_MODEL = 'global.anthropic.claude-sonnet-4-6';
 /** Matches lyfe-provider-ui's summarization temperature. */
 const SUMMARY_TEMPERATURE = 0.3;
 
+/**
+ * Longest document title kept.
+ *
+ * Shorter than the excerpt budget because a title is a label, not content, and
+ * this one is written into a stored `Composition`'s citation display where a
+ * 2kB "title" would be a disfigured chart rather than a long string.
+ */
+const TITLE_CHARS = 200;
+
 /** Identifier value and display of the Device credited as the summary's author. */
 const AI_SUMMARY_DEVICE_VALUE = 'lyfe-clinical-ai';
 const AI_SUMMARY_DEVICE_NAME = 'Lyfe Clinical AI';
@@ -110,6 +133,34 @@ export interface SummaryInput {
   mode?: 'generate' | 'invalidate';
   /** Overrides {@link DEFAULT_SUMMARY_MODEL}. */
   model?: string;
+  /**
+   * Document excerpts for the RECENT DOCUMENTS block, passed in by the caller.
+   *
+   * ───────────────────── WHY THESE ARRIVE AS INPUT ─────────────────────
+   * The excerpts come from `lyfe_rag`, a pgvector index on the Medplum
+   * Postgres that only `services/lyfe-worker` can reach. This bot cannot
+   * read it and must never be able to: it runs in **two** places — in-process
+   * inside the worker, which has `RAG_DATABASE_URL`, and deployed as a
+   * Medplum bot on the `vmcontext` runtime, which has no database access at
+   * all and whose job here is the Subscription invalidate path. Giving the
+   * bot a connection would mean giving the Medplum server process one, for a
+   * schema it does not own.
+   *
+   * So the dependency stays where it already exists. The worker reads the
+   * index and feeds the result in; a caller with no index — the deployed bot,
+   * a provider's explicit refresh — passes nothing and the block renders
+   * "None extracted yet" exactly as before. That is the only difference
+   * between the two deployments, and it is a missing input rather than a
+   * missing capability.
+   *
+   * Untrusted, and normalised by {@link normaliseDocuments} before use: the
+   * count, the excerpt length and the title length are all capped here rather
+   * than assumed, because `title` ends up in a stored `Composition`'s
+   * citation display and `excerpt` ends up in a prompt that already carries
+   * the structured chart.
+   * ─────────────────────────────────────────────────────────────────────
+   */
+  documents?: SummaryDocument[];
 }
 
 export interface SummaryResult {
@@ -211,7 +262,7 @@ async function run(medplum: MedplumClient, event: BotEvent<SummaryInput | Resour
 
   const organization = await resolveCallerOrganization({ medplum, requester: event.requester });
   const patient = await medplum.readResource('Patient', patientId);
-  const chart = await readChart(medplum, patient);
+  const chart = await readChart(medplum, patient, normaliseDocuments(asOptions(event.input)?.documents));
   const citations = buildCitationIndex(chart);
 
   const draft = await generateDraft({
@@ -245,11 +296,19 @@ async function run(medplum: MedplumClient, event: BotEvent<SummaryInput | Resour
  * Mirrors lyfe-provider-ui's filters: active and recurring problems, active
  * medications, active allergies, recent labs and vitals, the last five visits,
  * and anything scheduled ahead.
+ *
+ * Documents are the one part it does not read. They come from an index this
+ * bot cannot reach, so they are handed in — see {@link SummaryInput.documents}.
  * @param medplum - Bot-scoped Medplum client.
  * @param patient - The patient.
+ * @param documents - Normalised document excerpts, or an empty list.
  * @returns The chart, in the order the prompt lists it.
  */
-async function readChart(medplum: MedplumClient, patient: Patient): Promise<PatientChart> {
+async function readChart(
+  medplum: MedplumClient,
+  patient: Patient,
+  documents: SummaryDocument[]
+): Promise<PatientChart> {
   const subject = `Patient/${patient.id}`;
 
   const conditions = (await medplum.searchResources('Condition', {
@@ -306,12 +365,67 @@ async function readChart(medplum: MedplumClient, patient: Patient): Promise<Pati
     vitals,
     encounters,
     appointments,
-    // See the DOCUMENT CONTEXT SEAM in shared/ai-summary-prompt.ts. There is no
-    // document-extraction pipeline in this repo yet, so there is nothing to
-    // excerpt; the prompt renders "None extracted yet" and the model is told to
-    // ignore the block.
-    documents: [],
+    // The DOCUMENT CONTEXT SEAM in shared/ai-summary-prompt.ts, now fed. Empty
+    // when the caller had no index to read — the deployed bot, a refresh from
+    // the app — in which case the prompt renders "None extracted yet" and the
+    // model is told to ignore the block, exactly as before.
+    documents,
   };
+}
+
+/**
+ * Bound and clean document excerpts handed in by a caller.
+ *
+ * Every cap here is because the value leaves this function and lands somewhere
+ * that cannot take an arbitrary string:
+ *
+ * - **count** — `buildChartPrompt` and `buildCitationIndex` both stop at
+ *   `CITATION_LIMITS.documents`, so an eleventh document is prompt weight that
+ *   can never be cited. Capping here rather than relying on those slices keeps
+ *   the two from disagreeing about which document `D10` is.
+ * - **excerpt** — `DOCUMENT_EXCERPT_CHARS`, the budget the prompt was written
+ *   against. This block shares a context window with the whole structured
+ *   chart; ten unbounded documents would crowd out the conditions and the labs,
+ *   which are the part of the prompt the summary is actually graded on.
+ * - **title** — it is written into the stored `Composition`'s citation display,
+ *   so it is the one field here that becomes durable FHIR rather than
+ *   throwaway prompt text.
+ * - **NUL bytes** — Textract and PDF text layers both emit them, Postgres will
+ *   not store them in a `text` column, and `JSON.stringify` happily sends them
+ *   to the model. `stripNullBytes` is already applied to the assembled prompt;
+ *   doing it per field means the title is clean before it reaches a resource.
+ *
+ * A document with no usable text is dropped rather than rendered as an empty
+ * `[Dn]`, because a citable tag with nothing behind it invites the model to
+ * cite it.
+ * @param documents - Whatever the caller passed, possibly nothing.
+ * @returns A bounded, cleaned list, in the order given.
+ */
+export function normaliseDocuments(documents: SummaryDocument[] | undefined): SummaryDocument[] {
+  if (!Array.isArray(documents)) {
+    return [];
+  }
+  const out: SummaryDocument[] = [];
+  for (const document of documents) {
+    const excerpt = stripNullBytes(String(document?.excerpt ?? '')).trim();
+    const reference = document?.reference?.reference;
+    if (!excerpt || !reference) {
+      continue;
+    }
+    out.push({
+      reference: { reference },
+      title:
+        stripNullBytes(String(document.title ?? ''))
+          .trim()
+          .slice(0, TITLE_CHARS) || 'Untitled document',
+      ...(document.date ? { date: String(document.date).slice(0, 10) } : {}),
+      excerpt: excerpt.slice(0, DOCUMENT_EXCERPT_CHARS),
+    });
+    if (out.length >= CITATION_LIMITS.documents) {
+      break;
+    }
+  }
+  return out;
 }
 
 /**

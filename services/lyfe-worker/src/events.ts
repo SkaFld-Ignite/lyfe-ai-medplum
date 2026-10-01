@@ -86,10 +86,22 @@ export interface ZusImportRequested {
  * embedding quota — none of which say anything about whether the chart
  * imported, and none of which should mark a chart failed.
  *
- * It is also not emitted automatically by the chart import, which the Zus pull
- * is. Indexing is a derived index being rebuilt, not part of making a patient's
- * record complete, and a backfill over 2,823 documents is an operator's
- * decision about cost rather than a consequence of importing one chart.
+ * It **is** emitted automatically, by both importers — which reverses what
+ * this comment used to say. The argument for leaving it manual was cost: a
+ * backfill over 2,823 documents is an operator's decision. That conflated two
+ * different things. A *backfill* is an operator's decision and still is, which
+ * is what `POST /api/rag/ingest` is for. Indexing *the patient who just
+ * imported* is not a decision at all. Nobody pulls a chart and then wants its
+ * documents left unsearchable, and asking a clinician to click a second button
+ * to make the record they just imported legible to the assistant is asking
+ * them to do the computer's bookkeeping.
+ *
+ * So the chart import emits this once the chart lands, and the Zus import emits
+ * it again once the network record lands — the half that matters most, since
+ * most documents come from the network and can arrive hours later. Two runs per
+ * patient is correct rather than wasteful: a document's chunks are replaced on
+ * re-ingest, never appended, so the second run converges on the same index plus
+ * whatever the network added.
  */
 export interface RagIngestRequested {
   name: 'lyfe/rag.ingest.requested';
@@ -112,8 +124,59 @@ export interface RagIngestRequested {
   };
 }
 
+/**
+ * A patient's AI summary to generate.
+ *
+ * The last link in the import chain, and its own event for the two reasons
+ * every other link here is — plus a third that is specific to it.
+ *
+ * It **fails differently**: a summary fails on the `$ai` operation, on a model
+ * returning something that is not the agreed JSON, on a project that does not
+ * carry the `ai` feature. None of those say anything about whether the chart
+ * imported or the documents indexed, and none may mark either as failed.
+ *
+ * It **retries differently**: one model call is worth a handful of attempts,
+ * not the six a multi-hour network pull earns.
+ *
+ * And it has to be **debounced**, which is the reason a step inside the indexer
+ * could not have served. A patient is indexed twice in the normal case — once
+ * when the chart lands, once when the network record does — and each completion
+ * asks for a summary. Undebounced that is two model calls over nearly the same
+ * chart, the first overwritten by the second minutes later. Debounce is an
+ * Inngest config at *function* level, so the only way to have it is for the
+ * summary to be its own function behind its own event. See
+ * `functions/patient-summary.ts`.
+ */
+export interface SummaryGenerateRequested {
+  name: 'lyfe/summary.generate.requested';
+  data: {
+    /** The clinic. Routing and concurrency only — see the note at the top. */
+    organizationId: string;
+    /**
+     * Who asked; see {@link ChartImportRequested.data.requester}.
+     *
+     * Load-bearing here exactly as it is for the importers: the summary bot
+     * resolves the clinic it files the `Composition` under from this, through
+     * `resolveCallerOrganization`, and not from `organizationId` above.
+     */
+    requester: string;
+    /** The patient to summarise. Also the debounce key. */
+    patientId: string;
+    /**
+     * Why a summary was asked for, e.g. `documents-indexed`.
+     *
+     * Carried for the log only. Debouncing keeps the last event of a window and
+     * discards the earlier ones, so this names whichever request happened to
+     * arrive last — useful for reading a run, never for deciding anything.
+     */
+    reason?: string;
+    batchId?: string;
+  };
+}
+
 export type LyfeEvents = {
   'lyfe/chart.import.requested': ChartImportRequested;
   'lyfe/zus.import.requested': ZusImportRequested;
   'lyfe/rag.ingest.requested': RagIngestRequested;
+  'lyfe/summary.generate.requested': SummaryGenerateRequested;
 };
