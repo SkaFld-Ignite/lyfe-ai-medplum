@@ -11,6 +11,17 @@ import { formatMediumDate, KIND_CONFIG, summarizeRecords } from './timeline-conf
 import { KindBadge, RecordGroups, SourceBadges } from './TimelineBits';
 
 /**
+ * The Lyfe one-line condition summary, e.g. "ICD-10: K21.9 • Status: Active".
+ * @param event - The condition event.
+ * @returns The summary, or undefined when there is nothing to show.
+ */
+function conditionSummary(event: ConditionEvent): string | undefined {
+  const status = event.clinicalStatus && event.clinicalStatus[0].toUpperCase() + event.clinicalStatus.slice(1);
+  const parts = [event.detail && `ICD-10: ${event.detail}`, status && `Status: ${status}`].filter(Boolean);
+  return parts.length > 0 ? parts.join(' • ') : undefined;
+}
+
+/**
  * A condition on its onset (or recorded) date.
  * @param props - The card props.
  * @param props.event - The condition event.
@@ -27,9 +38,9 @@ export function ConditionCard({ event, onOpen }: { event: ConditionEvent; onOpen
         <Text fw={600} size="sm" mt={6} className={classes.cardTitle}>
           {event.title}
         </Text>
-        {event.detail && (
+        {conditionSummary(event) && (
           <Text size="xs" c="dimmed" lineClamp={1} mt={2}>
-            {event.detail}
+            {conditionSummary(event)}
           </Text>
         )}
         <Group gap={6} mt={8}>

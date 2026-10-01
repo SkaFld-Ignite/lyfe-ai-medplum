@@ -1,38 +1,40 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Modal, ScrollArea } from '@mantine/core';
+import { ScrollArea } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
 import { isOk } from '@medplum/core';
 import type { OperationOutcome } from '@medplum/fhirtypes';
-import {
-  createPharmaciesSection,
-  Document,
-  getDefaultSections,
-  OperationOutcomeAlert,
-  PatientSummary,
-  useMedplum,
-} from '@medplum/react';
+import { Document, OperationOutcomeAlert, useMedplum } from '@medplum/react';
 import type { JSX } from 'react';
-import { useCallback, useMemo, useState } from 'react';
-import { Outlet, useNavigate, useParams } from 'react-router';
-import { usePharmacyDialog } from '../../components/pharmacy/usePharmacyDialog';
+import { useMemo, useState } from 'react';
+import { Outlet, useParams } from 'react-router';
+import { PatientIdentityCard } from '../../components/patient-detail/PatientIdentityCard';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 import { useDoseSpotAccess } from '../../hooks/useDoseSpotAccess';
 import { usePatient } from '../../hooks/usePatient';
-import { OrderLabsPage } from '../labs/OrderLabsPage';
 import classes from './PatientPage.module.css';
 import { getPatientPageTabs, patientPathPrefix } from './PatientPage.utils';
-import { PatientSummarySkeleton, PatientTabContentSkeleton } from './PatientPageSkeleton';
+import { PatientIdentitySkeleton, PatientTabContentSkeleton } from './PatientPageSkeleton';
 import { PatientSectionTabs } from './PatientSectionTabs';
 
+/** Below this width the sidebar collapses and the sections become a horizontal bar. */
+const SIDEBAR_BREAKPOINT = '(max-width: 62em)';
+
+/**
+ * The patient chart, laid out like the Lyfe patient details page: a sidebar with the patient's
+ * identity and a vertical menu of sections, and the selected section beside it. Every section is
+ * the same Medplum route as before; the clinical summary lives in the Overview section.
+ * @returns The patient page.
+ */
 export function PatientPage(): JSX.Element {
-  const navigate = useNavigate();
   const medplum = useMedplum();
-  // The route id is known before the patient loads, so the layout and tabs can render straight away.
+  // The route id is known before the patient loads, so the layout and menu can render straight away.
   const { patientId = '' } = useParams();
   const membership = medplum.getProjectMembership();
   const [outcome, setOutcome] = useState<OperationOutcome>();
   const patient = usePatient({ setOutcome });
-  const [isLabsModalOpen, setIsLabsModalOpen] = useState(false);
-  const PharmacyDialogComponent = usePharmacyDialog();
+  const timeZone = useClinicTimeZone();
+  const narrow = useMediaQuery(SIDEBAR_BREAKPOINT);
   const { hasAccess: hasDoseSpotAccess } = useDoseSpotAccess();
   const tabs = getPatientPageTabs(membership, { hasDoseSpotAccess });
   const resolvedTabs = useMemo(
@@ -40,21 +42,10 @@ export function PatientPage(): JSX.Element {
       tabs.map((t) => ({
         id: t.id,
         label: t.label,
+        aliases: t.aliases,
         value: (t.url ? t.url.replace('%patient.id', patientId) : t.id) || t.id,
       })),
     [patientId, tabs]
-  );
-
-  const handleCloseLabsModal = useCallback(() => {
-    setIsLabsModalOpen(false);
-  }, []);
-
-  const sections = useMemo(
-    () =>
-      getDefaultSections(() => setIsLabsModalOpen(true)).map((s) =>
-        s.key === 'pharmacies' ? createPharmaciesSection(PharmacyDialogComponent) : s
-      ),
-    [setIsLabsModalOpen, PharmacyDialogComponent]
   );
 
   if (outcome && !isOk(outcome)) {
@@ -66,34 +57,28 @@ export function PatientPage(): JSX.Element {
   }
 
   const loaded = patient?.id ? patient : undefined;
+  const baseUrl = patientPathPrefix(patientId);
 
   return (
-    <>
-      <div key={patientId} className={classes.container} aria-busy={!loaded}>
-        <div className={classes.sidebar}>
-          <ScrollArea className={classes.scrollArea}>
-            {loaded ? (
-              <PatientSummary
-                patient={loaded}
-                onClickResource={(resource) =>
-                  navigate(`/Patient/${patientId}/${resource.resourceType}/${resource.id}`)?.catch(console.error)
-                }
-                sections={sections}
-              />
-            ) : (
-              <PatientSummarySkeleton />
-            )}
+    <div key={patientId} className={classes.container} aria-busy={!loaded} data-narrow={narrow || undefined}>
+      {!narrow && (
+        <aside className={classes.sidebar}>
+          <ScrollArea className={classes.scrollArea} scrollbarSize={6}>
+            {loaded ? <PatientIdentityCard patient={loaded} timeZone={timeZone} /> : <PatientIdentitySkeleton />}
+            <PatientSectionTabs baseUrl={baseUrl} tabs={resolvedTabs} orientation="vertical" />
           </ScrollArea>
-        </div>
+        </aside>
+      )}
 
-        <div className={classes.content}>
-          <PatientSectionTabs baseUrl={patientPathPrefix(patientId)} tabs={resolvedTabs} />
-          <div className={classes.contentBody}>{loaded ? <Outlet /> : <PatientTabContentSkeleton />}</div>
-        </div>
+      <div className={classes.content}>
+        {narrow && (
+          <>
+            {loaded && <PatientIdentityCard patient={loaded} timeZone={timeZone} />}
+            <PatientSectionTabs baseUrl={baseUrl} tabs={resolvedTabs} />
+          </>
+        )}
+        <div className={classes.contentBody}>{loaded ? <Outlet /> : <PatientTabContentSkeleton />}</div>
       </div>
-      <Modal opened={isLabsModalOpen} onClose={handleCloseLabsModal} size="xl" centered title="Order Labs">
-        <OrderLabsPage onSubmitLabOrder={handleCloseLabsModal} />
-      </Modal>
-    </>
+    </div>
   );
 }

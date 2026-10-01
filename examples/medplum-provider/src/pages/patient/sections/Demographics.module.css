@@ -1,0 +1,217 @@
+/* Lyfe patient demographics (old Lyfe patient-demographics). */
+
+.hero {
+  padding: 20px 24px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 16px;
+  background: var(--mantine-color-body);
+  box-shadow: var(--mantine-shadow-sm);
+}
+
+.avatar {
+  display: grid;
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  place-items: center;
+  border-radius: 12px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  background: #2563eb;
+  box-shadow: 0 0 0 4px #eff6ff;
+}
+
+.eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.heroTitle {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.facts {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+}
+
+.fact,
+.card {
+  --tone: #2563eb;
+  --tone-soft: #eff6ff;
+
+  &[data-tone='violet'] {
+    --tone: #7c3aed;
+    --tone-soft: #f5f3ff;
+  }
+
+  &[data-tone='rose'] {
+    --tone: #e11d48;
+    --tone-soft: #fff1f2;
+  }
+
+  &[data-tone='teal'] {
+    --tone: #0d9488;
+    --tone-soft: #f0fdfa;
+  }
+
+  &[data-tone='amber'] {
+    --tone: #d97706;
+    --tone-soft: #fffbeb;
+  }
+
+  &[data-tone='pink'] {
+    --tone: #db2777;
+    --tone-soft: #fdf2f8;
+  }
+}
+
+.fact {
+  padding: 10px 12px;
+  border: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  border-radius: 12px;
+}
+
+.factTile,
+.chip {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--tone);
+  background: var(--tone-soft);
+}
+
+.factTile {
+  width: 32px;
+  height: 32px;
+}
+
+.factLabel {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.factValue {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.factSub {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+
+  @media (min-width: 75em) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @media (min-width: 88em) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.card {
+  overflow: hidden;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  background: var(--mantine-color-body);
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+.cardHeader {
+  padding: 10px 14px;
+  border-bottom: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  background: light-dark(rgb(248 250 252 / 0.6), var(--mantine-color-dark-6));
+
+  .card[data-tone='rose'] & {
+    background: #fff1f2;
+  }
+}
+
+.chip {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.cardTitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cardBody {
+  padding: 4px 14px 8px;
+}
+
+.field {
+  padding: 8px 0;
+
+  & + & {
+    border-top: 1px solid light-dark(#f8fafc, var(--mantine-color-dark-6));
+  }
+}
+
+.fieldLabel {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.fieldValue {
+  font-size: 13px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.fieldEmpty {
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.rosePill,
+.countPill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.rosePill {
+  color: #be123c;
+  background: #ffe4e6;
+}
+
+.countPill {
+  color: #475569;
+  background: light-dark(#f1f5f9, var(--mantine-color-dark-5));
+}
+
+.dashed {
+  margin: 8px 0;
+  padding: 12px;
+  border: 1px dashed light-dark(#cbd5e1, var(--mantine-color-dark-4));
+  border-radius: 8px;
+  font-size: 12px;
+  text-align: center;
+  color: #94a3b8;
+}

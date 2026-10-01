@@ -4,13 +4,14 @@ import type { SearchRequest } from '@medplum/core';
 import { formatSearchQuery, getReferenceString, Operator } from '@medplum/core';
 import type { Task } from '@medplum/fhirtypes';
 import { Loading, useMedplumProfile } from '@medplum/react';
+import { IconChecklist } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
+import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { TaskBoard } from '../../components/tasks/TaskBoard';
 import { useNewInUrl } from '../../hooks/useNewInUrl';
 import { normalizeTaskSearch } from '../../utils/task-search';
-import classes from '../tasks/TasksPage.module.css';
 
 export function TasksTab(): JSX.Element {
   const { patientId, taskId } = useParams();
@@ -107,7 +108,12 @@ export function TasksTab(): JSX.Element {
   const allTasksQuery = formatSearchQuery(allTasksSearch);
 
   return (
-    <div className={classes.container} style={{ height: '100%' }}>
+    <PatientTabShell
+      fill
+      icon={<IconChecklist size={20} />}
+      title="Tasks"
+      description="Follow-ups, orders and reviews for this patient"
+    >
       <TaskBoard
         query={formatSearchQuery(parsedSearch).substring(1)}
         selectedTaskId={taskId}
@@ -127,6 +133,6 @@ export function TasksTab(): JSX.Element {
           allTasksQuery ? `/Patient/${patientId}/Task?${allTasksQuery.substring(1)}` : `/Patient/${patientId}/Task`
         }
       />
-    </div>
+    </PatientTabShell>
   );
 }

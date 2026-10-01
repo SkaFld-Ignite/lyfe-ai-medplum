@@ -129,14 +129,16 @@ describe('PatientPage.utils', () => {
       expect(timelineTab.url).toBe('');
       expect(timelineTab.label).toBe('Timeline');
 
+      // Edit stays routable but is hidden from the menu; Demographics links to it.
       const editTab = getPatientPageTabOrThrow('edit');
       expect(editTab.id).toBe('edit');
       expect(editTab.url).toBe('edit');
       expect(editTab.label).toBe('Edit');
+      expect(editTab.hidden).toBe(true);
 
       const medsTab = getPatientPageTabOrThrow('meds');
       expect(medsTab.id).toBe('meds');
-      expect(medsTab.label).toBe('Meds');
+      expect(medsTab.label).toBe('Medications');
     });
 
     test('throws error when tab not found', () => {

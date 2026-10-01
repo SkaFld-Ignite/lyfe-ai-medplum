@@ -150,7 +150,7 @@ describe('DocumentsPage', () => {
     // The detail panel's metadata.
     expect(within(dialog).getByText('Author')).toBeInTheDocument();
 
-    await user.click(within(dialog).getAllByRole('button')[0]);
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(router.state.location.pathname).toBe(`/Patient/${patientId}/DocumentReference`));
   });
 

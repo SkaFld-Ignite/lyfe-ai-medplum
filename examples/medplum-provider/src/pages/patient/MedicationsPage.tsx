@@ -33,7 +33,7 @@ import {
   useScriptSureCart,
   useScriptSureOrderMedication,
 } from '@medplum/scriptsure-react';
-import { IconArrowLeft, IconPlus, IconShoppingCart, IconTrash } from '@tabler/icons-react';
+import { IconArrowLeft, IconPill, IconPlus, IconShoppingCart, IconTrash } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
@@ -41,6 +41,7 @@ import { MedicationRequestDetails } from '../../components/meds/MedicationReques
 import type { MedTab } from '../../components/meds/MedListItem';
 import { MedListItem } from '../../components/meds/MedListItem';
 import { PrescriptionIFrameModal } from '../../components/meds/PrescriptionIFrameModal';
+import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { hasDoseSpotIdentifier, hasScriptSureIdentifier } from '../../components/utils';
 import { usePatient } from '../../hooks/usePatient';
 import { useScriptSurePractice } from '../../scriptsure/ScriptSurePractice';
@@ -608,7 +609,12 @@ export function MedicationsPage(): JSX.Element {
   }
 
   return (
-    <Box w="100%" h="100%">
+    <PatientTabShell
+      fill
+      icon={<IconPill size={20} />}
+      title="Patient Medications"
+      description="Prescriptions and medication orders"
+    >
       <Flex h="100%">
         {/* One column: the list fills the width, and an open prescription replaces it. */}
         <Box w="100%" h="100%" hidden={Boolean(medicationRequestId)}>
@@ -801,7 +807,7 @@ export function MedicationsPage(): JSX.Element {
         onFhirSynced={handleIframeFhirSynced}
         title={modalTitle}
       />
-    </Box>
+    </PatientTabShell>
   );
 }
 

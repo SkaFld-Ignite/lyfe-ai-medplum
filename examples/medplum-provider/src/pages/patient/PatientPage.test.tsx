@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
-import { calculateAgeString } from '@medplum/core';
 import { HomerSimpson, MockClient } from '@medplum/mock';
 import * as medplumReact from '@medplum/react';
 import { MedplumProvider } from '@medplum/react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { EditTab } from './EditTab';
+import { PatientOverviewTab } from './PatientOverviewTab';
 import { PatientPage } from './PatientPage';
 import { TimelineTab } from './TimelineTab';
 
@@ -32,8 +32,10 @@ describe('PatientPage', () => {
             <Routes>
               <Route path="/Patient/:patientId/*" element={<PatientPage />}>
                 <Route path="edit" element={<EditTab />} />
-                <Route path="" element={<TimelineTab />} />
-                <Route path="*" element={<TimelineTab />} />
+                <Route path="overview" element={<PatientOverviewTab />} />
+                <Route path="timeline" element={<TimelineTab />} />
+                <Route path="" element={<PatientOverviewTab />} />
+                <Route path="*" element={<PatientOverviewTab />} />
               </Route>
             </Routes>
           </MantineProvider>
@@ -41,6 +43,8 @@ describe('PatientPage', () => {
       </MemoryRouter>
     );
   };
+
+  const selectedTab = (): string | null => screen.getByRole('tab', { selected: true }).textContent;
 
   test('shows the page layout with placeholders while the patient is loading', async () => {
     // A patient read that never resolves keeps the page in its loading state.
@@ -51,64 +55,13 @@ describe('PatientPage', () => {
     expect(document.querySelectorAll('.mantine-Skeleton-root').length).toBeGreaterThan(0);
   });
 
-  test('renders patient page when patient is loaded', async () => {
-    setup(`/Patient/${HomerSimpson.id}`);
-
-    await waitFor(() => {
-      expect(screen.getByText('Timeline')).toBeInTheDocument();
-    });
-  });
-
-  test('renders all tabs in navigation', async () => {
-    setup(`/Patient/${HomerSimpson.id}`);
-
-    await waitFor(() => {
-      expect(screen.getByText('Timeline')).toBeInTheDocument();
-    });
-
-    // Check for some key tabs
-    expect(screen.getByText('Edit')).toBeInTheDocument();
-    expect(screen.getByText('Visits')).toBeInTheDocument();
-    expect(screen.getByText('Tasks')).toBeInTheDocument();
-    expect(screen.getByText('Meds')).toBeInTheDocument();
-  });
-
-  test('sets initial tab from URL path', async () => {
-    setup(`/Patient/${HomerSimpson.id}/edit`);
-
-    await waitFor(() => {
-      const editTab = screen.getByText('Edit');
-      expect(editTab).toBeInTheDocument();
-      expect(editTab.closest('[role="tab"]')).toHaveAttribute('aria-selected', 'true');
-    });
-  });
-
-  test('handles tab change when clicking on tab', async () => {
-    const user = userEvent.setup();
-    setup(`/Patient/${HomerSimpson.id}`);
-
-    await waitFor(() => {
-      expect(screen.getByText('Timeline')).toBeInTheDocument();
-    });
-
-    const editTab = screen.getByText('Edit');
-    await user.click(editTab);
-
-    await waitFor(() => {
-      const editTab = screen.getByText('Edit');
-      expect(editTab).toBeInTheDocument();
-      expect(editTab.closest('[role="tab"]')).toHaveAttribute('aria-selected', 'true');
-    });
-  });
-
-  test('shows the tabs but not the tab content while the patient is loading', async () => {
-    // A patient read that never resolves keeps the page in its loading state.
+  test('shows the menu but not the section content while the patient is loading', async () => {
     vi.spyOn(medplum, 'readReference').mockReturnValue(new Promise(() => {}) as never);
     setup(`/Patient/${HomerSimpson.id}`);
 
     expect(document.querySelector('[aria-busy="true"]')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Timeline' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.queryByTestId('patient-timeline')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('region', { name: 'Chart summary' })).not.toBeInTheDocument();
   });
 
   test('clears the placeholders once the patient has loaded', async () => {
@@ -119,50 +72,79 @@ describe('PatientPage', () => {
     });
   });
 
-  test('defaults to timeline tab when URL does not match any tab', async () => {
-    setup(`/Patient/${HomerSimpson.id}/unknown-path`);
-
-    await waitFor(() => {
-      const timelineTab = screen.getByText('Timeline');
-      expect(timelineTab).toBeInTheDocument();
-      expect(timelineTab.closest('[role="tab"]')).toHaveAttribute('aria-selected', 'true');
-    });
-  });
-
-  test('renders homer summary information in sidebar', async () => {
-    const patientSummarySpy = vi.spyOn(medplumReact, 'PatientSummary');
+  test("lists the Lyfe sections in order, then Medplum's", async () => {
     setup(`/Patient/${HomerSimpson.id}`);
 
-    if (!HomerSimpson.birthDate) {
-      throw new Error('Test data in unexpected state - homer has no birthdate');
-    }
-
-    const age = calculateAgeString(HomerSimpson.birthDate);
-
-    await waitFor(() => {
-      expect(patientSummarySpy).toHaveBeenCalled();
-    });
-    expect(await screen.findByText('Male')).toBeInTheDocument();
-    expect(await screen.findByText(`1956-05-12 (${age})`)).toBeInTheDocument();
+    const menu = await screen.findByRole('tablist', { name: 'Patient details' });
+    expect(menu).toHaveAttribute('aria-orientation', 'vertical');
+    const names = within(menu)
+      .getAllByRole('tab')
+      .map((tab) => tab.textContent);
+    expect(names.slice(0, 12)).toEqual([
+      'Overview',
+      'Demographics',
+      'Timeline',
+      'Labs',
+      'Orders',
+      'Conditions',
+      'Medications',
+      'Vitals',
+      'Allergies',
+      'Immunizations',
+      'Documents',
+      'Encounters/Notes',
+    ]);
+    expect(names).toContain('Tasks');
+    expect(names).toContain('Export');
+    // Medplum's edit form stays reachable from Demographics, not as its own menu item.
+    expect(names).not.toContain('Edit');
   });
 
-  test('handles empty pathname correctly', async () => {
+  test('opens on Overview, like the Lyfe chart', async () => {
+    setup(`/Patient/${HomerSimpson.id}`);
+
+    await waitFor(() => expect(selectedTab()).toBe('Overview'));
+    expect(await screen.findByRole('region', { name: 'Chart summary' })).toBeInTheDocument();
+  });
+
+  test('handles an empty trailing path and unknown paths', async () => {
     setup(`/Patient/${HomerSimpson.id}/`);
-
-    await waitFor(() => {
-      const timelineTab = screen.getByText('Timeline');
-      expect(timelineTab).toBeInTheDocument();
-      expect(timelineTab.closest('[role="tab"]')).toHaveAttribute('aria-selected', 'true');
-    });
+    await waitFor(() => expect(selectedTab()).toBe('Overview'));
   });
 
-  test('highlights the Edit tab in a case-insensitive way even when /EDIT is used', async () => {
-    setup(`/Patient/${HomerSimpson.id}/EDIT`);
+  test('selects the section matching the URL, case-insensitively', async () => {
+    setup(`/Patient/${HomerSimpson.id}/TIMELINE`);
+    await waitFor(() => expect(selectedTab()).toBe('Timeline'));
+  });
 
-    await waitFor(() => {
-      const editTab = screen.getByText('Edit');
-      expect(editTab).toBeInTheDocument();
-      expect(editTab.closest('[role="tab"]')).toHaveAttribute('aria-selected', 'true');
-    });
+  test("highlights Demographics on Medplum's edit form, in any case", async () => {
+    setup(`/Patient/${HomerSimpson.id}/EDIT`);
+    await waitFor(() => expect(selectedTab()).toBe('Demographics'));
+  });
+
+  test('handles tab change when clicking on a section', async () => {
+    const user = userEvent.setup();
+    setup(`/Patient/${HomerSimpson.id}`);
+
+    await user.click(await screen.findByRole('tab', { name: 'Timeline' }));
+    await waitFor(() => expect(selectedTab()).toBe('Timeline'));
+  });
+
+  test('shows the patient identity in the sidebar', async () => {
+    setup(`/Patient/${HomerSimpson.id}`);
+
+    const identity = await screen.findByTestId('patient-identity');
+    expect(within(identity).getByRole('heading', { name: 'Homer Simpson' })).toBeInTheDocument();
+    expect(within(identity).getByText('Male')).toBeInTheDocument();
+    expect(within(identity).getByText('05/12/1956')).toBeInTheDocument();
+    expect(within(identity).getByText('Active')).toBeInTheDocument();
+  });
+
+  test('keeps the Medplum clinical summary in the Overview section', async () => {
+    const patientSummarySpy = vi.spyOn(medplumReact, 'PatientSummary');
+    setup(`/Patient/${HomerSimpson.id}/overview`);
+
+    expect(await screen.findByRole('region', { name: 'Chart summary' })).toBeInTheDocument();
+    await waitFor(() => expect(patientSummarySpy).toHaveBeenCalled());
   });
 });

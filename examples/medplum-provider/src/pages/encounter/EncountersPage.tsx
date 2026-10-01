@@ -5,10 +5,12 @@ import type { MedplumClient, SearchRequest, WithId } from '@medplum/core';
 import { DEFAULT_SEARCH_COUNT, formatSearchQuery, Operator, parseSearchRequest } from '@medplum/core';
 import type { Encounter } from '@medplum/fhirtypes';
 import { ResourceBoard } from '@medplum/react';
+import { IconFileText } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { EncounterChart } from '../../components/encounter/EncounterChart';
+import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { DRCHRONO_SOURCE_TAG } from '../../utils/data-source';
 import { showErrorNotification } from '../../utils/notifications';
 import { EncounterListItem } from './EncounterListItem';
@@ -85,46 +87,53 @@ export function EncountersPage(): JSX.Element {
   );
 
   return (
-    <ResourceBoard<Encounter>
-      search={search}
-      selectedId={encounterId}
-      resolveSelected={resolveSelected}
-      headerText="Visits"
-      renderItem={(encounter) => (
-        <EncounterListItem
-          encounter={encounter}
-          selectedEncounterId={encounterId}
-          getItemUri={(e) => encounterUri(e.id)}
-        />
-      )}
-      emptyList={
-        <Box h="100%" p="lg">
-          <Text c="dimmed" fw={500}>
-            No visits.
-          </Text>
-        </Box>
-      }
-      renderDetail={(encounter, ctx) => (
-        <Box key={encounter.id} flex={1} miw={0} h="100%" style={{ overflow: 'auto' }}>
-          <EncounterChart
-            encounter={{ reference: `Encounter/${encounter.id}` }}
-            task={taskId ? { reference: `Task/${taskId}` } : undefined}
-            onEncounterChange={() => ctx.refresh().catch(showErrorNotification)}
+    <PatientTabShell
+      fill
+      icon={<IconFileText size={20} />}
+      title="Encounters/Notes"
+      description="Visits and their clinical notes from DrChrono"
+    >
+      <ResourceBoard<Encounter>
+        search={search}
+        selectedId={encounterId}
+        resolveSelected={resolveSelected}
+        headerText="Visits"
+        renderItem={(encounter) => (
+          <EncounterListItem
+            encounter={encounter}
+            selectedEncounterId={encounterId}
+            getItemUri={(e) => encounterUri(e.id)}
           />
-        </Box>
-      )}
-      emptyDetail={
-        <Box flex={1} h="100%" p="lg">
-          <Text c="dimmed">Select a visit to view its chart.</Text>
-        </Box>
-      }
-      stacked
-      backUri={`/Patient/${patientId}/Encounter${location.search}`}
-      backLabel="All visits"
-      onChange={(s) => {
-        navigate(`${location.pathname}${formatSearchQuery(s)}`)?.catch(console.error);
-      }}
-      onError={showErrorNotification}
-    />
+        )}
+        emptyList={
+          <Box h="100%" p="lg">
+            <Text c="dimmed" fw={500}>
+              No visits.
+            </Text>
+          </Box>
+        }
+        renderDetail={(encounter, ctx) => (
+          <Box key={encounter.id} flex={1} miw={0} h="100%" style={{ overflow: 'auto' }}>
+            <EncounterChart
+              encounter={{ reference: `Encounter/${encounter.id}` }}
+              task={taskId ? { reference: `Task/${taskId}` } : undefined}
+              onEncounterChange={() => ctx.refresh().catch(showErrorNotification)}
+            />
+          </Box>
+        )}
+        emptyDetail={
+          <Box flex={1} h="100%" p="lg">
+            <Text c="dimmed">Select a visit to view its chart.</Text>
+          </Box>
+        }
+        stacked
+        backUri={`/Patient/${patientId}/Encounter${location.search}`}
+        backLabel="All visits"
+        onChange={(s) => {
+          navigate(`${location.pathname}${formatSearchQuery(s)}`)?.catch(console.error);
+        }}
+        onError={showErrorNotification}
+      />
+    </PatientTabShell>
   );
 }

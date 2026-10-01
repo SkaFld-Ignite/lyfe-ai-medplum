@@ -79,7 +79,7 @@ describe('EncountersPage', () => {
 
     expect(await screen.findByText('Office Visit')).toBeInTheDocument();
     expect(screen.getByText('In Progress')).toBeInTheDocument();
-    expect(await screen.findByText('Gregory House')).toBeInTheDocument();
+    expect(await screen.findByText(/Gregory House/)).toBeInTheDocument();
   });
 
   test('Excludes encounters of other patients', async () => {

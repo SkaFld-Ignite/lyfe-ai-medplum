@@ -29,15 +29,15 @@ export function OngoingCareCard(props: OngoingCareCardProps): JSX.Element {
     <Paper withBorder radius="md" className={classes.ongoing}>
       <UnstyledButton className={classes.ongoingHeader} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <Group gap="sm" wrap="nowrap">
-          <ThemeIcon variant="light" color="orange" size={36} radius="md">
+          <ThemeIcon variant="light" color="yellow" size={36} radius="md" c="#d97706">
             <IconActivity size={18} />
           </ThemeIcon>
           <Box>
-            <Text fw={700} size="sm">
+            <Text fw={700} fz={15}>
               Ongoing Care
             </Text>
             <Text size="xs" c="dimmed">
-              {items.length} {items.length === 1 ? 'item' : 'items'} not tied to a specific date
+              {items.length} active {items.length === 1 ? 'item' : 'items'} not tied to a specific encounter
             </Text>
           </Box>
         </Group>

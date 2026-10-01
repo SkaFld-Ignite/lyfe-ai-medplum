@@ -40,8 +40,10 @@ export function DocumentPreviewModal(props: DocumentPreviewModalProps): JSX.Elem
       onClose={onClose}
       size="80rem"
       fullScreen={isMobile}
-      radius="md"
-      title="Document preview"
+      radius="lg"
+      withCloseButton={false}
+      padding={0}
+      aria-label="Document preview"
       classNames={{ body: classes.previewBody }}
     >
       <Box className={classes.previewFrame}>
@@ -52,6 +54,7 @@ export function DocumentPreviewModal(props: DocumentPreviewModalProps): JSX.Elem
             patientRef={patient}
             onDocumentChange={onChanged}
             onDocumentDeleted={onDeleted}
+            onClose={onClose}
           />
         ) : (
           <Box className={classes.previewLoading}>

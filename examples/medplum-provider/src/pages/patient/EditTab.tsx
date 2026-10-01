@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Anchor } from '@mantine/core';
+import { Anchor, Box } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { deepClone, normalizeErrorString, normalizeOperationOutcome } from '@medplum/core';
 import type { OperationOutcome, Resource } from '@medplum/fhirtypes';
-import { Document, useMedplum } from '@medplum/react';
+import { useMedplum } from '@medplum/react';
+import { IconUserEdit } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
+import { PatientTabShell } from '../../components/patient-shell/PatientTabShell';
 import { ResourceFormWithRequiredProfile } from '../../components/ResourceFormWithRequiredProfile';
 import { RESOURCE_PROFILE_URLS } from '../resource/utils';
 
@@ -59,14 +61,20 @@ export function EditTab(): JSX.Element | null {
   }
 
   return (
-    <Document>
-      <ResourceFormWithRequiredProfile
-        missingProfileMessage={missingProfileMessage}
-        defaultValue={value}
-        onSubmit={handleSubmit}
-        outcome={outcome}
-        profileUrl={RESOURCE_PROFILE_URLS.Patient}
-      />
-    </Document>
+    <PatientTabShell
+      icon={<IconUserEdit size={20} />}
+      title="Edit demographics"
+      description="Update the patient's details. Changes are saved to their Medplum record."
+    >
+      <Box p="lg">
+        <ResourceFormWithRequiredProfile
+          missingProfileMessage={missingProfileMessage}
+          defaultValue={value}
+          onSubmit={handleSubmit}
+          outcome={outcome}
+          profileUrl={RESOURCE_PROFILE_URLS.Patient}
+        />
+      </Box>
+    </PatientTabShell>
   );
 }

@@ -1,15 +1,23 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { ActionIcon, Box, Button, Divider, Flex, Group, Loader, Paper, Stack, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Badge, Box, Button, Flex, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import type { WithId } from '@medplum/core';
-import { formatDate, getDisplayString, getReferenceString } from '@medplum/core';
+import { getDisplayString, getReferenceString } from '@medplum/core';
 import type { Attachment, DocumentReference, Patient, Reference } from '@medplum/fhirtypes';
 import { useCachedBinaryUrl, useMedplum } from '@medplum/react-hooks';
-import { IconBrowserShare, IconEditCircle, IconExternalLink, IconPrinter } from '@tabler/icons-react';
+import {
+  IconBrowserShare,
+  IconEditCircle,
+  IconExternalLink,
+  IconFileText,
+  IconPrinter,
+  IconX,
+} from '@tabler/icons-react';
 import type { JSX, ReactNode } from 'react';
 import { useState } from 'react';
 import { XmlDocumentPreview } from '../../components/cda/XmlDocumentPreview';
 import { SendFaxModal } from '../../components/fax/SendFaxModal';
+import { DOCUMENT_SOURCES } from '../../components/patient-documents/documents-config';
 import {
   CsvPreview,
   DocxPreview,
@@ -20,12 +28,16 @@ import {
 } from '../../components/patient-documents/RichFilePreview';
 import { useAttachmentBlob } from '../../hooks/useAttachmentBlob';
 import { useAttachmentPreviewUrl } from '../../hooks/useAttachmentPreviewUrl';
+import { useClinicTimeZone } from '../../hooks/useClinicTimeZone';
 import { isXmlContentType } from '../../utils/cda';
+import { formatFhirDate } from '../../utils/clinic-time';
 import { getAttachmentContentType } from '../../utils/document-file-type';
 import { showErrorNotification } from '../../utils/notifications';
 import { FILE_NOT_COPIED_MESSAGE, openAttachment } from '../../utils/open-attachment';
+import { getDataSource } from '../../utils/patient-timeline';
 import type { PreviewKind } from '../../utils/preview-kind';
 import { getPreviewKind } from '../../utils/preview-kind';
+import classes from './DocumentDetailPanel.module.css';
 import { getDocumentTypeDisplay } from './DocumentReference.utils';
 import { EditDocumentDetailsModal } from './EditDocumentDetailsModal';
 
@@ -39,6 +51,8 @@ interface DocumentDetailPanelProps {
   patientRef?: Reference<Patient>;
   onDocumentChange: () => void;
   onDocumentDeleted: () => void;
+  /** Shows a close button in the header, for when the panel is a dialog of its own. */
+  onClose?: () => void;
 }
 
 export function DocumentDetailPanel({
@@ -46,6 +60,7 @@ export function DocumentDetailPanel({
   patientRef,
   onDocumentChange,
   onDocumentDeleted,
+  onClose,
 }: DocumentDetailPanelProps): JSX.Element {
   const [faxModalOpened, setFaxModalOpened] = useState(false);
   const [editModalOpened, setEditModalOpened] = useState(false);
@@ -75,131 +90,120 @@ export function DocumentDetailPanel({
     }
   };
 
+  const timeZone = useClinicTimeZone();
+  const source = DOCUMENT_SOURCES.find((s) => s.source === getDataSource(item));
+  const subtitle = [getDocumentTypeDisplay(item), item.date && `Dated ${formatFhirDate(item.date, timeZone)}`]
+    .filter(Boolean)
+    .join(' · ');
+  const metadata = (
+    <aside className={classes.details} aria-label="Document details">
+      <Text className={classes.detailsTitle}>Details</Text>
+      <DocumentMetadata item={item} contentType={storedAttachment?.contentType} timeZone={timeZone} />
+    </aside>
+  );
+
   return (
     <>
-      <Box h="100%" style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-        <Paper h="100%">
-          <Flex direction="column" h="100%">
-            <Box p="md">
-              <Group justify="space-between" align="center">
-                <Stack gap={4} style={{ flex: 1 }}>
-                  <Text fw={700} size="lg">
-                    {name === referenceString ? 'Untitled Document' : name}
-                  </Text>
-                </Stack>
-
-                <Group gap="xs">
-                  <Tooltip label="Edit Document Details" position="bottom" openDelay={500}>
-                    <ActionIcon
-                      variant="transparent"
-                      radius="xl"
-                      size={32}
-                      className="outline-icon-button"
-                      onClick={() => setEditModalOpened(true)}
-                    >
-                      <IconEditCircle size={16} />
-                    </ActionIcon>
-                  </Tooltip>
-                  {attachment?.url && (
-                    <Tooltip label="Open in Browser" position="bottom" openDelay={500}>
-                      <ActionIcon
-                        variant="transparent"
-                        radius="xl"
-                        size={32}
-                        className="outline-icon-button"
-                        onClick={handleOpenInBrowser}
-                      >
-                        <IconBrowserShare size={16} />
-                      </ActionIcon>
-                    </Tooltip>
-                  )}
-                  <Tooltip label="Fax Document" position="bottom" openDelay={500}>
-                    <ActionIcon
-                      variant="transparent"
-                      radius="xl"
-                      size={32}
-                      className="outline-icon-button"
-                      onClick={() => setFaxModalOpened(true)}
-                    >
-                      <IconPrinter size={16} />
-                    </ActionIcon>
-                  </Tooltip>
-                </Group>
+      <Box className={classes.panel}>
+        <header className={classes.header}>
+          <Group gap={12} wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
+            <span className={classes.fileIcon}>
+              <IconFileText size={22} />
+            </span>
+            <Stack gap={2} miw={0}>
+              <Text className={classes.title}>{name === referenceString ? 'Untitled Document' : name}</Text>
+              <Group gap={8}>
+                {subtitle && <Text className={classes.subtitle}>{subtitle}</Text>}
+                {source && (
+                  <Badge variant="light" color={source.color} size="sm" radius="sm" tt="none">
+                    {source.badge}
+                  </Badge>
+                )}
               </Group>
-            </Box>
+            </Stack>
+          </Group>
 
-            <Divider />
-
-            {framed ? (
-              <>
-                <Box p="md" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                  {framedError && (
-                    <NoPreview
-                      onOpen={framedError === 'invalid' ? handleOpenInBrowser : undefined}
-                      message={
-                        framedError === 'invalid'
-                          ? "This file is damaged or isn't a real PDF, so it can't be previewed."
-                          : "This file hasn't been copied into Lyfe yet. Re-import the patient to fetch it."
-                      }
-                    />
-                  )}
-                  {framedLoading && (
-                    <Flex flex={1} justify="center" align="center">
-                      <Loader size="sm" />
-                    </Flex>
-                  )}
-                  {framedUrl && (
-                    <Box
-                      style={{
-                        flex: 1,
-                        borderRadius: 4,
-                        overflow: 'hidden',
-                        border: PREVIEW_BORDER,
-                      }}
-                    >
-                      <iframe
-                        title="Attachment"
-                        width="100%"
-                        height="100%"
-                        src={framedUrl + '#navpanes=0'}
-                        allowFullScreen={true}
-                        style={{ display: 'block', border: 0 }}
-                      />
-                    </Box>
-                  )}
-                </Box>
-
-                <Box px="md">
-                  <Divider />
-                </Box>
-
-                <Box p="md">
-                  <DocumentMetadata item={item} contentType={storedAttachment?.contentType} />
-                </Box>
-              </>
-            ) : (
-              <Box style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-                <Box p="md">
-                  {attachment ? (
-                    <AttachmentPreview attachment={attachment} url={attachmentUrl} onOpen={handleOpenInBrowser} />
-                  ) : (
-                    <Flex justify="center" align="center" h={300}>
-                      <Text c="dimmed">No preview available for this document</Text>
-                    </Flex>
-                  )}
-                </Box>
-
-                <Box px="md">
-                  <Divider />
-                </Box>
-
-                <Box p="md">
-                  <DocumentMetadata item={item} contentType={storedAttachment?.contentType} />
-                </Box>
-              </Box>
+          <Group gap={8} wrap="nowrap">
+            <Button
+              variant="default"
+              size="xs"
+              leftSection={<IconEditCircle size={15} />}
+              onClick={() => setEditModalOpened(true)}
+            >
+              Edit details
+            </Button>
+            {attachment?.url && (
+              <Button
+                variant="default"
+                size="xs"
+                leftSection={<IconBrowserShare size={15} />}
+                onClick={handleOpenInBrowser}
+              >
+                Open
+              </Button>
             )}
-          </Flex>
-        </Paper>
+            <Button
+              variant="default"
+              size="xs"
+              leftSection={<IconPrinter size={15} />}
+              onClick={() => setFaxModalOpened(true)}
+            >
+              Fax
+            </Button>
+            {onClose && (
+              <Tooltip label="Close" position="bottom" openDelay={500}>
+                <ActionIcon variant="subtle" color="gray" size={30} onClick={onClose} aria-label="Close">
+                  <IconX size={18} />
+                </ActionIcon>
+              </Tooltip>
+            )}
+          </Group>
+        </header>
+
+        <Box className={classes.body}>
+          <Box className={classes.viewer}>
+            {framed && (
+              <>
+                {framedError && (
+                  <NoPreview
+                    onOpen={framedError === 'invalid' ? handleOpenInBrowser : undefined}
+                    message={
+                      framedError === 'invalid'
+                        ? "This file is damaged or isn't a real PDF, so it can't be previewed."
+                        : "This file hasn't been copied into Lyfe yet. Re-import the patient to fetch it."
+                    }
+                  />
+                )}
+                {framedLoading && (
+                  <Flex flex={1} justify="center" align="center">
+                    <Loader size="sm" />
+                  </Flex>
+                )}
+                {framedUrl && (
+                  <Box className={classes.frame}>
+                    <iframe
+                      title="Attachment"
+                      width="100%"
+                      height="100%"
+                      src={framedUrl + '#navpanes=0'}
+                      allowFullScreen={true}
+                      style={{ display: 'block', border: 0 }}
+                    />
+                  </Box>
+                )}
+              </>
+            )}
+            {!framed &&
+              (attachment ? (
+                <AttachmentPreview attachment={attachment} url={attachmentUrl} onOpen={handleOpenInBrowser} />
+              ) : (
+                <Flex justify="center" align="center" h={300}>
+                  <Text c="dimmed">No preview available for this document</Text>
+                </Flex>
+              ))}
+          </Box>
+          {metadata}
+        </Box>
       </Box>
 
       <SendFaxModal
@@ -298,9 +302,11 @@ function getAuthor(doc: DocumentReference): string | undefined {
 function DocumentMetadata({
   item,
   contentType,
+  timeZone,
 }: {
   item: WithId<DocumentReference>;
   contentType: string | undefined;
+  timeZone: string;
 }): JSX.Element {
   const documentType = getDocumentTypeDisplay(item);
   const documentCategory =
@@ -317,7 +323,7 @@ function DocumentMetadata({
   const date = item.date || item.meta?.lastUpdated;
 
   return (
-    <Stack gap="sm">
+    <Stack gap={12}>
       {documentType && <MetadataRow label="Type" value={documentType} />}
       {documentCategory && <MetadataRow label="Category" value={documentCategory} />}
       {contentType && <MetadataRow label="Content type" value={contentType} />}
@@ -331,13 +337,13 @@ function DocumentMetadata({
           )
         }
       />
-      {date && <MetadataRow label="Added" value={formatDate(date)} />}
+      {date && <MetadataRow label="Added" value={formatFhirDate(date, timeZone)} />}
       {lastUpdated && (
         <MetadataRow
           label="Last updated"
           value={
             <>
-              {formatDate(lastUpdated)}
+              {formatFhirDate(lastUpdated, timeZone)}
               {currentAuthor && <Text span>{` by ${currentAuthor}`}</Text>}
             </>
           }
@@ -353,14 +359,12 @@ function authorLabel(ref: Reference | undefined): string | undefined {
 
 function MetadataRow({ label, value }: { label: string; value: ReactNode }): JSX.Element {
   return (
-    <Group align="flex-start" gap="lg" wrap="nowrap">
-      <Text fw={500} size="sm" c="dimmed" style={{ width: '150px', flexShrink: 0 }}>
-        {label}
-      </Text>
-      <Text size="sm" component="div" style={{ flex: 1, minWidth: 0 }}>
+    <div className={classes.field}>
+      <Text className={classes.fieldLabel}>{label}</Text>
+      <Text className={classes.fieldValue} component="div">
         {value}
       </Text>
-    </Group>
+    </div>
   );
 }
 

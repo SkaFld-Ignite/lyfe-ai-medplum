@@ -26,6 +26,7 @@ import { Navigate, Route, Routes, useLocation, useSearchParams } from 'react-rou
 import { LyfeLogo } from './components/brand/LyfeLogo';
 import { hasScriptSureIdentifier } from './components/utils';
 import { useDoseSpotAccess } from './hooks/useDoseSpotAccess';
+import { useNavbarState } from './hooks/useNavbarState';
 import './index.css';
 import { ScriptSurePracticeProvider } from './scriptsure/ScriptSurePractice';
 
@@ -54,9 +55,18 @@ import { IntakeFormPage } from './pages/patient/IntakeFormPage';
 import { LabsPage } from './pages/patient/LabsPage';
 import { LyfePatientListPage } from './pages/patient/LyfePatientListPage';
 import { MedicationsPage } from './pages/patient/MedicationsPage';
+import { PatientOverviewTab } from './pages/patient/PatientOverviewTab';
 import { PatientPage } from './pages/patient/PatientPage';
 import { PatientSearchPage } from './pages/patient/PatientSearchPage';
 import { ScriptSureTab } from './pages/patient/ScriptSureTab';
+import { AllergiesTab } from './pages/patient/sections/AllergiesTab';
+import { CarePlansTab } from './pages/patient/sections/CarePlansTab';
+import { ConditionsTab } from './pages/patient/sections/ConditionsTab';
+import { DemographicsTab } from './pages/patient/sections/DemographicsTab';
+import { DevicesTab } from './pages/patient/sections/DevicesTab';
+import { ImmunizationsTab } from './pages/patient/sections/ImmunizationsTab';
+import { LabsTab } from './pages/patient/sections/LabsTab';
+import { VitalsTab } from './pages/patient/sections/VitalsTab';
 import { TasksTab } from './pages/patient/TasksTab';
 import { TimelineTab } from './pages/patient/TimelineTab';
 import { RegisterPage } from './pages/RegisterPage';
@@ -84,6 +94,7 @@ export function App(): JSX.Element | null {
   const profile = useMedplumProfile();
   const doseSpotCount = useDoseSpotNotifications();
   const location = useLocation();
+  const { navbarOpen, setNavbarOpen } = useNavbarState(location.pathname);
   const [searchParams] = useSearchParams();
   const project = medplum.getProject();
   const setupDisabledByProject =
@@ -151,6 +162,8 @@ export function App(): JSX.Element | null {
       searchParams={searchParams}
       layoutVersion="v2"
       showLayoutVersionToggle={false}
+      navbarOpen={navbarOpen}
+      onNavbarOpenChange={setNavbarOpen}
       menus={
         profile
           ? [
@@ -272,6 +285,15 @@ export function App(): JSX.Element | null {
                 {hasDoseSpot && <Route path="dosespot" element={<DoseSpotTab />} />}
                 {hasScriptSure && <Route path="scriptsure" element={<ScriptSureTab />} />}
                 <Route path="timeline" element={<TimelineTab />} />
+                <Route path="overview" element={<PatientOverviewTab />} />
+                <Route path="demographics" element={<DemographicsTab />} />
+                <Route path="conditions" element={<ConditionsTab />} />
+                <Route path="vitals" element={<VitalsTab />} />
+                <Route path="labs" element={<LabsTab />} />
+                <Route path="careplans" element={<CarePlansTab />} />
+                <Route path="devices" element={<DevicesTab />} />
+                <Route path="allergies" element={<AllergiesTab />} />
+                <Route path="immunizations" element={<ImmunizationsTab />} />
                 <Route path="export" element={<ExportTab />} />
                 <Route path="ServiceRequest" element={<LabsPage tab="open" />} />
                 <Route path="ServiceRequest/:serviceRequestId" element={<LabsPage tab="open" />} />
@@ -291,7 +313,7 @@ export function App(): JSX.Element | null {
                   <Route path="edit" element={<ResourceEditPage />} />
                   <Route path="history" element={<ResourceHistoryPage />} />
                 </Route>
-                <Route path="" element={<TimelineTab />} />
+                <Route path="" element={<PatientOverviewTab />} />
               </Route>
               <Route path="/Communication" element={<MessagesPage />}>
                 <Route index element={<MessagesPage />} />

@@ -3,39 +3,39 @@
 import { Group, Paper, Skeleton, Stack } from '@mantine/core';
 import type { JSX } from 'react';
 
-const INFO_ROW_WIDTHS = ['55%', '35%', '60%', '45%', '50%'];
-const SECTION_COUNT = 3;
+const INFO_ROW_COUNT = 2;
 const CONTENT_ROW_COUNT = 4;
 
 /**
- * Placeholder for the patient summary sidebar, laid out like `PatientSummary`: header, info rows
- * and a few clinical sections.
- * @returns The sidebar skeleton.
+ * Placeholder for the patient identity card while the patient loads: avatar, name and MRN, the
+ * meta row, a status badge and the provider/clinic rows.
+ * @returns The identity skeleton.
  */
-export function PatientSummarySkeleton(): JSX.Element {
+export function PatientIdentitySkeleton(): JSX.Element {
   return (
-    <Stack gap="lg" p="md" aria-hidden>
+    <Stack gap="sm" p="md" aria-hidden>
       <Group gap="sm" wrap="nowrap">
-        <Skeleton circle h={44} w={44} />
+        <Skeleton circle h={56} w={56} />
         <Stack gap={6} flex={1}>
-          <Skeleton h={14} w="65%" radius="xl" />
-          <Skeleton h={10} w="45%" radius="xl" />
+          <Skeleton h={14} w="75%" radius="xl" />
+          <Skeleton h={14} w="45%" radius="sm" />
         </Stack>
       </Group>
-      <Stack gap={12}>
-        {INFO_ROW_WIDTHS.map((width) => (
-          <Group key={width} gap="sm" wrap="nowrap">
-            <Skeleton circle h={16} w={16} />
-            <Skeleton h={10} w={width} radius="xl" />
-          </Group>
-        ))}
-      </Stack>
-      {Array.from({ length: SECTION_COUNT }, (_, i) => (
-        <Stack key={i} gap={8}>
-          <Skeleton h={12} w="35%" radius="xl" />
-          <Skeleton h={10} w="70%" radius="xl" />
-          <Skeleton h={16} w={56} radius="xl" />
-        </Stack>
+      <Group gap={8}>
+        <Skeleton h={16} w={52} radius="sm" />
+        <Skeleton h={12} w={30} radius="xl" />
+        <Skeleton h={12} w={70} radius="xl" />
+      </Group>
+      <Skeleton h={30} radius="md" />
+      <Skeleton h={18} w={64} radius="xl" />
+      {Array.from({ length: INFO_ROW_COUNT }, (_, i) => (
+        <Group key={i} gap="xs" wrap="nowrap">
+          <Skeleton h={26} w={26} radius="sm" />
+          <Stack gap={4} flex={1}>
+            <Skeleton h={8} w="30%" radius="xl" />
+            <Skeleton h={10} w="70%" radius="xl" />
+          </Stack>
+        </Group>
       ))}
     </Stack>
   );

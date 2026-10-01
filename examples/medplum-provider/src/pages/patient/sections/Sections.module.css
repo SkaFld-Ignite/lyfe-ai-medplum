@@ -1,0 +1,254 @@
+/* Lyfe section extras: the vitals matrix and the demographics cards. */
+
+.matrixHeader {
+  padding: 14px 16px;
+  border-bottom: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+}
+
+.matrixTitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.matrixSubtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #64748b;
+
+  &::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #10b981;
+  }
+
+  &[data-level='watch']::before {
+    background: #f59e0b;
+  }
+
+  &[data-level='abnormal']::before {
+    background: #f43f5e;
+  }
+}
+
+.matrix {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+
+  & th,
+  & td {
+    padding: 10px 14px;
+    white-space: nowrap;
+    border-bottom: 1px solid light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  }
+
+  & tbody tr:last-child th,
+  & tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  & thead th {
+    min-width: 112px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-align: left;
+    vertical-align: top;
+    color: #475569;
+    background: light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  }
+
+  & thead th[data-latest] {
+    color: #1d4ed8;
+    background: light-dark(#dbeafe, var(--mantine-color-dark-5));
+  }
+
+  & tbody th {
+    text-align: left;
+  }
+
+  & td {
+    text-align: left;
+    font-weight: 600;
+  }
+
+  & td[data-latest] {
+    background: light-dark(rgb(239 246 255 / 0.6), var(--mantine-color-dark-6));
+  }
+
+  & tbody tr:hover td,
+  & tbody tr:hover th {
+    background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+  }
+}
+
+.dayLabel {
+  display: block;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: light-dark(#0f172a, var(--mantine-color-gray-2));
+
+  [data-latest] > & {
+    color: #1d4ed8;
+  }
+}
+
+.yearLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+/* A reading: plain when normal, a tinted chip with a dot when it needs attention. */
+.reading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  &[data-level='watch'],
+  &[data-level='abnormal'] {
+    padding: 2px 8px;
+    border-radius: 999px;
+
+    &::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+  }
+
+  &[data-level='watch'] {
+    color: #b45309;
+    background: #fef3c7;
+  }
+
+  &[data-level='abnormal'] {
+    color: #be123c;
+    background: #ffe4e6;
+  }
+}
+
+.stickyCol {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 220px;
+  min-width: 220px;
+  background: light-dark(#ffffff, var(--mantine-color-dark-7));
+  box-shadow: 1px 0 0 light-dark(#e2e8f0, var(--mantine-color-dark-4));
+
+  thead & {
+    z-index: 2;
+    background: light-dark(#f1f5f9, var(--mantine-color-dark-5));
+  }
+}
+
+.rowTile {
+  display: grid;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 8px;
+  background: var(--mantine-color-body);
+}
+
+.unit {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.latestPill {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  color: #fff;
+  background: #2563eb;
+}
+
+.emptyCell {
+  color: #cbd5e1;
+  font-weight: 400;
+}
+
+/* Lyfe labs: latest-abnormals strip and the per-panel results table. */
+
+.abnormalStrip {
+  padding: 14px 16px;
+  border-bottom: 1px solid light-dark(#fecdd3, var(--mantine-color-dark-4));
+  background: light-dark(#fff1f2, var(--mantine-color-dark-6));
+}
+
+.abnormalGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.abnormalCard {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid light-dark(#fecdd3, var(--mantine-color-dark-4));
+  border-radius: 10px;
+  background: var(--mantine-color-body);
+
+  &[data-flag='L'] {
+    border-color: light-dark(#bfdbfe, var(--mantine-color-dark-4));
+  }
+
+  &[data-flag='A'] {
+    border-color: light-dark(#fde68a, var(--mantine-color-dark-4));
+  }
+}
+
+.labTable {
+  composes: matrix;
+
+  & tbody th {
+    font-weight: 600;
+    color: light-dark(#0f172a, var(--mantine-color-gray-2));
+  }
+
+  & tr[data-flag='H'] .labValue {
+    color: #e11d48;
+  }
+
+  & tr[data-flag='L'] .labValue {
+    color: #2563eb;
+  }
+
+  & tr[data-flag='A'] .labValue {
+    color: #d97706;
+  }
+}
+
+.labValue {
+  font-weight: 700;
+}
+
+.trendCell {
+  width: 112px;
+}

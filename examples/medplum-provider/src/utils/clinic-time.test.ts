@@ -8,6 +8,7 @@ import {
   DEFAULT_CLINIC_TIME_ZONE,
   formatDayKey,
   formatDayKeyLong,
+  formatFhirDate,
   getLocationTimeZone,
   resolveClinicTimeZone,
   toCalendarDayKey,
@@ -114,5 +115,22 @@ describe('a calendar date that came from parts', () => {
   test('holds for the first of a month, where the roll-back changes the month too', () => {
     expect(toCalendarDayKey(new Date(2026, 0, 1))).toBe('2026-01-01');
     expect(toCalendarDayKey(new Date(2026, 3, 1))).toBe('2026-04-01');
+  });
+});
+
+describe('formatting a FHIR date', () => {
+  test('shows a date-only value as that calendar day', () => {
+    expect(formatFhirDate('2026-01-06', 'Asia/Karachi')).toBe('Jan 6, 2026');
+  });
+
+  test('shows an instant as its day at the clinic', () => {
+    // 03:00 UTC on the 7th is still the 6th in Los Angeles.
+    expect(formatFhirDate('2026-01-07T03:00:00Z', 'America/Los_Angeles')).toBe('Jan 6, 2026');
+  });
+
+  test('keeps a partial date as given and ignores a missing or bad one', () => {
+    expect(formatFhirDate('2026-01', 'UTC')).toBe('2026-01');
+    expect(formatFhirDate(undefined, 'UTC')).toBeUndefined();
+    expect(formatFhirDate('not a date', 'UTC')).toBeUndefined();
   });
 });

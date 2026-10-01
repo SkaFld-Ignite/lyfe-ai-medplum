@@ -34,6 +34,13 @@ import type { Location } from '@medplum/fhirtypes';
  * default still renders a self-consistent calendar; two different defaults
  * would not.
  */
+
+/**
+ * Dates and times read the way the clinic writes them ("Sep 14, 2026", "9:15 AM"), whatever the
+ * viewer's browser language is, matching the Lyfe platform.
+ */
+export const CLINIC_LOCALE = 'en-US';
+
 export const DEFAULT_CLINIC_TIME_ZONE = 'US/Pacific';
 
 /**
@@ -130,7 +137,7 @@ export function toClinicIsoDate(date: Date, timeZone: string): string {
  * @returns The formatted time.
  */
 export function formatClinicTime(date: Date, timeZone: string): string {
-  return date.toLocaleTimeString(undefined, { timeZone, hour: 'numeric', minute: '2-digit' });
+  return date.toLocaleTimeString(CLINIC_LOCALE, { timeZone, hour: 'numeric', minute: '2-digit' });
 }
 
 /**
@@ -140,7 +147,7 @@ export function formatClinicTime(date: Date, timeZone: string): string {
  * @returns The formatted date.
  */
 export function formatClinicLongDate(date: Date, timeZone: string): string {
-  return date.toLocaleDateString(undefined, {
+  return date.toLocaleDateString(CLINIC_LOCALE, {
     timeZone,
     weekday: 'long',
     year: 'numeric',
@@ -156,7 +163,7 @@ export function formatClinicLongDate(date: Date, timeZone: string): string {
  * @returns The formatted date.
  */
 export function formatClinicShortDate(date: Date, timeZone: string): string {
-  return date.toLocaleDateString(undefined, { timeZone, month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleDateString(CLINIC_LOCALE, { timeZone, month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 /**
@@ -178,7 +185,7 @@ export function formatDayKey(dayKey: string, options: Intl.DateTimeFormatOptions
   // Noon rather than midnight so a formatter that rounds cannot fall into the
   // previous day.
   const at = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
-  return at.toLocaleDateString(undefined, { ...options, timeZone: 'UTC' });
+  return at.toLocaleDateString(CLINIC_LOCALE, { ...options, timeZone: 'UTC' });
 }
 
 /**
@@ -310,4 +317,25 @@ export function toCalendarDayKey(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Formats a FHIR date or dateTime for display, e.g. "Sep 14, 2026". A date-only value is a calendar
+ * day and is shown as that day; an instant is shown as the day it falls on at the clinic.
+ * @param value - A FHIR `date` or `dateTime`.
+ * @param timeZone - The clinic's IANA zone.
+ * @returns The formatted date, or undefined when missing or unparseable.
+ */
+export function formatFhirDate(value: string | undefined, timeZone: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return formatDayKey(value, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  if (/^\d{4}(-\d{2})?$/.test(value)) {
+    return value;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : formatClinicShortDate(date, timeZone);
 }
