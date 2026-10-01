@@ -12,12 +12,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1145.0",
+    "@aws-sdk/client-textract": "^3.1140.0",
     "@medplum/core": "*",
     "@medplum/fhirtypes": "*",
     "inngest": "^3.27.0",
-    "tsx": "4.19.2"
+    "pdf-lib": "^1.17.1",
+    "pg": "^8.23.0",
+    "tsx": "4.19.2",
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "inngest-cli": "^1.4.0",
     "typescript": "5.9.3"
   }

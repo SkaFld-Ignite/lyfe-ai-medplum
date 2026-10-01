@@ -99,11 +99,26 @@ export async function handleBulkImport(req: IncomingMessage, res: ServerResponse
   }
 }
 
-/** Who the caller is, as Medplum reports them. */
-interface Caller {
+/**
+ * Who the caller is, as Medplum reports them.
+ *
+ * Exported with {@link identify} because the RAG endpoints need exactly this
+ * and must not grow a second way of answering it. Two implementations of "who
+ * is asking and which clinic are they" is how one of them ends up subtly more
+ * permissive than the other.
+ */
+export interface Caller {
   /** e.g. `Practitioner/abc` — what the importers resolve the clinic from. */
   profile: string;
-  /** The clinic, for routing and concurrency only. */
+  /**
+   * The clinic.
+   *
+   * For the importers this is routing and concurrency only — they re-derive
+   * the clinic from the requester. For a **read** it is the tenant filter
+   * itself: `searchPatientDocuments` puts it in the `WHERE` clause, and it is
+   * the only thing standing between a caller and another clinic's PHI. Which
+   * is why it comes from the membership lookup below and never from a body.
+   */
   organizationId: string;
 }
 
@@ -125,7 +140,7 @@ interface Caller {
  * @param token - The bearer token from the request.
  * @returns The caller, or undefined when the token is not usable.
  */
-async function identify(token: string): Promise<Caller | undefined> {
+export async function identify(token: string): Promise<Caller | undefined> {
   const asCaller = new MedplumClient({ baseUrl: requiredEnv('MEDPLUM_BASE_URL'), fetch });
   asCaller.setAccessToken(token);
   const me = (await asCaller.get('auth/me').catch(() => undefined)) as
@@ -161,7 +176,7 @@ async function identify(token: string): Promise<Caller | undefined> {
  * @param req - The request.
  * @returns The token, or undefined.
  */
-function bearerToken(req: IncomingMessage): string | undefined {
+export function bearerToken(req: IncomingMessage): string | undefined {
   const header = req.headers.authorization;
   return header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
 }
@@ -171,7 +186,7 @@ function bearerToken(req: IncomingMessage): string | undefined {
  * @param req - The request.
  * @returns The parsed body.
  */
-async function readJson(req: IncomingMessage): Promise<unknown> {
+export async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     chunks.push(chunk as Buffer);
@@ -186,7 +201,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
  * @param status - HTTP status.
  * @param body - The payload.
  */
-function send(res: ServerResponse, status: number, body: unknown): void {
+export function send(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
 }

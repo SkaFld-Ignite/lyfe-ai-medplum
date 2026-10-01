@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { serve } from 'inngest/node';
+import type { ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { chartImport } from './functions/chart-import.ts';
+import { ragIndex } from './functions/rag-index.ts';
 import { zusImport } from './functions/zus-import.ts';
 import { inngest } from './inngest.ts';
 import { getMedplum } from './medplum.ts';
+import { handleRagIngest, handleRagSearch, handleRagStatus } from './rag-http.ts';
+import { isRagConfigured } from './rag/db.ts';
 import { handleBulkImport } from './trigger.ts';
 
 /**
@@ -17,7 +21,7 @@ import { handleBulkImport } from './trigger.ts';
  */
 const PORT = Number(process.env.PORT ?? 3020);
 
-const handler = serve({ client: inngest, functions: [chartImport, zusImport] });
+const handler = serve({ client: inngest, functions: [chartImport, zusImport, ragIndex] });
 
 /** Browser origins allowed to start a run. */
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:3001').split(',').map((o) => o.trim());
@@ -60,10 +64,21 @@ createServer((req, res) => {
     return;
   }
   if (req.url === '/api/imports/bulk' && req.method === 'POST') {
-    handleBulkImport(req, res).catch(() => {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal error' }));
-    });
+    route(res, handleBulkImport(req, res));
+    return;
+  }
+  // Document RAG. Every one of these authenticates the caller's own Medplum
+  // token and resolves their organization server-side; see `rag-http.ts`.
+  if (req.url === '/api/rag/ingest' && req.method === 'POST') {
+    route(res, handleRagIngest(req, res));
+    return;
+  }
+  if (req.url === '/api/rag/search' && req.method === 'POST') {
+    route(res, handleRagSearch(req, res));
+    return;
+  }
+  if (req.url === '/api/rag/status' && req.method === 'POST') {
+    route(res, handleRagStatus(req, res));
     return;
   }
   if (req.url === '/health') {
@@ -75,7 +90,11 @@ createServer((req, res) => {
       JSON.stringify({
         ok: ready,
         medplum: ready ? 'connected' : (startupError ?? 'connecting'),
-        functions: ['drchrono-chart-import', 'zus-record-import'],
+        functions: ['drchrono-chart-import', 'zus-record-import', 'rag-document-index'],
+        // Reported rather than inferred. RAG is optional — the worker runs the
+        // imports fine without it — so "the search endpoint 503s" needs a way
+        // to be told apart from "the worker is down".
+        rag: isRagConfigured() ? 'configured' : 'RAG_DATABASE_URL unset',
       })
     );
     return;
@@ -85,3 +104,21 @@ createServer((req, res) => {
 }).listen(PORT, () => {
   console.log(`lyfe-worker listening on http://localhost:${PORT}/api/inngest`);
 });
+
+/**
+ * Send a handler's rejection as a 500 rather than an unhandled rejection.
+ *
+ * Each handler already catches its own errors and replies; this is the net
+ * under that, for a throw before the try block is entered. Without it a
+ * rejected promise here takes the process down and with it the imports.
+ * @param res - The response.
+ * @param work - The handler's promise.
+ */
+function route(res: ServerResponse, work: Promise<void>): void {
+  work.catch(() => {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal error' }));
+    }
+  });
+}

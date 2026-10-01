@@ -77,7 +77,43 @@ export interface ZusImportRequested {
   };
 }
 
+/**
+ * A patient's documents to index for RAG.
+ *
+ * Its own event, and its own function, for the same reason the Zus pull is
+ * separate from the chart import: it fails for different reasons and on a
+ * different timescale. Extraction fails on Textract, on a corrupt PDF, on an
+ * embedding quota — none of which say anything about whether the chart
+ * imported, and none of which should mark a chart failed.
+ *
+ * It is also not emitted automatically by the chart import, which the Zus pull
+ * is. Indexing is a derived index being rebuilt, not part of making a patient's
+ * record complete, and a backfill over 2,823 documents is an operator's
+ * decision about cost rather than a consequence of importing one chart.
+ */
+export interface RagIngestRequested {
+  name: 'lyfe/rag.ingest.requested';
+  data: {
+    /** The clinic. Routing and concurrency — and here also the tenant written onto every chunk. */
+    organizationId: string;
+    /** Who asked; see {@link ChartImportRequested.data.requester}. */
+    requester: string;
+    /** The patient whose documents to index. */
+    patientId: string;
+    /**
+     * A Task the caller already opened.
+     *
+     * Passed down rather than opened again. The worker opens one Task per run
+     * and hands its id to whatever does the work, so one run is one row on the
+     * Imports page — the same rule the chart and Zus imports now follow.
+     */
+    taskId?: string;
+    batchId?: string;
+  };
+}
+
 export type LyfeEvents = {
   'lyfe/chart.import.requested': ChartImportRequested;
   'lyfe/zus.import.requested': ZusImportRequested;
+  'lyfe/rag.ingest.requested': RagIngestRequested;
 };
