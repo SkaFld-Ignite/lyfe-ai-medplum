@@ -54,7 +54,7 @@
   }
 }
 
-.chatTextarea {
+.chatInputBox .chatTextarea {
   border: none;
   background: transparent;
   padding: 0 8px calc(10px + 1lh);
@@ -64,7 +64,22 @@
      fractional, which can leave a 1-2px scrollable remainder at some zoom levels */
   overflow-y: hidden;
 
-  &:focus {
+  /*
+   * Scoped through .chatInputBox deliberately.
+   *
+   * Mantine's global `.mantine-Input-input:focus, :focus-within` carries a 3px
+   * focus ring, and a bare `.chatTextarea:focus` has the SAME specificity
+   * (one class + one pseudo-class) — so with Mantine's stylesheet loading later
+   * it won on source order and the ring rendered anyway. The container around
+   * this textarea already turns blue on focus, so the ring drew a second,
+   * smaller rounded border inside the first: the "two borders" the input showed.
+   *
+   * The extra class lifts specificity above Mantine's, and `:focus-within` is
+   * matched too because Mantine's selector includes it.
+   */
+  &:focus,
+  &:focus-within,
+  &:focus-visible {
     border: none;
     outline: none;
     box-shadow: none;
