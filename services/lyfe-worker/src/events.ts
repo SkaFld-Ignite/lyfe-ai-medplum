@@ -62,6 +62,14 @@ export interface ChartImportRequested {
  * the only place that can decide it correctly. An ineligible patient comes back
  * refused, having cost nothing, and the run closes as skipped rather than
  * failed.
+ *
+ * **A manual re-sync is this same event.** The "sync now" control on the
+ * patient page posts to the worker, which sends exactly this, with `reason`
+ * set for the log. There is no second event, no second function and no second
+ * code path, which is the only way the retry budget, the per-clinic
+ * concurrency, the fresh-enrolment ladder and — above all — the idempotency
+ * rules stay identical between the first pull and the fiftieth. A parallel
+ * "resync" pipeline would be a second place for those to drift.
  */
 export interface ZusImportRequested {
   name: 'lyfe/zus.import.requested';
@@ -73,6 +81,15 @@ export interface ZusImportRequested {
     medplumPatientId: string;
     /** True the first time a patient is enrolled, which is the slow path. */
     freshEnrolment?: boolean;
+    /**
+     * Why this pull was asked for, e.g. `chart-import` or `manual-resync`.
+     *
+     * Carried for the log and nothing else. A re-sync is the *same* pull as
+     * the first one — same event, same function, same idempotency rules — and
+     * the moment this field starts selecting behaviour that stops being true.
+     * It exists so a run can be read, not branched on.
+     */
+    reason?: string;
     batchId?: string;
   };
 }

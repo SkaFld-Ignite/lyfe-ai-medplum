@@ -144,7 +144,7 @@ function fakeMedplum(props: { records: Record<string, Basic>; memberships: Recor
       const value = new URLSearchParams(query).get('identifier') ?? '';
       const existing = claims.get(value);
       if (existing) {
-        return existing as T & { id: string };
+        return existing as unknown as T & { id: string };
       }
       const created = { ...resource, id: `claim-${++counter}` } as T & { id: string };
       claims.set(value, created as unknown as Basic);

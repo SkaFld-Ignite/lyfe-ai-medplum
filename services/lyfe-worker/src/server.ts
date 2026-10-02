@@ -11,6 +11,7 @@ import { inngest } from './inngest.ts';
 import { getMedplum } from './medplum.ts';
 import { handleRagIngest, handleRagSearch, handleRagStatus } from './rag-http.ts';
 import { isRagConfigured } from './rag/db.ts';
+import { handleResync, RESYNC_SOURCES } from './resync.ts';
 import { handleBulkImport } from './trigger.ts';
 import { adapterIds } from './webhooks/adapters/index.ts';
 import { handleWebhook, parseWebhookUrl } from './webhooks/receive.ts';
@@ -74,11 +75,17 @@ createServer((req, res) => {
     route(res, handleBulkImport(req, res));
     return;
   }
+  // Re-pull one patient from one configured source. Same trust boundary as the
+  // bulk endpoint, and it sends the same event the import chain does.
+  if (req.url === '/api/imports/resync' && req.method === 'POST') {
+    route(res, handleResync(req, res));
+    return;
+  }
   // Inbound webhooks. One route for every provider and every clinic — the
   // provider and the organization are path segments, and which adapter serves
-  // them comes from the registry, so a new EHR adds no line here. Checked
-  // before the exact-match routes below only because it is a prefix match; the
-  // paths do not overlap.
+  // them comes from the registry, so a new EHR adds no line here. A prefix
+  // match rather than an exact one, which is why it is tested on its own
+  // rather than folded in with the exact-match routes; the paths do not overlap.
   const webhook = parseWebhookUrl(req.url);
   if (webhook) {
     // Deliberately unauthenticated at this layer: the provider has no Medplum
@@ -129,6 +136,10 @@ createServer((req, res) => {
         // imports fine without it — so "the search endpoint 503s" needs a way
         // to be told apart from "the worker is down".
         rag: isRagConfigured() ? 'configured' : 'RAG_DATABASE_URL unset',
+        // Which sources this worker will re-pull a patient from. Reported
+        // rather than duplicated in the app, so adding a source is a registry
+        // entry here and not also a front-end release.
+        resyncSources: Object.values(RESYNC_SOURCES).map((s) => ({ id: s.id, label: s.label })),
       })
     );
     return;
