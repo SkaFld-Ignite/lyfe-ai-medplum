@@ -113,6 +113,22 @@ describe('launcher', () => {
     expect(panel).not.toHaveAttribute('data-expanded');
   });
 
+  /*
+   * Production's panel header has two controls: the expand/collapse toggle and close. Ours
+   * also shipped a conversations button and a new-conversation button, which production has
+   * nowhere. They are not rendered any more rather than hidden — a styled-away header button
+   * is still tabbable and still announced.
+   */
+  test('the header has exactly the two controls production has', async () => {
+    setup('/scheduling');
+    await openPanel();
+
+    expect(screen.getByRole('button', { name: 'Expand Lyfe AI' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close Lyfe AI' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Conversations' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
+  });
+
   test('stays out of the way on the Spaces page, which is the same chat at full size', () => {
     setup('/Spaces/Communication');
 

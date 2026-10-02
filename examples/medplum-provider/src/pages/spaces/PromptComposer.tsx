@@ -59,6 +59,22 @@ function PatientPill({
   );
 }
 
+/**
+ * Which surface the composer is drawing for.
+ *
+ * `page` is the full `/Spaces` route: the whole toolbox — patient picker, model picker,
+ * reasoning effort, voice input — because that surface is where a user deliberately
+ * chooses how a question is answered.
+ *
+ * `panel` is the floating Lyfe AI launcher, which mirrors the production Lyfe chat:
+ * one input and a send button, and nothing else. The model there is pinned rather than
+ * chosen, so a picker would be a control over a decision that has already been made.
+ *
+ * Declared here rather than imported from `SpacesInbox`, which imports this module —
+ * a type import back would close the cycle.
+ */
+export type PromptComposerVariant = 'page' | 'panel';
+
 interface PromptComposerProps {
   input: string;
   onInputChange: (value: string) => void;
@@ -72,6 +88,8 @@ interface PromptComposerProps {
   onReasoningEffortChange: (value: ReasoningEffort) => void;
   selectedPatients: (Patient | Reference<Patient>)[];
   setSelectedPatients: React.Dispatch<React.SetStateAction<(Patient | Reference<Patient>)[]>>;
+  /** Defaults to `page`. */
+  variant?: PromptComposerVariant;
 }
 
 export function PromptComposer({
@@ -87,7 +105,12 @@ export function PromptComposer({
   onReasoningEffortChange,
   selectedPatients,
   setSelectedPatients,
+  variant = 'page',
 }: PromptComposerProps): JSX.Element {
+  // The panel hides four controls. It does not render them and style them away: a mic button
+  // that is invisible but focusable is still in the tab order and still in the accessibility
+  // tree, and a model picker that exists in the DOM invites a future change to re-show it.
+  const isPanel = variant === 'panel';
   const medplum = useMedplum();
   const isVoiceEnabled = medplum.getProject()?.features?.includes('ai-realtime') ?? false;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -265,9 +288,38 @@ export function PromptComposer({
     REASONING_EFFORTS.find((e) => e.value === selectedReasoningEffort)?.label ?? selectedReasoningEffort;
 
   let inputPlaceholder = 'Ask, search, or make anything...';
+  if (isPanel) {
+    // Verbatim from the production Lyfe chat, which picks between the two on whether a patient
+    // chart is open. In the panel that is exactly what a selected patient means: the launcher
+    // pre-selects the chart's patient and there is no picker to change it.
+    inputPlaceholder =
+      selectedPatients.length > 0
+        ? 'Ask anything about this patient…'
+        : 'Ask about patients, appointments, conditions…';
+  }
   if (mode === 'voice') {
     inputPlaceholder = 'Start speaking—your transcribed words will appear here.';
   }
+
+  /* Send. In the page variant this shares its slot with voice mode and only appears once there
+     is something to send; in the panel it is always rendered, because that is the only way to
+     send with the mouse — it disables rather than disappears, as production's does. */
+  const sendButton = (
+    <Tooltip label="Send" position="top" openDelay={100}>
+      <ActionIcon
+        onClick={() => onSend()}
+        size={32}
+        radius="xl"
+        color="blue"
+        variant="filled"
+        className={classes.sendActionButton}
+        aria-label="Send message"
+        disabled={loading || (isPanel && !input.trim() && selectedPatients.length === 0)}
+      >
+        <IconArrowRight size={16} stroke={2} />
+      </ActionIcon>
+    </Tooltip>
+  );
 
   return (
     <div
@@ -286,7 +338,10 @@ export function PromptComposer({
         }
       }}
     >
-      {selectedPatients.length > 0 && (
+      {/* Pills are the picker's output. The panel has no picker and its one patient is named in
+          the launcher's own header subtitle ("Reads <name>'s chart, meds, labs, docs"), so a
+          dismissible pill there would only offer to delete the context the panel was opened for. */}
+      {!isPanel && selectedPatients.length > 0 && (
         <Group gap={6} wrap="wrap" className={classes.chatPillsRow}>
           {selectedPatients.map((patient) => (
             <PatientPill
@@ -309,247 +364,249 @@ export function PromptComposer({
         maxRows={5}
         classNames={{ root: classes.chatTextareaRoot, input: classes.chatTextarea }}
       />
-      <div className={classes.chatActionBar}>
-        <Group gap={8}>
-          {mode === 'voice' ? (
-            <div className={classes.listeningStatus} data-state={listeningState}>
-              <span className={classes.listeningDotWrapper} aria-hidden>
-                <IconCircleFilled size={16} />
-              </span>
-              <Text fz="xs" fw={400} ml={2} className={classes.listeningLabel} aria-live="polite">
-                {listeningLabel}
-              </Text>
-            </div>
-          ) : (
-            /* Patient picker */
-            <Popover opened={patientPickerOpen} position="top-start" shadow="md" radius="md">
-              <Popover.Target>
-                <Tooltip label="Patients" position="top" openDelay={100} disabled={patientPickerOpen}>
-                  <ActionIcon
+      <div className={classes.chatActionBar} data-variant={isPanel ? 'panel' : undefined}>
+        {isPanel ? (
+          /* The whole of the panel's action bar: one send button, right-aligned. */
+          sendButton
+        ) : (
+          <>
+            <Group gap={8}>
+              {mode === 'voice' ? (
+                <div className={classes.listeningStatus} data-state={listeningState}>
+                  <span className={classes.listeningDotWrapper} aria-hidden>
+                    <IconCircleFilled size={16} />
+                  </span>
+                  <Text fz="xs" fw={400} ml={2} className={classes.listeningLabel} aria-live="polite">
+                    {listeningLabel}
+                  </Text>
+                </div>
+              ) : (
+                /* Patient picker */
+                <Popover opened={patientPickerOpen} position="top-start" shadow="md" radius="md">
+                  <Popover.Target>
+                    <Tooltip label="Patients" position="top" openDelay={100} disabled={patientPickerOpen}>
+                      <ActionIcon
+                        onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                        onClick={() => {
+                          if (patientPickerOpen) {
+                            patientPickerHandlers.close();
+                          } else {
+                            patientPickerHandlers.open();
+                          }
+                        }}
+                        size={32}
+                        radius="xl"
+                        color="dark"
+                        variant="subtle"
+                        className={classes.subtleActionButton}
+                        data-selected={patientPickerOpen || undefined}
+                        aria-label="Patients"
+                        aria-haspopup="menu"
+                        aria-expanded={patientPickerOpen}
+                      >
+                        <IconUsers size={16} stroke={2} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Popover.Target>
+                  <Popover.Dropdown
+                    ref={patientPickerDropdownRef}
+                    p={4}
+                    miw={240}
                     onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                    onClick={() => {
-                      if (patientPickerOpen) {
-                        patientPickerHandlers.close();
-                      } else {
-                        patientPickerHandlers.open();
-                      }
-                    }}
-                    size={32}
-                    radius="xl"
-                    color="dark"
-                    variant="subtle"
-                    className={classes.subtleActionButton}
-                    data-selected={patientPickerOpen || undefined}
-                    aria-label="Patients"
-                    aria-haspopup="menu"
-                    aria-expanded={patientPickerOpen}
                   >
-                    <IconUsers size={16} stroke={2} />
-                  </ActionIcon>
-                </Tooltip>
-              </Popover.Target>
-              <Popover.Dropdown
-                ref={patientPickerDropdownRef}
-                p={4}
-                miw={240}
-                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-              >
-                <Menu>
-                  <PatientPicker
-                    onSelect={(patient) => {
-                      setSelectedPatients((prev) =>
-                        prev.some((p) => getReferenceString(p) === getReferenceString(patient))
-                          ? prev
-                          : [...prev, patient]
-                      );
-                      patientPickerHandlers.close();
-                    }}
-                  />
-                </Menu>
-              </Popover.Dropdown>
-            </Popover>
-          )}
-        </Group>
-
-        <Group gap={8}>
-          {mode === 'voice' ? (
-            <>
-              <Tooltip label="Cancel" position="top" openDelay={100}>
-                <ActionIcon
-                  onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                  onClick={cancelVoice}
-                  size={32}
-                  radius="xl"
-                  color="dark"
-                  variant="subtle"
-                  className={classes.subtleActionButton}
-                  aria-label="Cancel voice input"
-                >
-                  <IconX size={16} stroke={2} />
-                </ActionIcon>
-              </Tooltip>
-              <Tooltip label="Accept" position="top" openDelay={100}>
-                <ActionIcon
-                  onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                  onClick={acceptVoice}
-                  size={32}
-                  radius="xl"
-                  color="blue"
-                  variant="filled"
-                  aria-label="Accept voice input"
-                >
-                  <IconCheck size={16} stroke={2} />
-                </ActionIcon>
-              </Tooltip>
-            </>
-          ) : (
-            <>
-              {/* Model selector */}
-              <Popover opened={modelPickerOpen} position="top-end" shadow="md" radius="md">
-                <Popover.Target>
-                  <Tooltip label="Model" position="top" openDelay={100} disabled={modelPickerOpen}>
-                    <button
-                      type="button"
-                      className={classes.modelPickerButton}
-                      data-open={modelPickerOpen || undefined}
-                      aria-haspopup="menu"
-                      aria-expanded={modelPickerOpen}
-                      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                      onClick={() => {
-                        if (modelPickerOpen) {
-                          modelPickerHandlers.close();
-                        } else {
-                          modelPickerHandlers.open();
-                        }
-                      }}
-                    >
-                      <OpenAILogo size={24} />
-                      <Text fz="sm" fw={450} lh={1}>
-                        {selectedModelLabel}
-                      </Text>
-                    </button>
-                  </Tooltip>
-                </Popover.Target>
-                <Popover.Dropdown ref={modelPickerDropdownRef} p={4} miw={180}>
-                  <Menu>
-                    <Menu.Label style={{ padding: 'calc(var(--mantine-spacing-xs) / 2) var(--mantine-spacing-xs)' }}>
-                      Model
-                    </Menu.Label>
-                    {models.map((model) => (
-                      <Menu.Item
-                        key={model.value}
-                        className={classes.modelMenuItem}
-                        rightSection={
-                          model.value === selectedModel ? (
-                            <IconCheck size={16} color="var(--mantine-color-blue-6)" />
-                          ) : null
-                        }
-                        onClick={() => {
-                          onModelChange(model.value);
-                          modelPickerHandlers.close();
+                    <Menu>
+                      <PatientPicker
+                        onSelect={(patient) => {
+                          setSelectedPatients((prev) =>
+                            prev.some((p) => getReferenceString(p) === getReferenceString(patient))
+                              ? prev
+                              : [...prev, patient]
+                          );
+                          patientPickerHandlers.close();
                         }}
-                      >
-                        <Group gap={4} wrap="nowrap">
+                      />
+                    </Menu>
+                  </Popover.Dropdown>
+                </Popover>
+              )}
+            </Group>
+
+            <Group gap={8}>
+              {mode === 'voice' ? (
+                <>
+                  <Tooltip label="Cancel" position="top" openDelay={100}>
+                    <ActionIcon
+                      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                      onClick={cancelVoice}
+                      size={32}
+                      radius="xl"
+                      color="dark"
+                      variant="subtle"
+                      className={classes.subtleActionButton}
+                      aria-label="Cancel voice input"
+                    >
+                      <IconX size={16} stroke={2} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <Tooltip label="Accept" position="top" openDelay={100}>
+                    <ActionIcon
+                      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                      onClick={acceptVoice}
+                      size={32}
+                      radius="xl"
+                      color="blue"
+                      variant="filled"
+                      aria-label="Accept voice input"
+                    >
+                      <IconCheck size={16} stroke={2} />
+                    </ActionIcon>
+                  </Tooltip>
+                </>
+              ) : (
+                <>
+                  {/* Model selector */}
+                  <Popover opened={modelPickerOpen} position="top-end" shadow="md" radius="md">
+                    <Popover.Target>
+                      <Tooltip label="Model" position="top" openDelay={100} disabled={modelPickerOpen}>
+                        <button
+                          type="button"
+                          className={classes.modelPickerButton}
+                          data-open={modelPickerOpen || undefined}
+                          aria-haspopup="menu"
+                          aria-expanded={modelPickerOpen}
+                          onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                          onClick={() => {
+                            if (modelPickerOpen) {
+                              modelPickerHandlers.close();
+                            } else {
+                              modelPickerHandlers.open();
+                            }
+                          }}
+                        >
                           <OpenAILogo size={24} />
-                          <Text size="sm">{model.label}</Text>
-                        </Group>
-                      </Menu.Item>
-                    ))}
-                  </Menu>
-                </Popover.Dropdown>
-              </Popover>
+                          <Text fz="sm" fw={450} lh={1}>
+                            {selectedModelLabel}
+                          </Text>
+                        </button>
+                      </Tooltip>
+                    </Popover.Target>
+                    <Popover.Dropdown ref={modelPickerDropdownRef} p={4} miw={180}>
+                      <Menu>
+                        <Menu.Label
+                          style={{ padding: 'calc(var(--mantine-spacing-xs) / 2) var(--mantine-spacing-xs)' }}
+                        >
+                          Model
+                        </Menu.Label>
+                        {models.map((model) => (
+                          <Menu.Item
+                            key={model.value}
+                            className={classes.modelMenuItem}
+                            rightSection={
+                              model.value === selectedModel ? (
+                                <IconCheck size={16} color="var(--mantine-color-blue-6)" />
+                              ) : null
+                            }
+                            onClick={() => {
+                              onModelChange(model.value);
+                              modelPickerHandlers.close();
+                            }}
+                          >
+                            <Group gap={4} wrap="nowrap">
+                              <OpenAILogo size={24} />
+                              <Text size="sm">{model.label}</Text>
+                            </Group>
+                          </Menu.Item>
+                        ))}
+                      </Menu>
+                    </Popover.Dropdown>
+                  </Popover>
 
-              {/* Reasoning effort selector */}
-              <Popover opened={effortPickerOpen} position="top-end" shadow="md" radius="md">
-                <Popover.Target>
-                  <Tooltip label="Reasoning effort" position="top" openDelay={100} disabled={effortPickerOpen}>
-                    <button
-                      type="button"
-                      className={classes.modelPickerButton}
-                      data-open={effortPickerOpen || undefined}
-                      aria-haspopup="menu"
-                      aria-expanded={effortPickerOpen}
-                      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                      onClick={() => {
-                        if (effortPickerOpen) {
-                          effortPickerHandlers.close();
-                        } else {
-                          effortPickerHandlers.open();
-                        }
-                      }}
-                    >
-                      <IconBrain size={18} stroke={1.5} />
-                      <Text fz="sm" fw={450} lh={1}>
-                        {selectedEffortLabel}
-                      </Text>
-                    </button>
-                  </Tooltip>
-                </Popover.Target>
-                <Popover.Dropdown ref={effortPickerDropdownRef} p={4} miw={160}>
-                  <Menu>
-                    <Menu.Label style={{ padding: 'calc(var(--mantine-spacing-xs) / 2) var(--mantine-spacing-xs)' }}>
-                      Reasoning effort
-                    </Menu.Label>
-                    {REASONING_EFFORTS.map((effort) => (
-                      <Menu.Item
-                        key={effort.value}
-                        className={classes.modelMenuItem}
-                        rightSection={
-                          effort.value === selectedReasoningEffort ? (
-                            <IconCheck size={16} color="var(--mantine-color-blue-6)" />
-                          ) : null
-                        }
-                        onClick={() => {
-                          onReasoningEffortChange(effort.value);
-                          effortPickerHandlers.close();
-                        }}
-                      >
-                        <Text size="sm">{effort.label}</Text>
-                      </Menu.Item>
-                    ))}
-                  </Menu>
-                </Popover.Dropdown>
-              </Popover>
+                  {/* Reasoning effort selector */}
+                  <Popover opened={effortPickerOpen} position="top-end" shadow="md" radius="md">
+                    <Popover.Target>
+                      <Tooltip label="Reasoning effort" position="top" openDelay={100} disabled={effortPickerOpen}>
+                        <button
+                          type="button"
+                          className={classes.modelPickerButton}
+                          data-open={effortPickerOpen || undefined}
+                          aria-haspopup="menu"
+                          aria-expanded={effortPickerOpen}
+                          onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                          onClick={() => {
+                            if (effortPickerOpen) {
+                              effortPickerHandlers.close();
+                            } else {
+                              effortPickerHandlers.open();
+                            }
+                          }}
+                        >
+                          <IconBrain size={18} stroke={1.5} />
+                          <Text fz="sm" fw={450} lh={1}>
+                            {selectedEffortLabel}
+                          </Text>
+                        </button>
+                      </Tooltip>
+                    </Popover.Target>
+                    <Popover.Dropdown ref={effortPickerDropdownRef} p={4} miw={160}>
+                      <Menu>
+                        <Menu.Label
+                          style={{ padding: 'calc(var(--mantine-spacing-xs) / 2) var(--mantine-spacing-xs)' }}
+                        >
+                          Reasoning effort
+                        </Menu.Label>
+                        {REASONING_EFFORTS.map((effort) => (
+                          <Menu.Item
+                            key={effort.value}
+                            className={classes.modelMenuItem}
+                            rightSection={
+                              effort.value === selectedReasoningEffort ? (
+                                <IconCheck size={16} color="var(--mantine-color-blue-6)" />
+                              ) : null
+                            }
+                            onClick={() => {
+                              onReasoningEffortChange(effort.value);
+                              effortPickerHandlers.close();
+                            }}
+                          >
+                            <Text size="sm">{effort.label}</Text>
+                          </Menu.Item>
+                        ))}
+                      </Menu>
+                    </Popover.Dropdown>
+                  </Popover>
 
-              {/* Send / voice mode slot: voice mode when the input is empty, send once there is text.
+                  {/* Send / voice mode slot: voice mode when the input is empty, send once there is text.
                   The send button is disabled while loading, but the textarea stays editable.
                   A selected patient is sendable context on its own, so it also shows Send. */}
-              {input.trim() || selectedPatients.length > 0 ? (
-                <Tooltip label="Send" position="top" openDelay={100}>
-                  <ActionIcon
-                    onClick={() => onSend()}
-                    size={32}
-                    radius="xl"
-                    color="blue"
-                    variant="filled"
-                    className={classes.sendActionButton}
-                    aria-label="Send message"
-                    disabled={loading}
-                  >
-                    <IconArrowRight size={16} stroke={2} />
-                  </ActionIcon>
-                </Tooltip>
-              ) : (
-                <Tooltip label={isVoiceEnabled ? 'Voice Mode' : voiceDisabledTooltip} position="top" openDelay={100}>
-                  <ActionIcon
-                    onClick={startVoice}
-                    size={32}
-                    radius="xl"
-                    color="dark"
-                    variant="subtle"
-                    className={classes.subtleActionButton}
-                    aria-label="Start voice mode"
-                    disabled={loading || !isVoiceEnabled}
-                    data-disabled={!isVoiceEnabled || undefined}
-                    style={!isVoiceEnabled ? { pointerEvents: 'auto' } : undefined}
-                  >
-                    <IconMicrophone size={16} stroke={2} />
-                  </ActionIcon>
-                </Tooltip>
+                  {input.trim() || selectedPatients.length > 0 ? (
+                    sendButton
+                  ) : (
+                    <Tooltip
+                      label={isVoiceEnabled ? 'Voice Mode' : voiceDisabledTooltip}
+                      position="top"
+                      openDelay={100}
+                    >
+                      <ActionIcon
+                        onClick={startVoice}
+                        size={32}
+                        radius="xl"
+                        color="dark"
+                        variant="subtle"
+                        className={classes.subtleActionButton}
+                        aria-label="Start voice mode"
+                        disabled={loading || !isVoiceEnabled}
+                        data-disabled={!isVoiceEnabled || undefined}
+                        style={!isVoiceEnabled ? { pointerEvents: 'auto' } : undefined}
+                      >
+                        <IconMicrophone size={16} stroke={2} />
+                      </ActionIcon>
+                    </Tooltip>
+                  )}
+                </>
               )}
-            </>
-          )}
-        </Group>
+            </Group>
+          </>
+        )}
       </div>
     </div>
   );

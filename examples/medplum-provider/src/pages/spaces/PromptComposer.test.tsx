@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ReasoningEffort, SpaceModelOption } from '../../utils/spaceModels';
+import type { PromptComposerVariant } from './PromptComposer';
 import { PromptComposer } from './PromptComposer';
 
 // Stand-in for the realtime transcription hook: the tests drive it through `whisper`, which counts
@@ -58,6 +59,7 @@ interface HarnessProps {
   initialInput?: string;
   initialPatients?: (Patient | Reference<Patient>)[];
   loading?: boolean;
+  variant?: PromptComposerVariant;
   onSend: (overrideInput?: string) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onModelChange: (value: string) => void;
@@ -69,6 +71,7 @@ function Harness({
   initialInput,
   initialPatients,
   loading,
+  variant,
   onSend,
   onKeyDown,
   onModelChange,
@@ -98,6 +101,7 @@ function Harness({
       }}
       selectedPatients={selectedPatients}
       setSelectedPatients={setSelectedPatients}
+      variant={variant}
     />
   );
 }
@@ -388,6 +392,82 @@ describe('PromptComposer', () => {
 
       // Re-selecting the same patient is a no-op rather than a duplicate pill.
       await waitFor(() => expect(screen.getAllByLabelText('Remove Homer Simpson')).toHaveLength(1));
+    });
+  });
+
+  /*
+   * The floating Lyfe AI panel mirrors the production Lyfe chat, which has one input and a
+   * send button and nothing else. These assert the controls are ABSENT FROM THE DOM rather
+   * than merely invisible: a mic or a model picker styled away is still focusable, still in
+   * the accessibility tree, and still a control the panel is not supposed to offer.
+   */
+  describe('Panel variant', () => {
+    test('Renders no model picker, no reasoning effort, no microphone and no patient picker', () => {
+      setup({ variant: 'panel' });
+
+      // The model picker and the effort picker are labelled only by the value they show.
+      expect(screen.queryByText('GPT-5.5')).not.toBeInTheDocument();
+      expect(screen.queryByText('Medium')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Start voice mode' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Patients' })).not.toBeInTheDocument();
+      // Nothing else is offered either: the send button is the whole action bar.
+      expect(screen.getAllByRole('button')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
+    });
+
+    test('Page variant still renders all four', () => {
+      setup();
+
+      expect(screen.getByText('GPT-5.5')).toBeInTheDocument();
+      expect(screen.getByText('Medium')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Start voice mode' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Patients' })).toBeInTheDocument();
+    });
+
+    test('Renders no patient pill, even with a patient attached', () => {
+      setup({ variant: 'panel', initialPatients: [HomerSimpson] });
+
+      // The panel's patient is pre-selected by the launcher and named in its header subtitle.
+      // A dismissible pill here would only offer to delete the context the panel exists for.
+      expect(screen.queryByLabelText('Remove Homer Simpson')).not.toBeInTheDocument();
+      expect(screen.queryByText('Homer Simpson')).not.toBeInTheDocument();
+    });
+
+    test('Keeps the send button rendered when empty, disabled, and sends once there is text', () => {
+      setup({ variant: 'panel' });
+
+      // Production disables rather than hides: the arrow is the only way to send with a mouse.
+      const send = screen.getByRole('button', { name: 'Send message' });
+      expect(send).toBeDisabled();
+
+      fireEvent.change(textarea(), { target: { value: 'Who is due for a visit?' } });
+
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+      expect(onSend).toHaveBeenCalledTimes(1);
+    });
+
+    test('Still forwards Enter to the parent, which is the other way production sends', () => {
+      setup({ variant: 'panel', initialInput: 'Who is due for a visit?' });
+
+      fireEvent.keyDown(textarea(), { key: 'Enter' });
+
+      expect(onKeyDown).toHaveBeenCalledTimes(1);
+    });
+
+    test('Uses the production placeholders, which differ with patient mode', () => {
+      const { unmount } = setup({ variant: 'panel' });
+      expect(textarea()).toHaveAttribute('placeholder', 'Ask about patients, appointments, conditions…');
+      unmount();
+
+      setup({ variant: 'panel', initialPatients: [HomerSimpson] });
+      expect(textarea()).toHaveAttribute('placeholder', 'Ask anything about this patient…');
+    });
+
+    test('Page variant keeps its own placeholder', () => {
+      setup();
+
+      expect(textarea()).toHaveAttribute('placeholder', 'Ask, search, or make anything...');
     });
   });
 });

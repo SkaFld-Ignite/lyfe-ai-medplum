@@ -82,6 +82,16 @@
   padding: 10px 0;
 }
 
+/*
+ * Panel variant: the bar holds only the send button, so `space-between` would park it on
+ * the left. Production puts it at the right edge, and the row is tighter because the panel
+ * is 440px wide and the bar carries one control instead of four.
+ */
+.chatActionBar[data-variant='panel'] {
+  justify-content: flex-end;
+  padding: 8px 0 2px;
+}
+
 /* Listening indicator, matching the Patient Intake Questionnaire recording status */
 .listeningStatus {
   display: flex;
