@@ -64,6 +64,23 @@ const OCR_CONCURRENCY = 4;
 /** How much native text counts as worth keeping alongside OCR output. */
 const MIXED_PATH_MIN_DIGITAL_CHARS = 40;
 
+/**
+ * Raised when the PDF container itself cannot be read.
+ *
+ * Encrypted with an owner password, truncated mid-download, or not a PDF at all
+ * — and in every case the next attempt reads the same bytes and fails the same
+ * way. Its own class so the caller can tell it from a Textract outage without
+ * matching on the message: one is this document's permanent problem and belongs
+ * in `skipped` with a reason, the other is the run's and should retry.
+ */
+export class PdfUnreadableError extends Error {
+  /** @param message - Why the PDF could not be opened. */
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfUnreadableError';
+  }
+}
+
 export type PdfPath = 'pdf-digital' | 'pdf-ocr' | 'pdf-mixed';
 
 export interface PdfExtractResult {
@@ -112,11 +129,11 @@ export async function extractPdfText(bytes: Buffer, label: string): Promise<PdfE
       const document = await PDFDocument.load(bytes, { ignoreEncryption: true, throwOnInvalidObject: false });
       pageCount = document.getPageCount();
     } catch (err) {
-      throw new Error(`Could not read PDF ${label}: ${err instanceof Error ? err.message : String(err)}`);
+      throw new PdfUnreadableError(`Could not read PDF ${label}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   if (pageCount === 0) {
-    throw new Error(`PDF ${label} has 0 pages`);
+    throw new PdfUnreadableError(`PDF ${label} has 0 pages`);
   }
 
   if (digitalText.length / pageCount >= DIGITAL_TEXT_YIELD_THRESHOLD_CHARS_PER_PAGE) {
@@ -127,6 +144,8 @@ export async function extractPdfText(bytes: Buffer, label: string): Promise<PdfE
   const pagesToOcr = Math.min(pageCount, MAX_OCR_PAGES_PER_DOCUMENT);
   const perPage: string[] = new Array(pagesToOcr).fill('');
   const pageErrors: { page: number; error: string }[] = [];
+  /** The first page failure, kept as thrown so its class survives a rethrow. */
+  let firstPageError: unknown;
   let confidenceSum = 0;
   let confidenceCount = 0;
   let unavailable: OcrUnavailableError | undefined;
@@ -151,6 +170,7 @@ export async function extractPdfText(bytes: Buffer, label: string): Promise<PdfE
           unavailable = err;
           return;
         }
+        firstPageError ??= err;
         pageErrors.push({ page: page + 1, error: err instanceof Error ? err.message : String(err) });
       }
     }
@@ -163,6 +183,18 @@ export async function extractPdfText(bytes: Buffer, label: string): Promise<PdfE
     if (digitalText.length === 0) {
       throw unavailable;
     }
+  }
+
+  // Every page that was attempted errored, and the text layer held nothing, so
+  // this document yielded no text for a reason that is not "the document is
+  // blank". Rethrowing the page's own error rather than returning an empty
+  // string is what lets the caller tell the two apart: a Textract throttle is
+  // the run's problem and retries, a malformed page is this document's and is
+  // recorded. Returning '' instead — which is what this did — made both read as
+  // "extracted 0 characters", which is the message you get for a blank page and
+  // tells an operator nothing.
+  if (confidenceCount === 0 && firstPageError !== undefined && digitalText.length === 0) {
+    throw firstPageError;
   }
 
   const ocrText = perPage.filter((text) => text.length > 0).join('\n\n');

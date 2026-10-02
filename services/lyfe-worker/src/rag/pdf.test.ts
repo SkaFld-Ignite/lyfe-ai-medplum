@@ -200,4 +200,42 @@ describe('failure handling', () => {
     getPageCount.mockReturnValue(0);
     await expect(extractPdfText(bytes, 'empty.pdf')).rejects.toThrow(/has 0 pages/);
   });
+
+  test('reports an unopenable PDF as its own class, so the caller can skip it', async () => {
+    // A thrown `Error` is something the caller retries; this is something it
+    // should record and move past. The distinction was only in the wording.
+    const { PdfUnreadableError } = await import('./pdf.ts');
+    extractTextFromPdf.mockRejectedValue(new Error('InvalidPDFException'));
+    getPageCount.mockImplementation(() => {
+      throw new Error('xref table is broken');
+    });
+    await expect(extractPdfText(bytes, 'broken.pdf')).rejects.toBeInstanceOf(PdfUnreadableError);
+  });
+
+  test('a scan whose every page was throttled raises the throttle, not an empty document', async () => {
+    // Nine pages of a ten-page scan throttling leaves the one page that was
+    // read, which is fine. *Every* page throttling used to return an empty
+    // string, which the ingest then recorded as "extracted 0 characters" — the
+    // same phrase it uses for a genuinely blank page. A rate limit reported as
+    // an unreadable document, and the slice that should have been rescheduled
+    // carried on.
+    extractTextFromPdf.mockResolvedValue({ text: '', totalPages: 4 });
+    ocrDocument.mockRejectedValue(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+    await expect(extractPdfText(bytes, 'scan.pdf')).rejects.toMatchObject({ name: 'ThrottlingException' });
+  });
+
+  test('but a partly-read scan still returns, because a page is better than nothing', async () => {
+    extractTextFromPdf.mockResolvedValue({ text: '', totalPages: 4 });
+    let call = 0;
+    ocrDocument.mockImplementation(async () => {
+      call++;
+      if (call > 1) {
+        throw Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+      }
+      return { text: 'Impression: no acute findings.', confidence: 0.9, pageCount: 1 };
+    });
+    const result = await extractPdfText(bytes, 'scan.pdf');
+    expect(result.text).toContain('no acute findings');
+    expect(result.pageErrors).toHaveLength(3);
+  });
 });

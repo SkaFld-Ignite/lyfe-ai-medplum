@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { ocrDocument, OcrUnavailableError } from './ocr.ts';
-import { extractPdfText } from './pdf.ts';
+import { extractPdfText, PdfUnreadableError } from './pdf.ts';
 import { extractTiffText, TiffDecodeError } from './tiff.ts';
 
 /**
@@ -64,7 +64,31 @@ export interface ExtractedText {
   confidence: number;
   /** Pages billed to Textract. 0 on every free path. */
   ocrPages: number;
+  /**
+   * Pages that failed while the rest of the document succeeded.
+   *
+   * Carried up rather than dropped, which is what used to happen: `pdf.ts` and
+   * `tiff.ts` both collect these and both had them discarded here, so a
+   * ten-page scan where nine pages threw was recorded as plainly `indexed` and
+   * a clinician searching it got one page's worth of a report with no sign that
+   * the other nine were missing. The ingest records the count against the
+   * document so "this document is searchable" and "this document is searchable
+   * in full" stop being the same statement.
+   */
+  pageErrors?: { page: number; error: string }[];
 }
+
+/**
+ * Short, stable slugs for why a document was not indexed.
+ *
+ * These are aggregated onto the run's Task so the shape of a batch's losses is
+ * readable without database access — `skipped:ocr-unavailable 41` says
+ * something an operator can act on, where `documents-skipped 41` does not.
+ * Slugs rather than the message, because the message carries the document's
+ * title and no two are alike, so messages do not group.
+ */
+export type SkipCode =
+  'ocr-unavailable' | 'tiff-undecodable' | 'pdf-unreadable' | 'no-extractable-text' | 'document-unavailable';
 
 /**
  * Raised when a document cannot be turned into text, and retrying will not help.
@@ -80,12 +104,25 @@ export interface ExtractedText {
  *   JavaScript, because Textract's synchronous API rejects raw TIFF and the
  *   `sharp` that production used for this ships native binaries the worker has
  *   deliberately stayed free of.
+ * - **A PDF whose container cannot be opened** — encrypted, truncated, or not
+ *   actually a PDF. Added because the PDF branch was the one extractor that did
+ *   not translate its permanent failures into this class, so a scanned PDF that
+ *   OCR could not reach was counted as `failed` while the identical TIFF was
+ *   counted as `skipped`. PDFs are 61% of the corpus, which is how the
+ *   difference became 151 unexplained failures in one batch.
  */
 export class ExtractSkipped extends Error {
-  /** @param message - Why this document cannot be indexed. */
-  constructor(message: string) {
+  /** A stable slug for grouping, so the Task can report a distribution. */
+  readonly code: SkipCode;
+
+  /**
+   * @param message - Why this document cannot be indexed.
+   * @param code - The grouping slug.
+   */
+  constructor(message: string, code: SkipCode = 'no-extractable-text') {
     super(message);
     this.name = 'ExtractSkipped';
+    this.code = code;
   }
 }
 
@@ -256,14 +293,31 @@ export async function extractText(bytes: Buffer, contentType: string | null, lab
   }
 
   if (declared === 'application/pdf' || sniffPdf(bytes)) {
-    const result = await extractPdfText(bytes, label);
-    return {
-      text: result.text,
-      path: result.path,
-      pageCount: result.pageCount,
-      confidence: result.confidence,
-      ocrPages: result.ocrPages,
-    };
+    try {
+      const result = await extractPdfText(bytes, label);
+      return {
+        text: result.text,
+        path: result.path,
+        pageCount: result.pageCount,
+        confidence: result.confidence,
+        ocrPages: result.ocrPages,
+        ...(result.pageErrors ? { pageErrors: result.pageErrors } : {}),
+      };
+    } catch (err) {
+      // The same translation the TIFF and image branches have always done, and
+      // whose absence here is the bug this file is being changed for. A PDF
+      // Textract cannot reach, or whose container will not open, is this
+      // document's permanent problem: it belongs in `skipped` with its reason,
+      // not in a `failed` bucket alongside outages. Anything else — a throttle,
+      // a dead socket — falls through and the ingest decides.
+      if (err instanceof OcrUnavailableError) {
+        throw new ExtractSkipped(err.message, 'ocr-unavailable');
+      }
+      if (err instanceof PdfUnreadableError) {
+        throw new ExtractSkipped(err.message, 'pdf-unreadable');
+      }
+      throw err;
+    }
   }
 
   // TIFF is checked before the general image branch because it cannot go
@@ -277,13 +331,17 @@ export async function extractText(bytes: Buffer, contentType: string | null, lab
         pageCount: result.pageCount,
         confidence: result.confidence,
         ocrPages: result.ocrPages,
+        ...(result.pageErrors ? { pageErrors: result.pageErrors } : {}),
       };
     } catch (err) {
       // A TIFF that cannot be decoded, or that OCR cannot reach, is a skip the
       // ingest records against the document — not a throw it retries, because
       // neither condition improves on a second attempt.
-      if (err instanceof TiffDecodeError || err instanceof OcrUnavailableError) {
-        throw new ExtractSkipped(err.message);
+      if (err instanceof TiffDecodeError) {
+        throw new ExtractSkipped(err.message, 'tiff-undecodable');
+      }
+      if (err instanceof OcrUnavailableError) {
+        throw new ExtractSkipped(err.message, 'ocr-unavailable');
       }
       throw err;
     }
@@ -301,7 +359,7 @@ export async function extractText(bytes: Buffer, contentType: string | null, lab
       };
     } catch (err) {
       if (err instanceof OcrUnavailableError) {
-        throw new ExtractSkipped(err.message);
+        throw new ExtractSkipped(err.message, 'ocr-unavailable');
       }
       throw err;
     }

@@ -99,6 +99,55 @@ function isPermanentOcrFailure(err: unknown): boolean {
   return /could not load credentials|security token.*invalid|is not authorized to perform/.test(message);
 }
 
+/**
+ * Does this error mean "not now", rather than "not ever"?
+ *
+ * The counterpart to {@link isPermanentOcrFailure}, and it exists because the
+ * pair was only half-implemented. `ThrottlingException` and
+ * `ProvisionedThroughputExceededException` are deliberately excluded from the
+ * permanent list so they stay retryable — but nothing downstream recognised
+ * them, because the ingest classified failures by matching the error *message*
+ * and Textract's throttle message is `Rate exceeded`, which contains neither
+ * "throttl" nor "429". So the one class of failure the OCR layer took care to
+ * mark retryable was the one recorded as permanently failed.
+ *
+ * Matched on `name` and on `$metadata.httpStatusCode`, both of which the AWS
+ * SDK sets on every service error, rather than on prose that varies by service
+ * and by release.
+ * @param err - The thrown error.
+ * @returns True when a retry is the right response.
+ */
+export function isTransientAwsFailure(err: unknown): boolean {
+  const name = (err as { name?: string })?.name ?? '';
+  if (
+    [
+      'ThrottlingException',
+      'ThrottledException',
+      'ProvisionedThroughputExceededException',
+      'TooManyRequestsException',
+      'LimitExceededException',
+      'RequestLimitExceeded',
+      'ServiceUnavailableException',
+      'ServiceUnavailable',
+      'InternalServerError',
+      'InternalServerException',
+      'ModelTimeoutException',
+      'ModelNotReadyException',
+      'RequestTimeout',
+      'RequestTimeoutException',
+      'TimeoutError',
+    ].includes(name)
+  ) {
+    return true;
+  }
+  // The SDK's own retry classification, when the service set one.
+  if ((err as { $retryable?: unknown })?.$retryable) {
+    return true;
+  }
+  const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+  return status === 429 || (typeof status === 'number' && status >= 500);
+}
+
 export interface OcrResult {
   /** Text from LINE blocks, in reading order. */
   text: string;

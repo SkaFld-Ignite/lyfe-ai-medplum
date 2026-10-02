@@ -17,6 +17,7 @@ import type * as ExtractModule from './extract.ts';
  */
 
 const download = vi.fn();
+const downloadResponse = vi.fn();
 const search = vi.fn();
 const extractTextMock = vi.fn();
 const embedTexts = vi.fn();
@@ -43,7 +44,36 @@ vi.mock('./extract.ts', async () => {
 const { ExtractSkipped } = await import('./extract.ts');
 const { ingestDocument, isStepLevelFailure, listPatientDocuments, toPatientDocument } = await import('./ingest.ts');
 
-const medplum = { download, search } as never;
+/**
+ * The Medplum client, offering **both** download forms.
+ *
+ * Deliberately both. `MedplumClient.download` is `downloadResponse(...).blob()`
+ * with no `response.ok` check anywhere in the chain, so an error page comes back
+ * as bytes and not as a throw. A mock that only offered `downloadResponse` would
+ * make the tests below pass for the wrong reason — an implementation that went
+ * back to `download` would fail on a missing function rather than on the
+ * behaviour. With both present and backed by the same fixture, the old code runs
+ * to completion and gets the old, wrong answer.
+ */
+const medplum = { download, downloadResponse, search } as never;
+
+/**
+ * A response the way Medplum answers when the Binary is not there.
+ * @param status - The HTTP status.
+ * @param body - The error body the server sends instead of the document.
+ * @returns A stand-in for both `download` and `downloadResponse`.
+ */
+function errorResponse(status: number, body: string): { response: unknown; blob: unknown } {
+  return {
+    response: {
+      ok: false,
+      status,
+      text: async () => body,
+      arrayBuffer: async () => new TextEncoder().encode(body).buffer,
+    },
+    blob: { arrayBuffer: async () => new TextEncoder().encode(body).buffer },
+  };
+}
 
 const document = {
   id: 'doc-1',
@@ -78,6 +108,11 @@ function transactionSql(): string[] {
 beforeEach(() => {
   vi.clearAllMocks();
   download.mockResolvedValue({ arrayBuffer: async () => new TextEncoder().encode('%PDF-1.7 body').buffer });
+  downloadResponse.mockResolvedValue({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => new TextEncoder().encode('%PDF-1.7 body').buffer,
+  });
   extractTextMock.mockResolvedValue({
     text: 'Patient reports intermittent chest pain on exertion. Echo shows preserved function.',
     path: 'pdf-digital',
@@ -126,6 +161,11 @@ describe('re-ingest replaces rather than duplicates', () => {
     const first = transactionSql();
     vi.clearAllMocks();
     download.mockResolvedValue({ arrayBuffer: async () => new TextEncoder().encode('%PDF-1.7 body').buffer });
+    downloadResponse.mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => new TextEncoder().encode('%PDF-1.7 body').buffer,
+    });
     extractTextMock.mockResolvedValue({
       text: 'Patient reports intermittent chest pain on exertion. Echo shows preserved function.',
       path: 'pdf-digital',
@@ -270,6 +310,121 @@ describe('one document never fails the run', () => {
   });
 });
 
+/**
+ * What the server answered, when it did not answer with the document.
+ *
+ * This is the one a clinician notices. `MedplumClient.download` never checks
+ * `response.ok`, so a 404 or a rate limit arrives as a `Blob` of the error body
+ * and the old code handed that straight to the extractor as if it were the
+ * document. A JSON `OperationOutcome` down the PDF branch produces
+ * `Could not read PDF <title>`, so a transient rate limit was filed permanently
+ * as a corrupt chart — and the message sent whoever looked next to the PDF,
+ * which was fine.
+ *
+ * The real extractor is used here, not the mock, because the whole point is what
+ * extraction does with bytes that are not the document.
+ */
+describe('a document whose bytes did not arrive', () => {
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof ExtractModule>('./extract.ts');
+    extractTextMock.mockImplementation(actual.extractText);
+  });
+
+  test('a missing Binary is recorded as skipped, naming the status', async () => {
+    const { response, blob } = errorResponse(
+      404,
+      '{"resourceType":"OperationOutcome","issue":[{"severity":"error","code":"not-found"}]}'
+    );
+    downloadResponse.mockResolvedValue(response);
+    download.mockResolvedValue(blob);
+
+    const result = await ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document });
+
+    expect(result.status).toBe('skipped');
+    expect(result.reason).toContain('404');
+    // Not "Could not read PDF", which is what the error body being mistaken for
+    // the document produces, and which is a sentence about the wrong thing.
+    expect(result.reason).not.toContain('Could not read PDF');
+  });
+
+  test('carries a reason code, so a batch total can be broken down', async () => {
+    const { response, blob } = errorResponse(410, '{"resourceType":"OperationOutcome"}');
+    downloadResponse.mockResolvedValue(response);
+    download.mockResolvedValue(blob);
+
+    const result = await ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document });
+    expect(result.reasonCode).toBe('document-unavailable');
+  });
+
+  test('a rate limit on the Binary is retried, not filed as a broken document', async () => {
+    // The client's own `fetchWithRetry` retries a 429 twice and then *returns*
+    // the 429 response. During a bulk import that is a routine outcome, and it
+    // has to reach the step as an error so Inngest reschedules it.
+    const { response, blob } = errorResponse(429, '{"resourceType":"OperationOutcome","_msBeforeNext":11240}');
+    downloadResponse.mockResolvedValue(response);
+    download.mockResolvedValue(blob);
+
+    await expect(ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document })).rejects.toThrow(
+      /429/
+    );
+  });
+
+  test('a 503 from the server is retried too', async () => {
+    const { response, blob } = errorResponse(503, 'upstream unavailable');
+    downloadResponse.mockResolvedValue(response);
+    download.mockResolvedValue(blob);
+
+    await expect(ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document })).rejects.toThrow(
+      /503/
+    );
+  });
+
+  test('a document that did not arrive is never indexed from the error page', async () => {
+    const { response, blob } = errorResponse(404, '{"resourceType":"OperationOutcome","issue":[]}');
+    downloadResponse.mockResolvedValue(response);
+    download.mockResolvedValue(blob);
+
+    await ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document });
+    expect(embedTexts).not.toHaveBeenCalled();
+    expect(transactionQuery).not.toHaveBeenCalled();
+  });
+});
+
+describe('what a reader can find out afterwards', () => {
+  test('a skipped document reports its reason to the caller, not only to the ledger', async () => {
+    // `lyfe_rag.documents` is reachable only from inside the Railway network, so
+    // a reason that is written only there is a reason nobody reads.
+    extractTextMock.mockRejectedValue(new ExtractSkipped('Textract rejects raw TIFF', 'tiff-undecodable'));
+    const result = await ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document });
+    expect(result.reasonCode).toBe('tiff-undecodable');
+  });
+
+  test('a failed document reports a reason code as well as a message', async () => {
+    extractTextMock.mockRejectedValue(new Error('something nobody predicted'));
+    const result = await ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document });
+    expect(result.status).toBe('failed');
+    expect(result.reasonCode).toBe('unknown');
+  });
+
+  test('a document indexed without some of its pages says so', async () => {
+    // Nine pages of a ten-page scan failing still produces an `indexed`
+    // document. Without this the chart reads as searchable and is 90% absent.
+    extractTextMock.mockResolvedValue({
+      text: 'Impression: no acute findings on the one page that was read.',
+      path: 'pdf-ocr',
+      pageCount: 10,
+      confidence: 0.9,
+      ocrPages: 1,
+      pageErrors: Array.from({ length: 9 }, (_unused, i) => ({ page: i + 2, error: 'Rate exceeded' })),
+    });
+    const result = await ingestDocument({ medplum, organizationId: 'org-a', patientId: 'pat-1', document });
+    expect(result.status).toBe('indexed');
+    expect(result.pageErrors).toBe(9);
+    const ledger = ragQuery.mock.calls.find((call) => (call[0] as string).includes('INSERT INTO lyfe_rag.documents'));
+    expect(String((ledger?.[1] as unknown[])[9])).toContain('9 of 10 pages');
+  });
+});
+
 describe('isStepLevelFailure', () => {
   test('treats rate limits and database outages as the step’s problem', () => {
     expect(isStepLevelFailure(new Error('HTTP 429 Too Many Requests'))).toBe(true);
@@ -282,6 +437,44 @@ describe('isStepLevelFailure', () => {
     expect(isStepLevelFailure(new Error('Could not read PDF'))).toBe(false);
     expect(isStepLevelFailure(new Error('HTTP 404 Not Found'))).toBe(false);
     expect(isStepLevelFailure(new Error('unsupported document format'))).toBe(false);
+  });
+
+  test('recognises a Textract throttle, whose message says none of the above', () => {
+    // `ocr.ts` leaves `ThrottlingException` out of its permanent list precisely
+    // so it stays retryable. Matching on the message defeated that: Textract's
+    // throttle reads `Rate exceeded`, which contains neither "throttl" nor
+    // "429", so the one failure the OCR layer marked retryable was the one
+    // recorded as permanently failed.
+    const throttled = Object.assign(new Error('Rate exceeded'), {
+      name: 'ThrottlingException',
+      $metadata: { httpStatusCode: 400 },
+    });
+    expect(isStepLevelFailure(throttled)).toBe(true);
+  });
+
+  test('recognises a provisioned-throughput error on Bedrock the same way', () => {
+    const exceeded = Object.assign(new Error('Your request rate is too high'), {
+      name: 'ProvisionedThroughputExceededException',
+    });
+    expect(isStepLevelFailure(exceeded)).toBe(true);
+  });
+
+  test('recognises an AWS 5xx by its metadata, whatever it is called', () => {
+    const outage = Object.assign(new Error('We encountered an internal error'), {
+      name: 'InternalServerError',
+      $metadata: { httpStatusCode: 500 },
+    });
+    expect(isStepLevelFailure(outage)).toBe(true);
+  });
+
+  test('does not sweep an AWS 4xx about the document into the run’s problems', () => {
+    // A document Textract rejects is this document's problem, and retrying the
+    // slice six times over it is how one bad page costs the other 39 documents.
+    const badDocument = Object.assign(new Error('Request has unsupported document format'), {
+      name: 'UnsupportedDocumentException',
+      $metadata: { httpStatusCode: 400 },
+    });
+    expect(isStepLevelFailure(badDocument)).toBe(false);
   });
 });
 
