@@ -1,0 +1,73 @@
+name: Deploy to AWS
+
+# App-image-only redeploy: build docker/server.aws.Dockerfile, push to ECR,
+# force a new ECS deployment. Infra changes (packages/cdk) are NOT run here --
+# cdk deploy stays a deliberate, human-run step. See LYF2-263 and
+# examples/medplum-provider/docs/aws-architecture.md for why.
+#
+# This file lives in SkaFld-Ignite/lyfe-ai-medplum (the real upstream) and
+# reaches Lyfe-AI/lyfe-ai-medplum via mirror.yml's force-sync, which also
+# means a push to main fires this workflow's `on: push` in BOTH repos. Only
+# Lyfe-AI's copy can actually deploy -- the IAM role's trust policy is scoped
+# to `repo:Lyfe-AI/lyfe-ai-medplum:ref:refs/heads/main`, so SkaFld-Ignite's
+# run would just fail the OIDC assume-role step. The job-level `if` below
+# skips it there instead, the same way mirror.yml decides which side acts.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write # required to mint the OIDC token for sts:AssumeRoleWithWebIdentity
+  contents: read
+
+env:
+  AWS_REGION: us-west-1
+  ECR_REPOSITORY: lyfe-medplum-server
+  ECS_CLUSTER: lyfe-medplum-production-BackEndCluster6B6DC4A8-NsB5kG926ajT
+  ECS_SERVICE: lyfe-medplum-production-BackEndFargateServiceD3B260C0-pGIrPbGSHEum
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.repository == 'Lyfe-AI/lyfe-ai-medplum'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push server image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          docker build \
+            -f docker/server.aws.Dockerfile \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA" \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" \
+            .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Force a new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --force-new-deployment \
+            --region "$AWS_REGION"
+
+      - name: Wait for the service to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --region "$AWS_REGION"
