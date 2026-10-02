@@ -14,6 +14,7 @@ function setup(props: {
   content: string;
   resources?: string[];
   onSelectResource?: (reference: string) => void;
+  collapsibleSources?: boolean;
 }): RenderResult {
   return render(
     <MedplumProvider medplum={new MockClient()}>
@@ -107,6 +108,87 @@ describe('sources strip', () => {
 
     expect(screen.getByRole('button', { name: 'S4' })).toBeInTheDocument();
     expect(screen.queryByText('Sources')).not.toBeInTheDocument();
+  });
+});
+
+describe('sources strip, collapsed (panel variant)', () => {
+  /**
+   * Prose that cites a lot of sources, the way a week of appointments does.
+   * @param count - How many `[doc:Sn]` citations, each with a resource behind it.
+   * @returns The content and resources to render.
+   */
+  function manySources(count: number): { content: string; resources: string[] } {
+    return {
+      content: Array.from({ length: count }, (_, i) => `Row ${i} [doc:S${i + 1}]`).join('\n\n'),
+      resources: Array.from({ length: count }, (_, i) => `Appointment/appt-${i}`),
+    };
+  }
+
+  test('shows one summary line with the count, and no cards at all', () => {
+    const { container } = setup({ ...manySources(40), collapsibleSources: true });
+
+    expect(screen.getByRole('button', { name: /Sources \(40\)/ })).toHaveAttribute('aria-expanded', 'false');
+    // Not in the DOM, not merely hidden with CSS.
+    expect(container.querySelector(`#${citationElementId('S1')}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('resource-box')).not.toBeInTheDocument();
+  });
+
+  test('expands to the full strip and collapses again', async () => {
+    const { container } = setup({ ...manySources(6), collapsibleSources: true });
+    const toggle = screen.getByRole('button', { name: /Sources \(6\)/ });
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector(`#${citationElementId('S1')}`)).toBeInTheDocument();
+    expect(container.querySelector(`#${citationElementId('S6')}`)).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(container.querySelector(`#${citationElementId('S1')}`)).not.toBeInTheDocument();
+  });
+
+  test('an inline pill opens the strip and scrolls to its card', async () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const onSelectResource = vi.fn();
+      const { container } = setup({ ...manySources(8), collapsibleSources: true, onSelectResource });
+
+      await userEvent.click(screen.getByRole('button', { name: 'S5' }));
+
+      const card = container.querySelector(`#${citationElementId('S5')}`) as HTMLElement;
+      expect(card).toBeInTheDocument();
+      expect(card).toHaveAttribute('data-flashed', 'true');
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' }));
+      expect(onSelectResource).toHaveBeenCalledWith('Appointment/appt-4');
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
+
+  test('a second pill click leaves the strip open rather than toggling it shut', async () => {
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+
+    try {
+      const { container } = setup({ ...manySources(4), collapsibleSources: true });
+
+      await userEvent.click(screen.getByRole('button', { name: 'S2' }));
+      await userEvent.click(screen.getByRole('button', { name: 'S3' }));
+
+      expect(container.querySelector(`#${citationElementId('S3')}`)).toBeInTheDocument();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
+
+  test('the full-page variant is untouched — cards listed, no toggle', () => {
+    const { container } = setup(manySources(6));
+
+    expect(screen.getByText('Sources')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Sources \(/ })).not.toBeInTheDocument();
+    expect(container.querySelector(`#${citationElementId('S1')}`)).toBeInTheDocument();
   });
 });
 

@@ -7,6 +7,7 @@ import type { useMedplum } from '@medplum/react';
 import type { DocumentSearchResult } from '../services/document-search';
 import { searchPatientDocuments } from '../services/document-search';
 import type { Message } from '../types/spaces';
+import { projectToolResult } from './fhir-projection';
 import type { ReasoningEffort } from './spaceModels';
 import { createConversationTopic, saveMessage } from './spacePersistence';
 
@@ -169,10 +170,25 @@ async function executeFhirRequest(medplum: ReturnType<typeof useMedplum>, args: 
   }
 }
 
-function extractResourceRefs(result: Resource | Bundle): string[] {
+/**
+ * The references a tool result makes citable, in citation order.
+ *
+ * Read off the **projected** result, which is the one that gets stored and sent. `Sn` is a
+ * position in this list, and the summary bot recomputes the same list from the stored tool message
+ * with `collectCitableSources` (`bots/shared/spaces-ai.ts`); both now walk the same bytes, so the
+ * `_include`d rows the projection drops disappear from both at once instead of one side numbering
+ * 83 sources and the other 43.
+ *
+ * `unknown` rather than `Resource | Bundle` because a projected bundle is a plain object, not a
+ * FHIR resource — the shape it has to keep is exactly the one read here and in the bot.
+ * @param result - The projected result.
+ * @returns The reference strings.
+ */
+function extractResourceRefs(result: unknown): string[] {
   const refs: string[] = [];
-  if (result.resourceType === 'Bundle' && result.entry) {
-    for (const entry of result.entry) {
+  const bundle = result as Bundle;
+  if (bundle?.resourceType === 'Bundle' && bundle.entry) {
+    for (const entry of bundle.entry) {
       if (entry.resource) {
         const ref = getReferenceString(entry.resource);
         if (ref) {
@@ -181,7 +197,7 @@ function extractResourceRefs(result: Resource | Bundle): string[] {
       }
     }
   } else {
-    const ref = getReferenceString(result);
+    const ref = getReferenceString(result as Resource);
     if (ref) {
       refs.push(ref);
     }
@@ -263,7 +279,11 @@ export async function executeToolCalls(
       onFhirRequest(`${args.method} ${args.path}`);
 
       try {
-        const result = await executeFhirRequest(medplum, args);
+        // Compacted here, where the tool result is produced, so the stored `Communication` turn,
+        // what the summary bot recomputes citation numbers from, and what the model reads are all
+        // the same bytes. A week of appointments arrives as ~170k characters of FHIR scaffolding
+        // and leaves as a few thousand characters of answerable rows — see `./fhir-projection.ts`.
+        const result = projectToolResult(await executeFhirRequest(medplum, args));
         resourceRefs.push(...extractResourceRefs(result));
 
         const toolMessage: Message = {

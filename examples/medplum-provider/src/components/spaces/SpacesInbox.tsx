@@ -529,6 +529,7 @@ export function SpacesInbox(props: SpaceInboxProps): JSX.Element {
                             resources={message.resources}
                             bubbleClassName={classes.messageContent}
                             onSelectResource={openResource}
+                            collapsibleSources={variant === 'panel'}
                           />
                         ) : (
                           <div className={classes.messageContent}>
