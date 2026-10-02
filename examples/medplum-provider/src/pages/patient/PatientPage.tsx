@@ -16,6 +16,7 @@ import classes from './PatientPage.module.css';
 import { getPatientPageTabs, patientPathPrefix } from './PatientPage.utils';
 import { PatientIdentitySkeleton, PatientTabContentSkeleton } from './PatientPageSkeleton';
 import { PatientSectionTabs } from './PatientSectionTabs';
+import { SidebarSyncButton } from './SidebarSyncButton';
 
 /** Below this width the sidebar collapses and the sections become a horizontal bar. */
 const SIDEBAR_BREAKPOINT = '(max-width: 62em)';
@@ -65,6 +66,10 @@ export function PatientPage(): JSX.Element {
         <aside className={classes.sidebar}>
           <ScrollArea className={classes.scrollArea} scrollbarSize={6}>
             {loaded ? <PatientIdentityCard patient={loaded} timeZone={timeZone} /> : <PatientIdentitySkeleton />}
+            {/* Between the identity block and the section menu — where the
+                previous platform put it, and where people look for it. Only
+                once the patient has loaded, since it is keyed on their id. */}
+            {loaded && <SidebarSyncButton patientId={patientId} />}
             <PatientSectionTabs baseUrl={baseUrl} tabs={resolvedTabs} orientation="vertical" />
           </ScrollArea>
         </aside>
