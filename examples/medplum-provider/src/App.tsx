@@ -29,6 +29,7 @@ import { ScriptSurePracticeProvider } from './scriptsure/ScriptSurePractice';
 
 const SETUP_DISMISSED_KEY = 'medplum-provider-setup-completed';
 const PROVIDER_HIDE_GET_STARTED_SETTING = 'hideGetStarted';
+const AUTH_PATHS = ['/signin', '/register'];
 
 import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { LyfeDirectoryPage } from './pages/directory/LyfeDirectoryPage';
@@ -128,6 +129,19 @@ export function App(): JSX.Element | null {
 
   if (medplum.isLoading()) {
     return null;
+  }
+
+  // AppShell only hides its navbar when there is no profile, and a stale one can still be set here,
+  // so these screens render outside the shell.
+  if (AUTH_PATHS.includes(location.pathname)) {
+    return (
+      <Suspense fallback={<Loading />}>
+        <Routes>
+          <Route path="/signin" element={<SignInPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+        </Routes>
+      </Suspense>
+    );
   }
 
   const appShellContent = (
