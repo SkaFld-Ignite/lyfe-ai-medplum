@@ -646,30 +646,38 @@ function withHardTimeout<T>(promise: Promise<T>, ms: number, label: string): Pro
 }
 
 /**
- * Issue one authenticated DrChrono request, retrying transient failures.
+ * Issue one authenticated DrChrono request, retrying server errors.
  *
  * DrChrono 500s individual pages under load on endpoints that are otherwise
- * healthy, and 429s when a bulk backfill runs several charts back to back. Both
- * are retried with exponential backoff; `Retry-After` is honoured when sent.
- * Authentication and token rotation are the client's job, not this function's.
+ * healthy, and that is what this ladder is for. It is **not** for 429s any
+ * more, and the difference is the whole point of the change that removed them:
+ *
+ * A 500 is one page having a bad moment, and retrying it four times costs
+ * thirty-seven seconds and usually works. A 429 is the practice's quota, shared
+ * by every run importing for that clinic, and retrying it is not merely
+ * wasteful — it is what deepens the throttle. The ladder here also could not
+ * win: on 2026-10-02 DrChrono asked for 2710 seconds and this budget was 37.
+ * Thirteen of thirty-three charts spent it, failed, and were dropped.
+ *
+ * So the 429 is handled one layer down, in `shared/drchrono.ts`, where the
+ * brake is per clinic and shared between runs, and it arrives here as a thrown
+ * `ProviderRateLimitError` carrying the instant DrChrono named. This function
+ * lets it straight through — unretried and unconverted — so the worker can
+ * suspend the run until then instead of burning a budget on it.
  * @param client - The clinic-scoped DrChrono client.
  * @param path - Absolute URL, or a path relative to the clinic's API base.
  * @returns The final response, retryable statuses already exhausted.
+ * @throws {ProviderRateLimitError} When DrChrono is holding this clinic off.
  */
 async function drchronoGet(client: DrChronoClient, path: string): Promise<Response> {
   let lastStatus = 0;
   for (let attempt = 0; attempt <= DRCHRONO_RETRY_BACKOFFS_MS.length; attempt++) {
     const res = await withHardTimeout(client.fetch(path), DRCHRONO_REQUEST_TIMEOUT_MS, `GET ${path}`);
-    const retryable = res.status >= 500 || res.status === 429;
-    if (!retryable || attempt === DRCHRONO_RETRY_BACKOFFS_MS.length) {
+    if (res.status < 500 || attempt === DRCHRONO_RETRY_BACKOFFS_MS.length) {
       return res;
     }
     lastStatus = res.status;
-
-    const retryAfterRaw = res.headers.get('retry-after');
-    const retryAfterMs = retryAfterRaw ? Number(retryAfterRaw) * 1000 : Number.NaN;
-    const useRetryAfter = Number.isFinite(retryAfterMs) && retryAfterMs > 0;
-    const backoff = useRetryAfter ? Math.min(60_000, retryAfterMs) : DRCHRONO_RETRY_BACKOFFS_MS[attempt];
+    const backoff = DRCHRONO_RETRY_BACKOFFS_MS[attempt];
 
     // Drain the body so the socket can be reused for the retry.
     await res.text().catch(() => null);

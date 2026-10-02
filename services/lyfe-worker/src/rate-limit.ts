@@ -2,9 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 import { RetryAfterError } from 'inngest';
 import { isRateLimitError } from '../../../examples/medplum-provider/bots/shared/batch.ts';
+import { isProviderRateLimitError } from '../../../examples/medplum-provider/bots/shared/provider-rate-limit.ts';
 
 /**
  * Two ceilings every step in this worker runs against, and what to do at each.
+ *
+ * **The provider's own quota.** DrChrono and Zus each meter a *clinic*, and
+ * when one says no it usually says for how long. That signal is handled a layer
+ * down, at the HTTP seam in
+ * `examples/medplum-provider/bots/shared/provider-rate-limit.ts`, which brakes
+ * every further call for that `(provider, clinic)` pair instead of letting each
+ * run rediscover the throttle by deepening it. It reaches this file as a
+ * `ProviderRateLimitError` carrying the instant, and {@link retryAfter} hands
+ * that straight to Inngest. See `functions/chart-import.ts` for the other half:
+ * a run that finds the brake already on holds with `step.sleepUntil` rather
+ * than spending an attempt to be told so.
  *
  * **Medplum's FHIR quota.** 50,000 units per minute, per user. The importers
  * already respect it where the volume is — writes go through `upsertBatch`,
@@ -59,6 +71,14 @@ const RESET_PAD_MS = 5_000;
  * @returns When to retry, or undefined if the error is not a rate limit.
  */
 export function retryAfter(err: unknown): Date | undefined {
+  // A provider brake already carries the answer: the instant DrChrono or Zus
+  // itself named. Checked first, and returned verbatim, because it is the one
+  // number in this whole system that is not a guess — and on 2026-10-02 it was
+  // 2710 seconds while the retry budget underneath it was 37, which is why
+  // thirteen charts were dropped.
+  if (isProviderRateLimitError(err)) {
+    return new Date(Math.max(Date.now() + MIN_RETRY_AFTER_MS, err.retryAt.getTime()));
+  }
   if (!isRateLimitError(err)) {
     return undefined;
   }
