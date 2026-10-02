@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { MedplumClient } from '@medplum/core';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { executeToolCalls, processMessage, sendToBotStreaming } from './spaceMessaging';
+import {
+  displayableAssistantContent,
+  executeToolCalls,
+  ITERATION_LIMIT_MESSAGE,
+  ITERATION_LIMIT_NOTE,
+  processMessage,
+  sendToBotStreaming,
+  stripRawToolCalls,
+} from './spaceMessaging';
 
 vi.mock('./spacePersistence', () => ({
   createConversationTopic: vi.fn().mockResolvedValue({ id: 'topic-1', resourceType: 'Communication' }),
@@ -643,5 +651,144 @@ describe('executeToolCalls - search_documents', () => {
       onProgress
     );
     expect(onProgress).toHaveBeenCalledWith('search documents: aortic stenosis');
+  });
+});
+
+/**
+ * The last line of defence over a surface that renders model prose verbatim.
+ *
+ * Nothing in this repository writes `[tool call …]` — it is model output, produced when a model
+ * that ran out of room narrates the call it wanted to make next instead of answering. A clinician
+ * saw exactly the string asserted here. It cannot be fixed where it is "generated", so it is
+ * scrubbed on the way to the screen, and these tests pin both halves of that: the blob goes, and
+ * prose that merely talks about tools does not.
+ */
+describe('stripRawToolCalls', () => {
+  const leaked =
+    '[tool call tooluse_n3Z1GwTyMGJi9YT3VjBTx5: fhir_request({"method":"GET","path":"Encounter?date=ge2026-09-28"})]';
+
+  test('removes a bracketed tool call and keeps the prose around it', () => {
+    const result = stripRawToolCalls(`Here is what I found. ${leaked} More to come.`);
+    expect(result).not.toContain('[tool call');
+    expect(result).not.toContain('tooluse_');
+    expect(result).toContain('Here is what I found.');
+    expect(result).toContain('More to come.');
+  });
+
+  test('removes the bracketless variant', () => {
+    const result = stripRawToolCalls('Checking.\ntool call: fhir_request({"method":"GET","path":"Patient"})\n');
+    expect(result).toBe('Checking.');
+  });
+
+  test('returns undefined when the content was nothing but a tool call', () => {
+    expect(stripRawToolCalls(leaked)).toBeUndefined();
+  });
+
+  test('leaves ordinary clinical prose alone, brackets and all', () => {
+    const prose = 'Three encounters [doc:S1] and a note dated 2026-09-28 [doc:S2].';
+    expect(stripRawToolCalls(prose)).toBe(prose);
+  });
+
+  test('does not eat prose that merely mentions tools', () => {
+    const prose = 'I used a tool call limit of ten searches to find this.';
+    expect(stripRawToolCalls(prose)).toBe(prose);
+  });
+
+  test('passes empty and missing content through', () => {
+    expect(stripRawToolCalls(undefined)).toBeUndefined();
+    expect(stripRawToolCalls(null)).toBeUndefined();
+    expect(stripRawToolCalls('')).toBeUndefined();
+  });
+
+  test('displayableAssistantContent substitutes a sentence rather than an empty bubble', () => {
+    expect(displayableAssistantContent(leaked)).toBe(ITERATION_LIMIT_MESSAGE);
+    expect(displayableAssistantContent('A real answer.')).toBe('A real answer.');
+    expect(displayableAssistantContent(undefined)).toBeUndefined();
+  });
+});
+
+describe('processMessage - iteration exhaustion', () => {
+  /**
+   * A medplum stub whose translator never stops asking for tools, so the loop always exhausts.
+   * @param summary - What the summary bot returns, as a `content` output parameter.
+   * @returns The stub.
+   */
+  function alwaysToolCalling(summary?: string): Partial<MedplumClient> {
+    let calls = 0;
+    const toolCall = {
+      id: 'call-1',
+      function: { name: 'fhir_request', arguments: JSON.stringify({ method: 'GET', path: 'Patient' }) },
+    };
+    return {
+      executeBot: vi.fn().mockImplementation(() => {
+        calls++;
+        if (calls <= 10) {
+          return Promise.resolve({
+            resourceType: 'Parameters',
+            parameter: [{ name: 'tool_calls', valueString: JSON.stringify([toolCall]) }],
+          });
+        }
+        return Promise.resolve({
+          resourceType: 'Parameters',
+          parameter: summary ? [{ name: 'content', valueString: summary }] : [],
+        });
+      }),
+      searchOne: vi.fn().mockResolvedValue({ resourceType: 'Bot', id: 'bot-1' }),
+      get: vi.fn().mockResolvedValue({ resourceType: 'Patient', id: 'p1' }),
+      createResource: vi.fn().mockResolvedValue({ resourceType: 'Communication', id: 'c1' }),
+    };
+  }
+
+  const params = {
+    input: 'Who is on my schedule this week?',
+    userMessage: { role: 'user' as const, content: 'Who is on my schedule this week?' },
+    currentTopicId: 'topic-1',
+    selectedModel: 'gpt-4o',
+    selectedReasoningEffort: 'medium' as const,
+    isFirstMessage: false,
+    setCurrentTopicId: vi.fn(),
+    setRefreshKey: vi.fn(),
+    setCurrentFhirRequest: vi.fn(),
+    onNewTopic: vi.fn(),
+  };
+
+  test('scrubs a leaked tool call out of the exhausted turn and still ends in a sentence', async () => {
+    const leaked =
+      'I need more data. [tool call tooluse_n3Z1GwTyMGJi9YT3VjBTx5: ' +
+      'fhir_request({"method":"GET","path":"Encounter?date=ge2026-09-28"})]';
+    const medplum = alwaysToolCalling(leaked);
+
+    const result = await processMessage({
+      ...params,
+      currentMessages: [{ role: 'user', content: params.input }],
+      medplum: medplum as MedplumClient,
+    });
+
+    expect(result.assistantMessage.content).not.toContain('[tool call');
+    expect(result.assistantMessage.content).not.toContain('tooluse_');
+    expect(result.assistantMessage.content).not.toContain('fhir_request');
+    // What the model actually said survives, with the note appended — the partial finding is
+    // worth keeping, the call it narrated is not.
+    expect(result.assistantMessage.content).toBe('I need more data.' + ITERATION_LIMIT_NOTE);
+    expect(result.assistantMessage.content).toContain('processing limit');
+  });
+
+  test('a turn whose whole summary was a tool call falls back to the standalone sentence', async () => {
+    const medplum = alwaysToolCalling(
+      '[tool call tooluse_abc: fhir_request({"method":"GET","path":"Appointment?actor=Practitioner/f274e9d5"})]'
+    );
+
+    const result = await processMessage({
+      ...params,
+      currentMessages: [{ role: 'user', content: params.input }],
+      medplum: medplum as MedplumClient,
+    });
+
+    expect(result.assistantMessage.content).not.toContain('[tool call');
+    // Nothing readable survived the scrub, so the turn is the standalone sentence — not that
+    // sentence plus a note about being incomplete, which would be reporting a partial answer
+    // that does not exist.
+    expect(result.assistantMessage.content).toBe(ITERATION_LIMIT_MESSAGE);
+    expect(result.assistantMessage.content).toContain('more specific question');
   });
 });

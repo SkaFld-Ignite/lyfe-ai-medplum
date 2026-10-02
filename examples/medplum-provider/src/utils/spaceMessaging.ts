@@ -122,10 +122,7 @@ export function documentReferenceString(documentId: string): string {
  * @param patientId - The patient searched, echoed so the model can see it.
  * @returns The tool result.
  */
-export function toDocumentSearchToolResult(
-  result: DocumentSearchResult,
-  patientId: string
-): DocumentSearchToolResult {
+export function toDocumentSearchToolResult(result: DocumentSearchResult, patientId: string): DocumentSearchToolResult {
   const hits = result.hits.map((hit) => ({
     reference: documentReferenceString(hit.documentId),
     title: hit.title,
@@ -511,6 +508,85 @@ export async function sendToBotStreaming(
   return { content: fullContent, code: codeExtractor.getCode() };
 }
 
+/**
+ * The sentence a clinician reads when the agent loop ran out of iterations.
+ *
+ * Deliberately a whole sentence rather than an error code or a truncated attempt: the turn ends
+ * here either way, and the only useful thing left to say is what to do next.
+ */
+export const ITERATION_LIMIT_MESSAGE =
+  'I could not finish answering that one — I reached my processing limit before any results came ' +
+  'back. Try a more specific question, such as a single date range or one kind of record.';
+
+/** The same thing, as a trailing note when partial findings are worth keeping. */
+export const ITERATION_LIMIT_NOTE =
+  '\n\n_Note: I reached my processing limit before working all the way through that, so this may be ' +
+  'incomplete. Try a more specific question — a narrower date range, or one kind of record._';
+
+/**
+ * Matches a raw tool call printed into prose, in the shapes a model actually produces.
+ *
+ * A model handed a conversation it could not finish sometimes narrates the call it wanted to make
+ * next instead of answering, and it arrives as literal text in the message content:
+ *
+ * ```
+ * [tool call tooluse_n3Z1GwTyMGJi9YT3VjBTx5: fhir_request({"method":"GET","path":"Encounter?…"})]
+ * ```
+ *
+ * No code in this repository writes that string — it is model output, which is why it cannot be
+ * fixed at the place it is "generated" and has to be scrubbed on the way to the screen. The second
+ * alternative covers the bracketless variant (`tool call: fhir_request({…})`) seen on the same turn.
+ *
+ * Kept deliberately narrow. This is a last line of defence over a surface that otherwise renders
+ * model prose verbatim, not a general-purpose content filter: anything broader would start eating
+ * legitimate clinical text that happens to contain brackets.
+ */
+const RAW_TOOL_CALL_PATTERN =
+  /\[\s*tool[ _-]?(?:call|use)\b[^\]]*\]|(?:^|\n)\s*tool[ _-]?(?:call|use)\s*:\s*\w+\s*\((?:[^()]|\([^()]*\))*\)\s*/gi;
+
+/**
+ * Strips raw tool calls out of assistant prose.
+ *
+ * Applied in two places, because there are two ways the text can reach a clinician: on the way out
+ * of {@link processMessage}, for a turn happening now, and on the way into the message list, for a
+ * conversation that was persisted before this existed. Persistence itself is untouched — the
+ * `Communication` records keep whatever they hold, so the developer view of a reloaded conversation
+ * still shows everything.
+ * @param content - The assistant content, as the model produced it.
+ * @returns The content with any raw tool call removed, or undefined if nothing readable is left.
+ */
+export function stripRawToolCalls(content: string | null | undefined): string | undefined {
+  if (!content) {
+    return undefined;
+  }
+  if (!/tool[ _-]?(?:call|use)/i.test(content)) {
+    return content;
+  }
+  const stripped = content
+    .replace(RAW_TOOL_CALL_PATTERN, ' ')
+    // Collapse the blank lines and stray spaces a removal leaves behind.
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return stripped.length > 0 ? stripped : undefined;
+}
+
+/**
+ * The assistant content a message should actually display.
+ *
+ * Returns the fallback sentence rather than an empty bubble when scrubbing removed everything,
+ * because a turn whose entire content was a leaked tool call still has to end in something a doctor
+ * can read.
+ * @param content - The stored assistant content.
+ * @returns Displayable content, or undefined if there was nothing to begin with.
+ */
+export function displayableAssistantContent(content: string | null | undefined): string | undefined {
+  if (!content) {
+    return content ?? undefined;
+  }
+  return stripRawToolCalls(content) ?? ITERATION_LIMIT_MESSAGE;
+}
+
 export interface ProcessMessageParams {
   medplum: ReturnType<typeof useMedplum>;
   input: string;
@@ -609,6 +685,10 @@ export async function processMessage(params: ProcessMessageParams): Promise<Proc
       visualize = true;
     }
 
+    // `content: null`, on purpose. A turn that called tools may also have written prose, and that
+    // prose is mid-reasoning — it is the one place an unhandled tool call could otherwise reach the
+    // transcript as text. Dropping it here is what keeps `role: 'assistant'` messages carrying tool
+    // calls un-renderable as a bubble; the calls themselves are rendered as the sources detail.
     const assistantMessageWithToolCalls: Message = {
       role: 'assistant',
       content: null,
@@ -661,12 +741,19 @@ export async function processMessage(params: ProcessMessageParams): Promise<Proc
     }
   }
 
-  if (!loopCompleted && content) {
-    content +=
-      '\n\n_Note: The request reached the processing limit before fully completing. Try a more specific question or break it into smaller parts._';
-  } else if (!loopCompleted) {
-    content =
-      'The request reached the processing limit before any results could be gathered. Try a more specific question or break it into smaller parts.';
+  // Whatever the model wrote, it is prose on its way to a clinician's screen, and a model that ran
+  // out of room sometimes narrates the call it wanted to make next instead of answering. Scrub it
+  // here — the one place every path's content passes through — and log what was removed, so the
+  // diagnostic survives for a developer without the conversation ending in a tool call.
+  const rawContent = content;
+  content = stripRawToolCalls(content);
+  if (rawContent && content !== rawContent) {
+    console.warn('[spaces] stripped a raw tool call out of assistant content:', rawContent);
+  }
+
+  if (!loopCompleted) {
+    console.warn(`[spaces] agent loop exhausted ${MAX_AGENT_ITERATIONS} iterations without completing`);
+    content = content ? content + ITERATION_LIMIT_NOTE : ITERATION_LIMIT_MESSAGE;
   }
 
   let componentCode: string | undefined;
