@@ -654,6 +654,109 @@ describe('executeToolCalls - search_documents', () => {
   });
 });
 
+describe('executeToolCalls - fhir_request', () => {
+  const searchset = {
+    resourceType: 'Bundle',
+    type: 'searchset',
+    total: 1,
+    entry: [
+      {
+        fullUrl: 'https://api.example.com/fhir/R4/Appointment/a1',
+        search: { mode: 'match' },
+        resource: {
+          resourceType: 'Appointment',
+          id: 'a1',
+          meta: { versionId: '3', lastUpdated: '2026-09-30T11:04:22.119Z' },
+          text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml">narrative</div>' },
+          status: 'booked',
+          start: '2026-09-30T14:00:00.000Z',
+          end: '2026-09-30T14:20:00.000Z',
+          participant: [{ actor: { reference: 'Patient/p1', display: 'Jane Doe' } }],
+        },
+      },
+      {
+        fullUrl: 'https://api.example.com/fhir/R4/Patient/p1',
+        search: { mode: 'include' },
+        resource: {
+          resourceType: 'Patient',
+          id: 'p1',
+          meta: { versionId: '9' },
+          name: [{ given: ['Jane'], family: 'Doe' }],
+        },
+      },
+    ],
+  };
+
+  function makeMedplum(): Partial<MedplumClient> {
+    return {
+      fhirUrl: vi.fn().mockReturnValue(new URL('https://api.example.com/fhir/R4/Appointment')),
+      get: vi.fn().mockResolvedValue(searchset),
+    };
+  }
+
+  const call = { id: 'call-fhir-1', function: { name: 'fhir_request', arguments: '{"method":"GET","path":"x"}' } };
+
+  test('stores the compacted bundle, not the raw one', async () => {
+    const { messages } = await executeToolCalls(
+      makeMedplum() as Parameters<typeof executeToolCalls>[0],
+      [call],
+      vi.fn()
+    );
+    const content = messages[0].content as string;
+
+    expect(content.length * 2).toBeLessThan(JSON.stringify(searchset).length);
+    expect(content).not.toContain('xmlns');
+    expect(content).not.toContain('lastUpdated');
+    expect(content).not.toContain('fullUrl');
+    expect(JSON.parse(content)).toEqual({
+      resourceType: 'Bundle',
+      type: 'searchset',
+      total: 1,
+      entry: [
+        {
+          resource: {
+            resourceType: 'Appointment',
+            id: 'a1',
+            status: 'booked',
+            start: '2026-09-30T14:00:00.000Z',
+            end: '2026-09-30T14:20:00.000Z',
+            patient: 'Jane Doe (Patient/p1)',
+          },
+        },
+      ],
+    });
+  });
+
+  test('cites the rows it kept and nothing else', async () => {
+    const { resourceRefs } = await executeToolCalls(
+      makeMedplum() as Parameters<typeof executeToolCalls>[0],
+      [call],
+      vi.fn()
+    );
+
+    // The included Patient used to be a source card of its own; the Appointment it belongs to is
+    // the one row the answer actually stands on.
+    expect(resourceRefs).toEqual(['Appointment/a1']);
+  });
+
+  test('a single-resource read is left whole', async () => {
+    const patient = { resourceType: 'Patient', id: 'p1', meta: { versionId: '9' }, birthDate: '1980-02-02' };
+    const medplum: Partial<MedplumClient> = {
+      fhirUrl: vi.fn().mockReturnValue(new URL('https://api.example.com/fhir/R4/Patient/p1')),
+      get: vi.fn().mockResolvedValue(patient),
+    };
+
+    const { messages, resourceRefs } = await executeToolCalls(
+      medplum as Parameters<typeof executeToolCalls>[0],
+      [call],
+      vi.fn()
+    );
+
+    expect(JSON.parse(messages[0].content as string)).toEqual(patient);
+    expect(resourceRefs).toEqual(['Patient/p1']);
+  });
+});
+
 /**
  * The last line of defence over a surface that renders model prose verbatim.
  *

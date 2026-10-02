@@ -67,6 +67,33 @@
 }
 
 /* Sources strip */
+
+/*
+ * The collapsed form, in the floating panel. Shaped to match `Sources consulted (n)` in
+ * `SpacesInbox.module.css` on purpose — the two sit one above the other under the same answer,
+ * and two disclosures that look alike read as one deliberate pattern rather than two accidents.
+ */
+.stripToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 0;
+  color: var(--mantine-color-gray-6);
+  border-radius: var(--mantine-radius-sm);
+}
+
+.stripToggle:hover {
+  color: var(--mantine-color-gray-8);
+}
+
+.stripChevron {
+  transition: transform 150ms ease;
+}
+
+.stripToggle[data-open] .stripChevron {
+  transform: rotate(180deg);
+}
+
 .stripHeading {
   padding-left: 4px;
   font-size: 10.5px;
