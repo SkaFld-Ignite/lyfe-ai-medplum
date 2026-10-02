@@ -61,3 +61,40 @@ export async function queueBulkImport(medplum: MedplumClient, drchronoPatientIds
   }
   return (await response.json()) as BulkRunQueued;
 }
+
+/**
+ * Queue document indexing for patients whose charts are already in.
+ *
+ * The worker's bulk import chains this itself — a chart import sends
+ * `lyfe/rag.ingest.requested`, and indexing is what pulls the AI summary along
+ * behind it. A chart imported through the bots instead reaches neither, so this
+ * is how the direct path gets the same ending.
+ *
+ * Returns as soon as the work is queued, like every other call to this worker.
+ * Indexing a patient's documents takes minutes, and the endpoint answers 202 for
+ * exactly that reason.
+ *
+ * The caller's own access token is sent and verified there; the worker resolves
+ * the clinic from it, so the organization can never be chosen by the browser.
+ * @param medplum - Authenticated Medplum client, for its access token.
+ * @param patientIds - The Medplum patient ids whose documents to index.
+ * @returns The batch id and how many were queued.
+ */
+export async function queueDocumentIndex(medplum: MedplumClient, patientIds: string[]): Promise<BulkRunQueued> {
+  if (!IMPORT_WORKER_URL) {
+    throw new Error('No import worker is configured');
+  }
+  const response = await fetch(`${IMPORT_WORKER_URL.replace(/\/$/, '')}/api/rag/ingest`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${medplum.getAccessToken()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ patientIds }),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`The import worker refused the index (${response.status}): ${detail.slice(0, 200)}`);
+  }
+  return (await response.json()) as BulkRunQueued;
+}

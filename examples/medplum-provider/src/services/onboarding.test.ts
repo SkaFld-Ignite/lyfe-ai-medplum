@@ -2,7 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { MedplumClient } from '@medplum/core';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { queueDocumentIndex } from './bulk-import';
 import { describeNetworkPull, importDrChronoPatient, pullNetworkRecord } from './onboarding';
+
+// A worker is configured for this file, which is the deployed configuration.
+// The unconfigured case gets its own module registry further down, since the
+// binding is read from the module rather than passed in.
+vi.mock('./bulk-import', () => ({
+  IMPORT_WORKER_URL: 'https://worker.example.com/',
+  queueDocumentIndex: vi.fn(async () => ({ batchId: 'rag-1', queued: 1 })),
+}));
+
+const queueIndex = vi.mocked(queueDocumentIndex);
 
 /**
  * Importing a chart must always pull the patient's network record too.
@@ -106,6 +117,9 @@ const CHART_OK = { ok: true, medplumPatientId: 'patient-1', counts: { Encounter:
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // The index queue is a module-level mock, so without this its calls
+  // accumulate across tests and "was it called once" becomes meaningless.
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
@@ -193,9 +207,9 @@ describe('importDrChronoPatient', () => {
 
     await settle(importDrChronoPatient(medplum, '1', (_status, stage) => stages.push(stage)));
 
-    // The two halves are minutes apart and fail for unrelated reasons, so a
+    // The three parts are minutes apart and fail for unrelated reasons, so a
     // screen has to be able to tell them apart without matching on the text.
-    expect(new Set(stages)).toStrictEqual(new Set(['chart', 'network']));
+    expect(new Set(stages)).toStrictEqual(new Set(['chart', 'network', 'index']));
   });
 });
 
@@ -222,5 +236,111 @@ describe('describeNetworkPull', () => {
 
   test('says so when nothing was attempted', () => {
     expect(describeNetworkPull(undefined).state).toBe('skipped');
+  });
+});
+
+/**
+ * The third half of an import.
+ *
+ * The same defect as the network pull, found in the same function, one layer
+ * further on: a chart imported from the search screen reached neither the
+ * document index nor — because indexing is what pulls it — the AI summary. The
+ * chart looked complete, and the assistant quietly could not read any of the
+ * patient's scanned referrals or discharge summaries.
+ *
+ * The bulk fallback in BulkImportPanel drives this same function when the
+ * worker is unreachable, so these also cover a bulk run that degraded.
+ */
+describe('importDrChronoPatient — document indexing', () => {
+  test('queues the index for the patient the chart created, with nothing to ask for', async () => {
+    const { medplum } = stubMedplum({
+      [IMPORT_BOT]: CHART_OK,
+      [ZUS_BOT]: { ok: true, counts: { Condition: 7 } },
+    });
+
+    const result = await settle(importDrChronoPatient(medplum, 120118105));
+
+    expect(queueIndex).toHaveBeenCalledTimes(1);
+    expect(queueIndex).toHaveBeenCalledWith(medplum, ['patient-1']);
+    expect(result.index).toStrictEqual({ ok: true, batchId: 'rag-1' });
+  });
+
+  test('queues after the network pull, so documents it brought in are indexed too', async () => {
+    const order: string[] = [];
+    queueIndex.mockImplementationOnce(async () => {
+      order.push('index');
+      return { batchId: 'rag-1', queued: 1 };
+    });
+    const { medplum, executed } = stubMedplum({
+      [IMPORT_BOT]: CHART_OK,
+      [ZUS_BOT]: { ok: true, counts: { Condition: 7 } },
+    });
+
+    await settle(importDrChronoPatient(medplum, 120118105));
+
+    // Both bots ran before the index was queued.
+    expect(executed).toStrictEqual([IMPORT_BOT, ZUS_BOT]);
+    expect(order).toStrictEqual(['index']);
+  });
+
+  test('a refused index does not fail a chart that imported', async () => {
+    // The chart has thousands of resources in it. An unreachable indexer is a
+    // reason to say so, never a reason to call the import failed.
+    queueIndex.mockRejectedValueOnce(new Error('The import worker refused the index (503): RAG not configured'));
+    const { medplum } = stubMedplum({
+      [IMPORT_BOT]: CHART_OK,
+      [ZUS_BOT]: { ok: true, counts: { Condition: 7 } },
+    });
+
+    const result = await settle(importDrChronoPatient(medplum, 120118105));
+
+    expect(result.ok).toBe(true);
+    expect(result.medplumPatientId).toBe('patient-1');
+    expect(result.index?.ok).toBe(false);
+    expect(result.index?.error).toContain('RAG not configured');
+  });
+
+  test('still indexes when the network half failed — the documents came from the chart', async () => {
+    const { medplum } = stubMedplum({ [IMPORT_BOT]: CHART_OK });
+
+    const result = await settle(importDrChronoPatient(medplum, 120118105));
+
+    expect(result.zus?.ok).toBe(false);
+    expect(queueIndex).toHaveBeenCalledWith(medplum, ['patient-1']);
+    expect(result.index?.ok).toBe(true);
+  });
+
+  test('does not queue an index when the chart import failed', async () => {
+    // There is no patient to index against, so queueing one would be a request
+    // for a patient id that does not exist.
+    const { medplum } = stubMedplum({ [IMPORT_BOT]: { ok: false, error: 'no such patient' } });
+
+    const result = await settle(importDrChronoPatient(medplum, 120118105));
+
+    expect(result.ok).toBe(false);
+    expect(queueIndex).not.toHaveBeenCalled();
+  });
+
+  test('reports a missing worker instead of appearing to succeed', async () => {
+    // Without a worker the documents are never searchable and no AI summary
+    // will appear. An absent summary with no explanation is the failure that
+    // costs someone an afternoon.
+    vi.resetModules();
+    vi.doMock('./bulk-import', () => ({ IMPORT_WORKER_URL: undefined, queueDocumentIndex: vi.fn() }));
+    const { importDrChronoPatient: importWithoutWorker } = await import('./onboarding');
+    const { medplum } = stubMedplum({
+      [IMPORT_BOT]: CHART_OK,
+      [ZUS_BOT]: { ok: true, counts: { Condition: 7 } },
+    });
+
+    const result = await settle(importWithoutWorker(medplum, 120118105));
+
+    expect(result.ok).toBe(true);
+    expect(result.index).toStrictEqual({
+      ok: false,
+      error: 'No import worker is configured, so documents were not indexed.',
+    });
+    vi.doUnmock('./bulk-import');
+    vi.resetModules();
   });
 });

@@ -44,6 +44,7 @@ export function LyfeOnboardingPage(): JSX.Element {
   const [imported, setImported] = useState<Record<string, { ok: boolean; detail: string; medplumId?: string }>>({});
   const [zusRunning, setZusRunning] = useState<Record<string, boolean>>({});
   const [zusResult, setZusResult] = useState<Record<string, string>>({});
+  const [indexResult, setIndexResult] = useState<Record<string, { ok: boolean; detail: string }>>({});
 
   /**
    * Import this patient: the DrChrono chart, then their network record.
@@ -65,6 +66,11 @@ export function LyfeOnboardingPage(): JSX.Element {
       const id = String(patient.id);
       setImporting((m) => ({ ...m, [id]: true }));
       setZusResult((m) => ({ ...m, [id]: '' }));
+      setIndexResult((m) => {
+        const next = { ...m };
+        delete next[id];
+        return next;
+      });
       importDrChronoPatient(medplum, id, (status, stage) => {
         if (stage === 'network') {
           setZusResult((m) => ({ ...m, [id]: status }));
@@ -79,6 +85,14 @@ export function LyfeOnboardingPage(): JSX.Element {
               : { ok: false, detail: r.error ?? 'Import failed' },
           }));
           setZusResult((m) => ({ ...m, [id]: r.ok ? describeNetworkPull(r.zus).detail : '' }));
+          if (r.ok && r.index) {
+            setIndexResult((m) => ({
+              ...m,
+              [id]: r.index?.ok
+                ? { ok: true, detail: 'documents queued — AI summary follows' }
+                : { ok: false, detail: `documents not indexed — ${r.index?.error ?? 'unknown reason'}` },
+            }));
+          }
         })
         .catch((err: Error) => setImported((m) => ({ ...m, [id]: { ok: false, detail: err.message } })))
         .finally(() => setImporting((m) => ({ ...m, [id]: false })));
@@ -263,6 +277,18 @@ export function LyfeOnboardingPage(): JSX.Element {
                               {zusResult[String(patient.id)] && (
                                 <Text size="xs" c="gray.6">
                                   {zusResult[String(patient.id)]}
+                                </Text>
+                              )}
+                              {/*
+                                Shown whether it worked or not. A chart whose
+                                documents were never indexed also never gets an
+                                AI summary, and an absent summary with nothing
+                                on screen to explain it is the failure that
+                                costs someone an afternoon.
+                              */}
+                              {indexResult[String(patient.id)] && (
+                                <Text size="xs" c={indexResult[String(patient.id)].ok ? 'gray.6' : 'orange.7'}>
+                                  {indexResult[String(patient.id)].detail}
                                 </Text>
                               )}
                             </Stack>
