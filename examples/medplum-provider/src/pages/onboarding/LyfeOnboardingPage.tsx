@@ -20,6 +20,15 @@ const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 350;
 
 /**
+ * How long a search may run before the page gives up on it.
+ *
+ * Generous: the bot fans one term across three DrChrono fields, and a cold one
+ * has been measured at 13s. This is not a performance budget, it is the
+ * backstop that stops a hung lookup spinning for ever.
+ */
+const SEARCH_TIMEOUT_MS = 30_000;
+
+/**
  * Step one of the Lyfe onboarding flow: find a patient in DrChrono.
  *
  * Importing one runs both halves — the DrChrono chart and then the patient's
@@ -141,7 +150,19 @@ export function LyfeOnboardingPage(): JSX.Element {
     setLoading(true);
 
     const timer = setTimeout(() => {
-      searchDrChronoPatients(medplum, trimmed)
+      // Bounded, because the abort below cannot actually stop the request:
+      // `searchDrChronoPatients` is never handed the signal, so the controller
+      // is only a "do I still care about this answer" flag. A lookup that hangs
+      // therefore never settles, `finally` never runs, and the spinner turns
+      // for ever with nothing on screen to say anything is wrong — which is
+      // what was seen once on a first search after a cold load.
+      let giveUp: ReturnType<typeof setTimeout>;
+      Promise.race([
+        searchDrChronoPatients(medplum, trimmed),
+        new Promise<never>((_resolve, reject) => {
+          giveUp = setTimeout(() => reject(new Error('The search did not answer. Try again.')), SEARCH_TIMEOUT_MS);
+        }),
+      ])
         .then((found) => {
           setResults(found);
           setError(undefined);
@@ -153,7 +174,12 @@ export function LyfeOnboardingPage(): JSX.Element {
           }
         })
         .finally(() => {
-          if (!controller.signal.aborted) {
+          clearTimeout(giveUp);
+          // Keyed on "am I still the current search", not on "was I aborted".
+          // The old test let a superseded search leave `loading` set when it
+          // settled after being aborted and no newer one was running to clear
+          // it. Whoever is current owns the flag.
+          if (abortRef.current === controller) {
             setLoading(false);
           }
         });
