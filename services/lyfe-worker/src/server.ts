@@ -13,6 +13,8 @@ import { handleRagIngest, handleRagSearch, handleRagStatus } from './rag-http.ts
 import { isRagConfigured } from './rag/db.ts';
 import { handleResync, RESYNC_SOURCES } from './resync.ts';
 import { handleBulkImport } from './trigger.ts';
+import { adapterIds } from './webhooks/adapters/index.ts';
+import { handleWebhook, parseWebhookUrl } from './webhooks/receive.ts';
 
 /**
  * The worker's HTTP endpoint.
@@ -79,6 +81,30 @@ createServer((req, res) => {
     route(res, handleResync(req, res));
     return;
   }
+  // Inbound webhooks. One route for every provider and every clinic — the
+  // provider and the organization are path segments, and which adapter serves
+  // them comes from the registry, so a new EHR adds no line here. A prefix
+  // match rather than an exact one, which is why it is tested on its own
+  // rather than folded in with the exact-match routes; the paths do not overlap.
+  const webhook = parseWebhookUrl(req.url);
+  if (webhook) {
+    // Deliberately unauthenticated at this layer: the provider has no Medplum
+    // token and never will. The trust boundary is the per-clinic signature
+    // check inside, which fails closed.
+    route(
+      res,
+      (async () => handleWebhook({ req, res, route: webhook, medplum: await getMedplum() }))().catch((err: unknown) => {
+        // A throw here means the worker could not reach Medplum, not that the
+        // delivery was bad. 5xx so the provider retries it.
+        console.error('[webhook] unhandled error:', err instanceof Error ? err.message : err);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal error' }));
+        }
+      })
+    );
+    return;
+  }
   // Document RAG. Every one of these authenticates the caller's own Medplum
   // token and resolves their organization server-side; see `rag-http.ts`.
   if (req.url === '/api/rag/ingest' && req.method === 'POST') {
@@ -103,6 +129,9 @@ createServer((req, res) => {
         ok: ready,
         medplum: ready ? 'connected' : (startupError ?? 'connecting'),
         functions: ['drchrono-chart-import', 'zus-record-import', 'rag-document-index', 'patient-ai-summary'],
+        // Reported from the registry rather than written out, so "is this
+        // provider deployed yet" has an answer that cannot drift from the code.
+        inboundProviders: adapterIds(),
         // Reported rather than inferred. RAG is optional — the worker runs the
         // imports fine without it — so "the search endpoint 503s" needs a way
         // to be told apart from "the worker is down".
