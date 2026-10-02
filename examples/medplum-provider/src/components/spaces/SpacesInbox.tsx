@@ -13,6 +13,7 @@ import {
   Stack,
   Text,
   ThemeIcon,
+  UnstyledButton,
 } from '@mantine/core';
 import { getDisplayString } from '@medplum/core';
 import type { Communication, Patient, Reference } from '@medplum/fhirtypes';
@@ -20,6 +21,7 @@ import { useMedplum, useResource } from '@medplum/react';
 import {
   IconArrowDown,
   IconArrowLeft,
+  IconChevronDown,
   IconCode,
   IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand,
@@ -34,7 +36,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { PromptComposer } from '../../pages/spaces/PromptComposer';
 import type { Message } from '../../types/spaces';
 import { showErrorNotification } from '../../utils/notifications';
-import { processMessage } from '../../utils/spaceMessaging';
+import { displayableAssistantContent, processMessage } from '../../utils/spaceMessaging';
 import type { ReasoningEffort } from '../../utils/spaceModels';
 import { DEFAULT_REASONING_EFFORT, getDefaultModel, getProjectModels } from '../../utils/spaceModels';
 import { loadConversationMessages } from '../../utils/spacePersistence';
@@ -395,6 +397,12 @@ export function SpacesInbox(props: SpaceInboxProps): JSX.Element {
     return map;
   }, [messages]);
 
+  // Deliberately not memoised. `processMessage` pushes into the same array this state holds, so
+  // `messages` keeps its identity while a turn runs and a `useMemo` keyed on it would never see
+  // the new entries — the page variant's request rows appear mid-turn precisely because this is
+  // recomputed on every render, like `visibleMessages` above.
+  const rows = buildRenderRows(visibleMessages, toolResponsesByCallId, variant, loading);
+
   return (
     <>
       {/* Sidebar */}
@@ -457,85 +465,41 @@ export function SpacesInbox(props: SpaceInboxProps): JSX.Element {
                 maw={variant === 'panel' ? '100%' : 864}
                 mx="auto"
               >
-                {visibleMessages.map((message, index) => {
-                  // FHIR tool calls — show each request paired with its response
-                  if (message.role === 'assistant' && message.tool_calls && !message.content) {
+                {rows.map((row) => {
+                  // FHIR tool calls — show each request paired with its response. This is the
+                  // developer view, and the `page` variant puts it straight in the transcript.
+                  if (row.kind === 'toolCalls') {
                     return (
-                      <div key={index} className={cx(classes.messageWrapper, classes.assistantMessage)}>
+                      <div key={row.key} className={cx(classes.messageWrapper, classes.assistantMessage)}>
                         <Stack gap="md">
-                          {message.tool_calls.map((tc, tcIdx) => {
-                            let args: { method?: string; path?: string } | undefined;
-                            try {
-                              args =
-                                typeof tc.function.arguments === 'string'
-                                  ? JSON.parse(tc.function.arguments)
-                                  : tc.function.arguments;
-                            } catch {
-                              /* ignore */
-                            }
-
-                            const response = tc.id ? toolResponsesByCallId.get(tc.id) : undefined;
-                            const responseKey = tc.id ?? `${index}-${tcIdx}`;
-                            const isExpanded = expandedResponses.has(responseKey);
-                            let prettyContent = response?.content ?? '';
-                            try {
-                              prettyContent = JSON.stringify(JSON.parse(response?.content ?? ''), null, 2);
-                            } catch {
-                              /* use raw */
-                            }
-
-                            return (
-                              <Stack key={responseKey} gap={6}>
-                                {args ? (
-                                  <Group gap="xs" align="flex-start" wrap="nowrap" className={classes.toolCallGroup}>
-                                    <Badge
-                                      size="sm"
-                                      color={getMethodColor(args.method)}
-                                      variant="filled"
-                                      className={classes.toolCallBadge}
-                                    >
-                                      {args.method ?? 'CALL'}
-                                    </Badge>
-                                    <Code className={classes.toolCallPath}>{args.path ?? tc.function.name}</Code>
-                                  </Group>
-                                ) : (
-                                  <Text size="xs" c="dimmed" fs="italic">
-                                    Unable to parse tool call
-                                  </Text>
-                                )}
-                                {response && (
-                                  <>
-                                    <Group
-                                      gap="xs"
-                                      style={{ cursor: 'pointer', userSelect: 'none' }}
-                                      onClick={() => toggleResponse(responseKey)}
-                                    >
-                                      <Text size="xs" fw={500} c="dimmed">
-                                        Response
-                                      </Text>
-                                      <Text size="xs" c="dimmed">
-                                        {isExpanded ? '▲' : '▼'}
-                                      </Text>
-                                    </Group>
-                                    <Collapse in={isExpanded}>
-                                      <Code block className={classes.toolResponseCode}>
-                                        {prettyContent}
-                                      </Code>
-                                    </Collapse>
-                                  </>
-                                )}
-                              </Stack>
-                            );
-                          })}
+                          {row.entries.map((entry) => (
+                            <ToolCallDetail
+                              key={entry.responseKey}
+                              entry={entry}
+                              expanded={expandedResponses.has(entry.responseKey)}
+                              onToggle={() => toggleResponse(entry.responseKey)}
+                            />
+                          ))}
                         </Stack>
                       </div>
                     );
                   }
 
-                  // Tool responses are rendered inline with their request above
-                  if (message.role === 'tool') {
-                    return null;
+                  // The same detail, in the `panel` variant, behind one collapsed disclosure under
+                  // the answer it produced.
+                  if (row.kind === 'sources') {
+                    return (
+                      <SourcesConsulted
+                        key={row.key}
+                        entries={row.entries}
+                        count={row.count}
+                        expandedResponses={expandedResponses}
+                        onToggleResponse={toggleResponse}
+                      />
+                    );
                   }
+
+                  const { message, index } = row;
 
                   // Standard user / assistant messages
                   return (
@@ -556,9 +520,12 @@ export function SpacesInbox(props: SpaceInboxProps): JSX.Element {
                       {message.content &&
                         (message.role === 'assistant' ? (
                           /* Inline `[doc:Sn]` / `[meds]` citations become clickable pills, and the
-                             sources they point at are listed under the bubble. */
+                             sources they point at are listed under the bubble. The content is
+                             scrubbed of any raw tool call the model narrated into its prose —
+                             `processMessage` does the same for a turn happening now, and this
+                             covers the conversations persisted before it did. */
                           <CitedAssistantMessage
-                            content={message.content}
+                            content={displayableAssistantContent(message.content) as string}
                             resources={message.resources}
                             bubbleClassName={classes.messageContent}
                             onSelectResource={openResource}
@@ -636,12 +603,23 @@ export function SpacesInbox(props: SpaceInboxProps): JSX.Element {
                 {loading && (
                   <div className={cx(classes.messageWrapper, classes.assistantMessage)}>
                     <div className={classes.messageContent}>
-                      {streamingContent && <Markdown>{streamingContent}</Markdown>}
-                      {!streamingContent && currentFhirRequest && (
-                        <Text size="sm" c="dimmed" fs="italic">
-                          Executing {currentFhirRequest}...
-                        </Text>
+                      {streamingContent && (
+                        <Markdown>{displayableAssistantContent(streamingContent) as string}</Markdown>
                       )}
+                      {!streamingContent &&
+                        currentFhirRequest &&
+                        (variant === 'panel' ? (
+                          /* One compact line for the whole turn. The raw step and FHIR path are
+                             what the developer surface is for; a clinician gets told that the
+                             records are being read, and the detail waits in `Sources consulted`. */
+                          <Text size="sm" c="dimmed" fs="italic">
+                            Looking through the records...
+                          </Text>
+                        ) : (
+                          <Text size="sm" c="dimmed" fs="italic">
+                            Executing {currentFhirRequest}...
+                          </Text>
+                        ))}
                       {!streamingContent && !currentFhirRequest && streamingComponentCode === undefined && (
                         <Text size="sm" c="dimmed" fs="italic">
                           Thinking...
@@ -818,6 +796,253 @@ const METHOD_COLORS: Record<string, string> = {
 
 function getMethodColor(method: string | undefined): string {
   return METHOD_COLORS[method ?? ''] ?? 'gray';
+}
+
+/** One tool call paired with the tool message that answered it. */
+interface ToolCallEntry {
+  /** The tool call as `$ai` returned it — arguments may be a string or an object. */
+  toolCall: { id?: string; function: { name: string; arguments: unknown } };
+  /** The matching `role: 'tool'` message, if the call was executed. */
+  response: Message | undefined;
+  /** Stable React key and the identity the per-call response toggle is tracked under. */
+  responseKey: string;
+}
+
+/**
+ * One row of the transcript.
+ *
+ * `toolCalls` is the developer view, straight in the transcript, which is what the `page` variant
+ * renders. `sources` is the same detail collected for a whole turn and placed *after* the answer,
+ * which is what the `panel` variant renders.
+ */
+type RenderRow =
+  | { kind: 'message'; message: Message; index: number }
+  | { kind: 'toolCalls'; key: string; entries: ToolCallEntry[] }
+  | { kind: 'sources'; key: string; entries: ToolCallEntry[]; count: number };
+
+/**
+ * A tool call's arguments, whichever form they arrived in.
+ *
+ * `$ai` parses them, but hands over the raw JSON string when it could not.
+ * @param toolCall - The tool call.
+ * @returns The arguments, or undefined if they do not parse.
+ */
+function parseToolCallArguments(toolCall: ToolCallEntry['toolCall']): { method?: string; path?: string } | undefined {
+  try {
+    const args = toolCall.function.arguments;
+    return typeof args === 'string' ? JSON.parse(args) : (args as { method?: string; path?: string });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * How many distinct requests a turn issued.
+ *
+ * The count on the disclosure is a claim about sources, so it counts requests rather than rows: a
+ * loop that re-ran the same search in two iterations consulted one source, not two. Identity is the
+ * method and path for a FHIR request, and the tool name plus its arguments otherwise; a call whose
+ * arguments do not parse at all counts once, under its own key, because something was asked for.
+ * @param entries - The turn's tool calls.
+ * @returns The number of distinct requests.
+ */
+function countDistinctRequests(entries: ToolCallEntry[]): number {
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const args = parseToolCallArguments(entry.toolCall);
+    const name = entry.toolCall.function.name;
+    if (args?.path) {
+      seen.add(`${args.method ?? 'CALL'} ${args.path}`);
+    } else if (args) {
+      seen.add(`${name} ${JSON.stringify(args)}`);
+    } else {
+      seen.add(`${name} ${entry.responseKey}`);
+    }
+  }
+  return seen.size;
+}
+
+/**
+ * Turns the message list into the rows to render.
+ *
+ * The transcript stores a turn as: the assistant's tool calls, the tool results, then the answer.
+ * The `page` variant renders that order as-is. The `panel` variant holds the tool calls back until
+ * the answer has been rendered and then emits them as one `sources` row, so a clinician reads the
+ * paragraph first and the machinery is one collapsed line beneath it.
+ *
+ * A turn still in flight has its requests at the tail with no answer after them yet. In the panel
+ * those are dropped while `loading`: the single progress line in the message area is the whole of
+ * the in-flight UI, and a growing sources row would be a second, competing one.
+ * @param visibleMessages - The transcript with system messages already filtered out.
+ * @param toolResponsesByCallId - Tool messages keyed by the call they answered.
+ * @param variant - Which surface is rendering.
+ * @param loading - Whether a turn is in flight.
+ * @returns The rows, in render order.
+ */
+function buildRenderRows(
+  visibleMessages: Message[],
+  toolResponsesByCallId: Map<string, Message>,
+  variant: SpacesInboxVariant,
+  loading: boolean
+): RenderRow[] {
+  const rows: RenderRow[] = [];
+  let pending: ToolCallEntry[] = [];
+
+  const flushSources = (): void => {
+    if (pending.length === 0) {
+      return;
+    }
+    const count = countDistinctRequests(pending);
+    // A turn that issued nothing gets no control at all — never `Sources consulted (0)`.
+    if (count > 0) {
+      rows.push({ kind: 'sources', key: `sources-${pending[0].responseKey}`, entries: pending, count });
+    }
+    pending = [];
+  };
+
+  visibleMessages.forEach((message, index) => {
+    // Tool responses are rendered with the request that produced them, never on their own.
+    if (message.role === 'tool') {
+      return;
+    }
+
+    if (message.role === 'assistant' && message.tool_calls && !message.content) {
+      const entries: ToolCallEntry[] = message.tool_calls.map((toolCall, toolCallIndex) => ({
+        toolCall,
+        response: toolCall?.id ? toolResponsesByCallId.get(toolCall.id) : undefined,
+        responseKey: toolCall?.id ?? `${index}-${toolCallIndex}`,
+      }));
+      if (variant === 'panel') {
+        pending.push(...entries);
+      } else {
+        rows.push({ kind: 'toolCalls', key: `tools-${index}`, entries });
+      }
+      return;
+    }
+
+    // A new question starts a new turn, so anything still pending belonged to the last one.
+    if (message.role === 'user') {
+      flushSources();
+      rows.push({ kind: 'message', message, index });
+      return;
+    }
+
+    // The answer, then its sources underneath it.
+    rows.push({ kind: 'message', message, index });
+    flushSources();
+  });
+
+  if (!loading) {
+    flushSources();
+  }
+  return rows;
+}
+
+/**
+ * One request, its method badge and path, and its response behind a toggle.
+ *
+ * Unchanged from what the transcript has always rendered, and deliberately so: it is the escape
+ * hatch a developer needs, it is simply no longer the first thing a clinician sees.
+ * @param props - The component props.
+ * @param props.entry - The request and the tool message that answered it.
+ * @param props.expanded - Whether the raw response is showing.
+ * @param props.onToggle - Toggles the raw response.
+ * @returns The detail rows for one tool call.
+ */
+function ToolCallDetail(props: { entry: ToolCallEntry; expanded: boolean; onToggle: () => void }): JSX.Element {
+  const { entry, expanded, onToggle } = props;
+  const { toolCall, response } = entry;
+  const args = parseToolCallArguments(toolCall);
+
+  let prettyContent = response?.content ?? '';
+  try {
+    prettyContent = JSON.stringify(JSON.parse(response?.content ?? ''), null, 2);
+  } catch {
+    /* use raw */
+  }
+
+  return (
+    <Stack gap={6}>
+      {args ? (
+        <Group gap="xs" align="flex-start" wrap="nowrap" className={classes.toolCallGroup}>
+          <Badge size="sm" color={getMethodColor(args.method)} variant="filled" className={classes.toolCallBadge}>
+            {args.method ?? 'CALL'}
+          </Badge>
+          <Code className={classes.toolCallPath}>{args.path ?? toolCall.function.name}</Code>
+        </Group>
+      ) : (
+        <Text size="xs" c="dimmed" fs="italic">
+          Unable to parse tool call
+        </Text>
+      )}
+      {response && (
+        <>
+          <Group gap="xs" style={{ cursor: 'pointer', userSelect: 'none' }} onClick={onToggle}>
+            <Text size="xs" fw={500} c="dimmed">
+              Response
+            </Text>
+            <Text size="xs" c="dimmed">
+              {expanded ? '▲' : '▼'}
+            </Text>
+          </Group>
+          <Collapse in={expanded}>
+            <Code block className={classes.toolResponseCode}>
+              {prettyContent}
+            </Code>
+          </Collapse>
+        </>
+      )}
+    </Stack>
+  );
+}
+
+/**
+ * The one line of machinery a clinician sees: `Sources consulted (n)`, collapsed.
+ *
+ * Open state is local and starts closed, which is the point — it resets on every remount and
+ * nothing can auto-expand it. The detail is rendered only while open rather than hidden with CSS,
+ * so a collapsed turn genuinely has no FHIR paths in the DOM.
+ * @param props - The component props.
+ * @param props.entries - Every tool call the turn issued, in order.
+ * @param props.count - The number of distinct requests, as shown on the label.
+ * @param props.expandedResponses - Which per-call responses are showing.
+ * @param props.onToggleResponse - Toggles one per-call response.
+ * @returns The disclosure and, while open, the detail.
+ */
+function SourcesConsulted(props: {
+  entries: ToolCallEntry[];
+  count: number;
+  expandedResponses: Set<string>;
+  onToggleResponse: (id: string) => void;
+}): JSX.Element {
+  const { entries, count, expandedResponses, onToggleResponse } = props;
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className={cx(classes.messageWrapper, classes.assistantMessage, classes.sourcesRow)}>
+      <UnstyledButton
+        className={classes.sourcesToggle}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        data-open={open ? 'true' : undefined}
+      >
+        <span className={classes.sourcesLabel}>Sources consulted ({count})</span>
+        <IconChevronDown size={13} stroke={2.5} className={classes.sourcesChevron} />
+      </UnstyledButton>
+      {open && (
+        <Stack gap="md" className={classes.sourcesDetail}>
+          {entries.map((entry) => (
+            <ToolCallDetail
+              key={entry.responseKey}
+              entry={entry}
+              expanded={expandedResponses.has(entry.responseKey)}
+              onToggle={() => onToggleResponse(entry.responseKey)}
+            />
+          ))}
+        </Stack>
+      )}
+    </div>
+  );
 }
 
 function PatientContextBubble({ patient }: { patient: Patient | Reference<Patient> }): JSX.Element {

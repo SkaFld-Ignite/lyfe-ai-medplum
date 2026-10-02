@@ -227,6 +227,50 @@
   word-break: break-all;
 }
 
+/*
+ * Sources consulted — the one line of machinery the panel variant shows. Styled as a quiet
+ * caption rather than a button, because it is a footnote under the answer and should not compete
+ * with it for attention. It takes the full message column so the row reads as part of the answer
+ * above it rather than as a bubble of its own.
+ */
+.sourcesRow {
+  margin-top: calc(-1 * var(--mantine-spacing-md));
+}
+
+.sourcesToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 0;
+  color: var(--mantine-color-gray-6);
+  border-radius: var(--mantine-radius-sm);
+}
+
+.sourcesToggle:hover {
+  color: var(--mantine-color-gray-8);
+}
+
+.sourcesLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sourcesChevron {
+  transition: transform 150ms ease;
+}
+
+.sourcesToggle[data-open] .sourcesChevron {
+  transform: rotate(180deg);
+}
+
+.sourcesDetail {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--mantine-color-gray-3);
+}
+
 /* Tool response */
 .toolResponseCode {
   max-height: 300px;
