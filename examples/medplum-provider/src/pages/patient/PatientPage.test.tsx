@@ -80,10 +80,13 @@ describe('PatientPage', () => {
     const names = within(menu)
       .getAllByRole('tab')
       .map((tab) => tab.textContent);
-    expect(names.slice(0, 12)).toEqual([
+    expect(names.slice(0, 13)).toEqual([
       'Overview',
       'Demographics',
       'Timeline',
+      // Natural-language search over this chart, next to Timeline because it is
+      // the other way of asking what is in the chart rather than a clinical section.
+      'Chart Search',
       'Labs',
       'Orders',
       'Conditions',

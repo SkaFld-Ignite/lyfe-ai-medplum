@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { ActionIcon, Box, Button, Group, Loader, Skeleton, Stack, Text, Tooltip } from '@mantine/core';
 import { formatDateTime } from '@medplum/core';
+import { useMedplum } from '@medplum/react';
 import {
   IconAlertCircle,
   IconAlertTriangle,
@@ -14,8 +15,10 @@ import {
 import type { JSX } from 'react';
 import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { aiFeedbackTarget } from '../../hooks/useAiFeedback';
 import { usePatientAiSummary } from '../../hooks/usePatientAiSummary';
 import type { SummaryCitation } from '../../utils/patient-ai-summary';
+import { AiFeedbackWidget } from '../ai/AiFeedbackWidget';
 import classes from './AiSummary.module.css';
 import { AlertRowView, CareGapRowView, CitedText, FocusRowView, RiskRowView, SummaryBlock } from './AiSummaryParts';
 import { OverviewSection } from './OverviewSection';
@@ -73,15 +76,17 @@ function footerText(props: { state: SummaryState; generatedAt?: string }): strin
  *
  * A rebuild of lyfe-provider-ui's `AIPatientSummaryCard` on Mantine: the same
  * quote-style narrative, the same four tinted blocks in a two-column grid, the
- * same citation chips and sources footer. Two things from prod have no
- * counterpart here and are left out rather than faked — the document-extraction
- * progress bar (no extraction pipeline in this repo) and the thumbs-up/down
- * feedback widget (no `AIFeedbackWidget` equivalent yet).
+ * same citation chips and sources footer, and the same thumbs-up/down feedback
+ * widget in the footer (`AiFeedbackWidget`, stored as a `Communication`). One
+ * thing from prod has no counterpart here and is left out rather than faked: the
+ * document-extraction progress bar, because the extraction pipeline it tracked
+ * runs in the worker and reports no progress to the browser.
  * @param props - The patient to summarise.
  * @returns The card.
  */
 export function AiSummaryCard(props: AiSummaryCardProps): JSX.Element {
   const navigate = useNavigate();
+  const medplum = useMedplum();
   const { summary, loading, generating, error, reload, regenerate } = usePatientAiSummary(props.patientId);
   // Prod distinguished a summary it had just generated from one the server had
   // cached. Here the equivalent is whether this session asked for it — and only
@@ -287,6 +292,23 @@ export function AiSummaryCard(props: AiSummaryCardProps): JSX.Element {
           )}
 
           <div className={classes.footer}>
+            {/* Prod's `AIFeedbackWidget`, which this card previously noted the
+                absence of. `onContentEdited` is deliberately not wired: swapping
+                the narrative for the clinician's correction would strip its `[n]`
+                markers, which are offsets into the section's own `entry[]`, and
+                the Sources footer below would then list citations the text on
+                screen no longer makes. The correction is stored and stays
+                visible in the widget's own editor. */}
+            <div className={classes.footerLead}>
+              <AiFeedbackWidget
+                target={aiFeedbackTarget({
+                  compositionId: summary.compositionId,
+                  patientId: props.patientId,
+                  profile: medplum.getProfile(),
+                })}
+                originalContent={summary.narrative.headline}
+              />
+            </div>
             <p className={classes.footerMeta}>
               <span className={classes.footerDot} data-state={state} />
               {footerText({ state, generatedAt: summary.generatedAt })}

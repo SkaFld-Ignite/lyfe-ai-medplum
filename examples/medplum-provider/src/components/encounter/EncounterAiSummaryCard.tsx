@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
-import { Box, Button, Group, Loader, Skeleton, Stack, Text, Tooltip } from '@mantine/core';
+import { Button, Group, Loader, Skeleton, Stack, Text, Tooltip } from '@mantine/core';
 import { formatDateTime } from '@medplum/core';
+import { useMedplum } from '@medplum/react';
 import {
   IconAlertTriangle,
   IconBrain,
@@ -18,10 +19,12 @@ import {
 import type { JSX, ReactNode } from 'react';
 import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { aiFeedbackTarget } from '../../hooks/useAiFeedback';
 import { useEncounterAiSummary } from '../../hooks/useEncounterAiSummary';
 import type { EncounterSummaryRow, SummaryKind } from '../../utils/encounter-ai-summary';
 import { COMPOSITION_TITLES, formatPostVisitSummaryForNote } from '../../utils/encounter-ai-summary';
 import type { SummaryCitation } from '../../utils/patient-ai-summary';
+import { AiFeedbackWidget } from '../ai/AiFeedbackWidget';
 import aiClasses from '../patient-overview/AiSummary.module.css';
 import type { BlockTone } from '../patient-overview/AiSummaryParts';
 import { CitedText, SummaryBlock } from '../patient-overview/AiSummaryParts';
@@ -128,17 +131,18 @@ function SummaryRowView(props: RowProps): JSX.Element {
  * A rebuild of lyfe-provider-ui's `PreVisitSummaryView` and
  * `PostVisitSummaryView` (`components/patients/core/encounter-card.tsx`) on
  * Mantine: the same headline paragraph, the same four blocks in a two-column
- * grid, the same per-item colour coding, the same "Pull into note" action. Two
- * things from prod have no counterpart here and are left out rather than faked —
- * the thumbs-up/down `AIFeedbackWidget`, and the per-row click-through to a
- * patient tab, which has no equivalent route (the citation chips go to the actual
- * cited resource instead, which is strictly better than prod's "open the
- * conditions tab").
+ * grid, the same per-item colour coding, the same "Pull into note" action, and
+ * the same thumbs-up/down `AiFeedbackWidget` in the footer. One thing from prod
+ * has no counterpart here and is left out rather than faked: the per-row
+ * click-through to a patient tab, which has no equivalent route (the citation
+ * chips go to the actual cited resource instead, which is strictly better than
+ * prod's "open the conditions tab").
  * @param props - The encounter to summarise.
  * @returns The card.
  */
 export function EncounterAiSummaryCard(props: EncounterAiSummaryCardProps): JSX.Element {
   const navigate = useNavigate();
+  const medplum = useMedplum();
   const { summary, loading, generating, error, reload, generate } = useEncounterAiSummary(
     props.encounterId,
     props.kind
@@ -282,23 +286,35 @@ export function EncounterAiSummaryCard(props: EncounterAiSummaryCardProps): JSX.
           </div>
 
           <div className={`${aiClasses.footer} ${classes.footerRow}`}>
-            {canPull ? (
-              <Group gap={8}>
-                <Button
-                  variant="subtle"
-                  color="violet"
-                  size="compact-sm"
-                  leftSection={<IconFileText size={12} />}
-                  onClick={onPull}
-                  loading={pulling}
-                >
-                  Pull into note
-                </Button>
-                {pullMessage && <Text className={aiClasses.placeholderText}>{pullMessage}</Text>}
-              </Group>
-            ) : (
-              <Box />
-            )}
+            <Group gap={8} wrap="wrap">
+              {canPull && (
+                <>
+                  <Button
+                    variant="subtle"
+                    color="violet"
+                    size="compact-sm"
+                    leftSection={<IconFileText size={12} />}
+                    onClick={onPull}
+                    loading={pulling}
+                  >
+                    Pull into note
+                  </Button>
+                  {pullMessage && <Text className={aiClasses.placeholderText}>{pullMessage}</Text>}
+                </>
+              )}
+              {/* Prod's `AIFeedbackWidget`, which this card previously noted the
+                  absence of. Rating the Composition by id means the pre-visit and
+                  post-visit summaries carry separate feedback without needing
+                  prod's `generationType` column — the reference says which. */}
+              <AiFeedbackWidget
+                target={aiFeedbackTarget({
+                  compositionId: summary.compositionId,
+                  patientId: props.patientId,
+                  profile: medplum.getProfile(),
+                })}
+                originalContent={summary.headline.headline}
+              />
+            </Group>
             <p className={aiClasses.footerMeta}>
               <span className={aiClasses.footerDot} data-state={generating ? 'generating' : 'fresh'} />
               Generated {formatDateTime(summary.generatedAt)}

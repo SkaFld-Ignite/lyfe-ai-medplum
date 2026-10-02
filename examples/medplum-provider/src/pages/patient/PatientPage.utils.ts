@@ -74,6 +74,9 @@ export const PatientPageTabs: PatientPageTabInfo[] = [
   { id: 'overview', url: 'overview', label: 'Overview' },
   { id: 'demographics', url: 'demographics', label: 'Demographics', aliases: ['edit'] },
   { id: 'timeline', url: '', label: 'Timeline' },
+  // Natural-language search over this chart. Sits next to Timeline because it is
+  // the other way of asking "what is in here" rather than a clinical section.
+  { id: 'chartsearch', url: 'chart-search', label: 'Chart Search' },
   { id: 'labs', url: 'labs', label: 'Labs' },
   {
     id: 'orders',

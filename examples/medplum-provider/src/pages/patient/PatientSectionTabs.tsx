@@ -23,6 +23,7 @@ import {
   IconStethoscope,
   IconTimeline,
   IconUserEdit,
+  IconZoomQuestion,
 } from '@tabler/icons-react';
 import type { JSX, MouseEvent } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -58,6 +59,7 @@ const TAB_ICONS: Record<string, Icon> = {
   allergies: IconAlertTriangle,
   immunizations: IconShield,
   timeline: IconTimeline,
+  chartsearch: IconZoomQuestion,
   edit: IconUserEdit,
   encounter: IconStethoscope,
   tasks: IconChecklist,

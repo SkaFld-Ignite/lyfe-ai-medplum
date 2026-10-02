@@ -16,6 +16,7 @@ import {
 import type { JSX } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { DrugInteractionsCard } from '../../components/ai/DrugInteractionsCard';
 import { AiSummaryCard } from '../../components/patient-overview/AiSummaryCard';
 import { OverviewSection } from '../../components/patient-overview/OverviewSection';
 import classes from '../../components/patient-overview/PatientOverview.module.css';
@@ -184,6 +185,12 @@ export function PatientOverviewTab(): JSX.Element | null {
           read with its own states, and a slow Composition search should not hold
           back the vitals and the clinical profile. */}
       <AiSummaryCard patientId={patientId} />
+
+      {/* Next to the AI summary rather than on the Medications page: this is the
+          chart's advisory-AI area, and the medications page is a fill layout
+          whose whole height is the prescription list. The review reads the
+          patient's active MedicationRequests itself, so it is correct here. */}
+      <DrugInteractionsCard patientId={patientId} />
 
       <OverviewSection
         icon={<IconClipboardHeart size={16} />}

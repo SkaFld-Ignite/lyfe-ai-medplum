@@ -1,0 +1,52 @@
+/* Dictation control. The listening indicator is the same pill vocabulary as the
+   AI summary card's "Generating" badge (AiSummary.module.css), so an in-progress
+   AI action looks the same wherever it happens. */
+
+.indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #475569;
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+
+  &[data-state='listening'] {
+    color: #b91c1c;
+    border-color: light-dark(#fecaca, rgb(185 28 28 / 45%));
+    background: light-dark(#fef2f2, rgb(185 28 28 / 12%));
+  }
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.indicator[data-state='listening'] .dot {
+  background: #dc2626;
+  animation: dictationPulse 1.4s ease-in-out infinite;
+}
+
+.error {
+  font-size: 11px;
+  color: #b91c1c;
+}
+
+@keyframes dictationPulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indicator[data-state='listening'] .dot {
+    animation: none;
+  }
+}

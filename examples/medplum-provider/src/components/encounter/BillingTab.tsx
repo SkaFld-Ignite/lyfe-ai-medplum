@@ -33,6 +33,7 @@ import { createSelfPayCoverage, isSelfPayCoverage } from '../../utils/coverage';
 import { showErrorNotification } from '../../utils/notifications';
 import { ChargeItemList } from '../ChargeItem/ChargeItemList';
 import { ConditionList } from '../Conditions/ConditionList';
+import { IcdSuggestionsCard } from '../ai/IcdSuggestionsCard';
 import { ClaimSubmittedPanel } from './ClaimSubmittedPanel';
 import { SubmitClaimModal } from './SubmitClaimModal';
 import { VisitDetailsPanel } from './VisitDetailsPanel';
@@ -503,6 +504,11 @@ export const BillingTab = (props: BillingTabProps): JSX.Element => {
           onDiagnosisChange={handleDiagnosisChange}
         />
       )}
+
+      {/* Directly under the diagnosis list on purpose: a suggestion is only
+          useful next to the codes it is suggesting an addition to, and this card
+          writes nothing — adding a code is still done above. */}
+      <IcdSuggestionsCard encounterId={encounter?.id} />
 
       <ChargeItemList
         patient={patient}

@@ -146,6 +146,25 @@ const BOTS: BotDefinition[] = [
     timeout: 180,
   },
   {
+    name: 'lyfe-clinical-decision',
+    description: 'ICD-10 coding suggestions for an encounter, and drug interaction review of a medication list.',
+    source: 'clinical-decision.ts',
+    // One chart read, one model call, and up to eight terminology round trips
+    // for the coding action, all serial. The same shape of work as the summaries,
+    // so the same ceiling.
+    timeout: 180,
+  },
+  {
+    name: 'lyfe-chart-search',
+    description: "Natural-language search over one patient's chart: synonym expansion plus real FHIR searches.",
+    source: 'chart-search.ts',
+    // One short model call at temperature 0, then up to eight indexed FHIR
+    // searches run one at a time. A clinician is waiting on it, so 60s is both
+    // generous for the work and short enough that a hung model call surfaces as
+    // an error rather than a spinner.
+    timeout: 60,
+  },
+  {
     name: 'lyfe-soap-note',
     description: "Draft an encounter's SOAP note as a Composition, and push the approved note to DrChrono.",
     source: 'soap-note.ts',

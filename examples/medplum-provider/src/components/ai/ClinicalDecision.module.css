@@ -1,0 +1,40 @@
+/* Shared row styling for the two clinical-decision cards. Prod tinted its
+   interaction rows by severity (bg-red-100 / bg-orange-100 / bg-yellow-100 in
+   `enhanced-medications-view.tsx`); `data-tone` is the same idea in the
+   `RecordTone` vocabulary the clinical tabs already use, written out as the same
+   Tailwind palette hex values AiSummary.module.css uses. */
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+
+  &[data-tone='rose'] {
+    border-left-color: #e11d48;
+    background: light-dark(#fff1f2, rgb(225 29 72 / 10%));
+  }
+
+  &[data-tone='amber'] {
+    border-left-color: #f59e0b;
+    background: light-dark(#fffbeb, rgb(245 158 11 / 10%));
+  }
+
+  &[data-tone='slate'] {
+    border-left-color: #94a3b8;
+  }
+}
+
+.code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  font-weight: 700;
+  color: light-dark(#3730a3, #c7d2fe);
+  background: light-dark(#eef2ff, rgb(55 48 163 / 28%));
+}

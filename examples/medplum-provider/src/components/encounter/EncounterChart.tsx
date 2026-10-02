@@ -15,6 +15,7 @@ import { ChartNoteStatus } from '../../types/encounter';
 import { updateEncounterStatus } from '../../utils/encounter';
 import { inferSummaryKind } from '../../utils/encounter-ai-summary';
 import { showErrorNotification } from '../../utils/notifications';
+import { DictationButton } from '../ai/DictationButton';
 import { TaskDetailsModal } from '../tasks/TaskDetailsModal';
 import { TaskPanel } from '../tasks/encounter/TaskPanel';
 import { BillingTab } from './BillingTab';
@@ -145,6 +146,27 @@ export const EncounterChart = (props: EncounterChartProps): JSX.Element => {
 
     debouncedPatchChartNote(e.target.value);
   };
+
+  // Dictation. One call per finalised utterance, appended to whatever is already
+  // in the field, and saved through the same debounced patch a keystroke uses —
+  // so a dictated note is persisted on exactly the same path as a typed one
+  // rather than on a second one that could disagree with it.
+  //
+  // `setChartNote` with an updater rather than reading `chartNote`: utterances
+  // arrive from a WebSocket while the clinician is still speaking, and reading
+  // the closed-over value would drop every utterance but the last.
+  const handleDictatedText = useCallback(
+    (text: string): void => {
+      setChartNote((current) => {
+        const merged = [current?.trim(), text].filter(Boolean).join(' ');
+        if (clinicalImpression) {
+          debouncedPatchChartNote(merged);
+        }
+        return merged;
+      });
+    },
+    [clinicalImpression, debouncedPatchChartNote]
+  );
 
   // "Pull into note" from the AI summary card. Prod appended the rendered summary
   // to `ClinicalNote.appointmentNotes`; the equivalent field here is the one the
@@ -290,7 +312,14 @@ export const EncounterChart = (props: EncounterChartProps): JSX.Element => {
 
               {clinicalImpression && (
                 <Card withBorder shadow="sm" mt="md">
-                  <Title>Fill chart note</Title>
+                  <Group justify="space-between" align="center" wrap="nowrap" mb={4}>
+                    <Title>Fill chart note</Title>
+                    <DictationButton
+                      onTranscript={handleDictatedText}
+                      disabled={chartNoteStatus === ChartNoteStatus.SignedAndLocked}
+                      target="chart note"
+                    />
+                  </Group>
                   <Textarea
                     defaultValue={clinicalImpression.note?.[0]?.text}
                     value={chartNote}

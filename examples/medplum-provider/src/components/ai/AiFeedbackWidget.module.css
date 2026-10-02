@@ -1,0 +1,85 @@
+/* Clinician feedback on an AI-generated document. A Mantine + CSS-modules
+   rebuild of lyfe-provider-ui's `components/ai/ai-feedback-widget.tsx`, which
+   was shadcn + Tailwind utilities. The active-state tints are that file's
+   Tailwind palette values written out as hex, the same way
+   AiSummary.module.css does it, so the widget sits inside those cards' footers
+   without a seam. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Prod's `variant="ghost" size="icon" h-7 w-7` buttons. */
+.action {
+  color: #64748b;
+
+  /* Active tints: prod used bg-green-100/text-green-700, bg-red-100/red-700,
+     bg-blue-100/blue-700 and bg-purple-100/purple-700 respectively. */
+  &[data-active][data-tone='up'] {
+    color: #15803d;
+    background: light-dark(#dcfce7, rgb(21 128 61 / 24%));
+  }
+
+  &[data-active][data-tone='down'] {
+    color: #b91c1c;
+    background: light-dark(#fee2e2, rgb(185 28 28 / 24%));
+  }
+
+  &[data-active][data-tone='comment'] {
+    color: #1d4ed8;
+    background: light-dark(#dbeafe, rgb(29 78 216 / 24%));
+  }
+
+  &[data-active][data-tone='correction'] {
+    color: #7e22ce;
+    background: light-dark(#f3e8ff, rgb(126 34 206 / 24%));
+  }
+}
+
+.divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: light-dark(#e2e8f0, var(--mantine-color-dark-4));
+}
+
+.savedNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: #15803d;
+}
+
+.errorNote {
+  margin-left: 6px;
+  font-size: 10px;
+  color: #b91c1c;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
+  border-radius: 12px;
+  background: light-dark(#f8fafc, var(--mantine-color-dark-6));
+}
+
+.correctionPanel {
+  border-color: light-dark(#e9d5ff, rgb(126 34 206 / 45%));
+  background: light-dark(#faf5ff, rgb(126 34 206 / 10%));
+}
+
+.panelHint {
+  font-size: 10px;
+  font-weight: 500;
+  color: light-dark(#7e22ce, #d8b4fe);
+}

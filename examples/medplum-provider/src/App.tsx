@@ -41,6 +41,7 @@ import { DrChronoCallbackPage } from './pages/integrations/DrChronoCallbackPage'
 import { LyfeIntegrationsPage } from './pages/integrations/LyfeIntegrationsPage';
 import { ScriptSurePage } from './pages/integrations/ScriptSurePage';
 import { LyfeOnboardingPage } from './pages/onboarding/LyfeOnboardingPage';
+import { ChartSearchTab } from './pages/patient/ChartSearchTab';
 import { CoveragePage } from './pages/patient/CoveragePage';
 import { DocumentsPage } from './pages/patient/DocumentsPage';
 import { DoseSpotTab } from './pages/patient/DoseSpotTab';
@@ -219,6 +220,7 @@ export function App(): JSX.Element | null {
                 {hasDoseSpot && <Route path="dosespot" element={<DoseSpotTab />} />}
                 {hasScriptSure && <Route path="scriptsure" element={<ScriptSureTab />} />}
                 <Route path="timeline" element={<TimelineTab />} />
+                <Route path="chart-search" element={<ChartSearchTab />} />
                 <Route path="overview" element={<PatientOverviewTab />} />
                 <Route path="demographics" element={<DemographicsTab />} />
                 <Route path="conditions" element={<ConditionsTab />} />

@@ -543,6 +543,14 @@
   border-top: 1px solid light-dark(#e2e8f0, var(--mantine-color-dark-4));
 }
 
+/* The feedback widget, opposite the status line. `.footer` is `flex-end`, so one
+   `margin-right: auto` on the first child splits the row without a second
+   layout rule — and the row still wraps on a narrow card. */
+.footerLead {
+  min-width: 0;
+  margin-right: auto;
+}
+
 .footerMeta {
   display: flex;
   align-items: center;
