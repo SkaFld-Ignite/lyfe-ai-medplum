@@ -178,6 +178,20 @@ Without it every import fails with _"... is not scoped to an organization"_,
 thrown by `bots/shared/tenant.ts`. Being a project admin is not enough — the
 check looks for the parameter, not for privilege.
 
+## Inbound webhooks
+
+An EHR pushing a change into Lyfe lands on one route —
+`/api/webhooks/<provider>/<organizationId>` — and joins the same chain the UI
+starts, rather than a parallel one. Which providers exist is a registry, which
+clinics have them is data, and a clinic's webhook secret lives in the same
+encrypted `Basic` record as its OAuth credentials. Adding an EHR is one adapter
+file and one line.
+
+**[docs/inbound-webhooks.md](docs/inbound-webhooks.md)** has the contract as
+DrChrono actually implements it — which is not what `lyfe-provider-ui` was built
+against — how to add a provider, and the click-by-click for registering a
+webhook in the DrChrono console.
+
 ## Document RAG
 
 `rag-document-index` indexes a patient's `DocumentReference`s so the AI can

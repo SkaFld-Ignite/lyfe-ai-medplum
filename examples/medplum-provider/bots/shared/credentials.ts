@@ -48,12 +48,6 @@ export const STATE_PREFIX = `${INTEGRATION_SYSTEM}/state/`;
 /** Project secret holding the AES key. */
 export const ENCRYPTION_KEY_SECRET_NAME = 'LYFE_CREDENTIAL_ENCRYPTION_KEY';
 
-/** The integrations this module knows how to store. */
-export type IntegrationKey = 'drchrono' | 'zus';
-
-/** Every integration key, for input validation. */
-export const INTEGRATION_KEYS: readonly IntegrationKey[] = ['drchrono', 'zus'];
-
 /**
  * Field allow-lists, one per integration.
  *
@@ -76,7 +70,7 @@ export interface IntegrationSchema {
  * already carries, and minus the plaintext `*ClientSecret` fields that exist
  * there only as a migration fallback.
  */
-export const INTEGRATION_SCHEMAS: Record<IntegrationKey, IntegrationSchema> = {
+const DECLARED_SCHEMAS = {
   drchrono: {
     config: ['apiUrl', 'authUrl', 'tokenUrl', 'redirectUri', 'defaultDoctorId', 'environment', 'scopes'],
     // `clientId` is not really a secret, but the Integrations UI posts it in the
@@ -100,7 +94,54 @@ export const INTEGRATION_SCHEMAS: Record<IntegrationKey, IntegrationSchema> = {
     ],
     secrets: ['clientId', 'clientSecret', 'accessToken'],
   },
-};
+} as const satisfies Record<string, IntegrationSchema>;
+
+/**
+ * Configuration every integration gets, whether or not it declares it.
+ *
+ * An inbound webhook is not a DrChrono feature, it is an integration feature, so
+ * the fields that drive one are merged into every schema rather than copied into
+ * each. A provider added to {@link DECLARED_SCHEMAS} is webhook-capable the
+ * moment it exists, with no second list to remember — which is precisely the
+ * edit-in-four-places that the inbound rewrite exists to remove.
+ *
+ * `webhookRequester` names the profile that webhook-driven work runs as, e.g.
+ * `Practitioner/abc`. It is a lookup key, not a grant: the receiver re-resolves
+ * that profile's own ProjectMembership and refuses the delivery unless the
+ * profile is scoped to the same organization that owns this record. So a clinic
+ * admin writing another clinic's practitioner here buys nothing.
+ *
+ * `webhookEvents` is an optional comma-separated allow-list of provider event
+ * names. Empty means "every event this provider's adapter can map", which is the
+ * right default when the provider's own console already decides what it sends.
+ */
+export const WEBHOOK_CONFIG_FIELDS = ['webhookRequester', 'webhookEvents'] as const;
+
+/** Secret fields every integration gets. See {@link WEBHOOK_CONFIG_FIELDS}. */
+export const WEBHOOK_SECRET_FIELDS = ['webhookSecret'] as const;
+
+/** Field allow-lists per integration, with the universal webhook fields folded in. */
+export const INTEGRATION_SCHEMAS: Record<string, IntegrationSchema> = Object.fromEntries(
+  Object.entries(DECLARED_SCHEMAS).map(([key, schema]) => [
+    key,
+    {
+      config: [...schema.config, ...WEBHOOK_CONFIG_FIELDS],
+      secrets: [...schema.secrets, ...WEBHOOK_SECRET_FIELDS],
+    },
+  ])
+);
+
+/** The integrations this module knows how to store. */
+export type IntegrationKey = keyof typeof DECLARED_SCHEMAS;
+
+/**
+ * Every integration key, for input validation.
+ *
+ * Derived from {@link DECLARED_SCHEMAS} rather than written out a second time.
+ * The two drifting apart would mean an integration that can be saved but never
+ * listed, or listed but never saved.
+ */
+export const INTEGRATION_KEYS: readonly IntegrationKey[] = Object.keys(DECLARED_SCHEMAS) as IntegrationKey[];
 
 /** A decrypted credential set, ready to authenticate with. */
 export interface CredentialValues {
@@ -245,7 +286,17 @@ function collect(props: { record: Basic | undefined; prefix: string }): Record<s
 export async function readCredentialRecord(props: {
   medplum: MedplumClient;
   organization: Reference<Organization>;
-  integration: IntegrationKey;
+  /**
+   * Which integration to read.
+   *
+   * Deliberately a plain string rather than {@link IntegrationKey}. The inbound
+   * webhook receiver resolves a provider from its own adapter registry, and must
+   * be able to read that provider's record without this module having to know
+   * the registry exists. Widening a *read* is safe: the value only ever reaches
+   * a search query and an error message. A *write* stays narrow, because it
+   * validates field names against a schema that has to exist.
+   */
+  integration: string;
 }): Promise<Basic | undefined> {
   const matches = await props.medplum.searchResources(
     'Basic',
