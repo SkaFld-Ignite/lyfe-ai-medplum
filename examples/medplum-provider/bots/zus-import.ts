@@ -49,6 +49,35 @@
  * The Organization is resolved from the caller's own ProjectMembership and never
  * from the input. Accepting it as an argument would let any clinic import into
  * another clinic's compartment.
+ *
+ * RUNNING THIS A SECOND TIME
+ * --------------------------
+ * This bot is the re-sync. There is no separate path: the manual "sync now"
+ * control and the automatic pull after a chart import both arrive here through
+ * the same `lyfe/zus.import.requested` event, so whatever is true of one is
+ * true of the other.
+ *
+ * Two different properties have to hold for that to be safe, and only the
+ * first of them is the conditional PUT:
+ *
+ *  - **No duplicates.** Every write is `PUT <Type>?identifier=<zus system>|<zus
+ *    id>`, so the server matches: no match creates, one match updates in place,
+ *    several match return 412. A resource Zus returns with no `id` is skipped
+ *    rather than written, because there would be nothing to key the next run
+ *    on. That much has been true since the first import.
+ *  - **No overwriting a clinician.** A conditional PUT replaces the *whole*
+ *    resource, so a Condition someone resolved or a dose someone corrected
+ *    would be silently reverted on the next pull. Before each type is written
+ *    the local copies are indexed and `shared/local-edits.ts` decides, per
+ *    resource, whether writing over it is allowed. A person's edit is kept, an
+ *    ambiguous match is skipped, and a server that will not report
+ *    `meta.author` makes the guard decline rather than guess. Every decline is
+ *    counted onto the run's Task as `incomplete:preserved`.
+ *
+ * What re-syncing deliberately does **not** do is reflect an upstream
+ * deletion*. A resource that has vanished from Zus stays in the chart. The
+ * alternative is deleting clinical data on the strength of a third party's
+ * record having changed shape, which is not a trade this makes.
  */
 import type { BotEvent, MedplumClient, WithId } from '@medplum/core';
 import type {
@@ -75,6 +104,8 @@ import {
 } from './shared/credentials.ts';
 import { readZusEnabledLocationRefs } from './shared/directory.ts';
 import { mapWithConcurrency, storeFile, storedBinaryReference } from './shared/files.ts';
+import type { DeclineReason, DeclineTally } from './shared/local-edits.ts';
+import { describeDeclines, selectWritable } from './shared/local-edits.ts';
 import { linkPatientCoveragePayors } from './shared/payers.ts';
 import { ImportProgress, buildStatusReason, openOrAdoptTask } from './shared/progress.ts';
 import { ZUS_SOURCE_TAG } from './shared/source.ts';
@@ -406,6 +437,13 @@ async function run(props: {
     // across resource types so inter-resource links survive the move.
     const referenceMap = new Map<string, string>();
 
+    // What the run refused to overwrite, summed across types. Reported on the
+    // Task rather than only logged: a re-sync that quietly declines half a
+    // chart and reports a clean success is the failure this whole guard is
+    // about, so the number has to reach the person who pressed the button.
+    const declinedTotal: DeclineTally = {};
+    const declinedSample: Partial<Record<DeclineReason, string>> = {};
+
     for (const resourceType of RESOURCE_TYPES) {
       await progress.phase(resourceType);
       try {
@@ -419,6 +457,10 @@ async function run(props: {
           referenceMap,
         });
         counts[resourceType] = written.wrote;
+        for (const [reason, n] of Object.entries(written.declined) as [DeclineReason, number][]) {
+          declinedTotal[reason] = (declinedTotal[reason] ?? 0) + n;
+          declinedSample[reason] ??= `${resourceType}: ${written.declineDetail[reason]}`;
+        }
         if (written.reason) {
           incomplete[resourceType] = written.reason;
         }
@@ -432,6 +474,12 @@ async function run(props: {
         incomplete[resourceType] = err instanceof Error ? err.message : String(err);
         log(`${resourceType} failed: ${incomplete[resourceType]}`);
       }
+    }
+
+    const declineSummary = describeDeclines(declinedTotal, declinedSample);
+    if (declineSummary) {
+      incomplete['preserved'] = declineSummary;
+      log(`preserved: ${declineSummary}`);
     }
 
     // Payers arrive from Zus as display strings with no reference, which
@@ -1048,6 +1096,18 @@ async function linkZusIdentifiers(props: {
 
 /**
  * Pull one resource type out of Zus and write it into Medplum.
+ *
+ * Every write is a conditional update keyed on the Zus id, so pulling a
+ * resource that is already here updates it in place rather than writing a
+ * second copy. What that alone does *not* protect is a resource a clinician
+ * has since edited — a conditional update replaces the whole resource — so the
+ * local index read here decides, per resource, whether overwriting it is
+ * allowed at all. See `shared/local-edits.ts`.
+ *
+ * The index read is deliberately **not** wrapped in a try/catch. If it fails,
+ * it must take the type with it: writing the whole type blind is precisely the
+ * outcome the guard exists to prevent, and the caller already records a thrown
+ * type as incomplete without failing the run.
  * @param props - The import inputs.
  * @param props.medplum - Bot-scoped Medplum client.
  * @param props.zus - Authenticated Zus connection.
@@ -1056,7 +1116,7 @@ async function linkZusIdentifiers(props: {
  * @param props.patientRef - The Medplum Patient everything is re-anchored to.
  * @param props.organization - The clinic compartment to stamp.
  * @param props.referenceMap - Zus-to-Medplum reference map, read and extended in place.
- * @returns How many resources were written, and why the pull was short if it was.
+ * @returns What was written, what was declined and why, and why the pull was short if it was.
  */
 async function importResourceType(props: {
   medplum: MedplumClient;
@@ -1066,7 +1126,12 @@ async function importResourceType(props: {
   patientRef: Reference<Patient>;
   organization: Reference<Organization>;
   referenceMap: Map<string, string>;
-}): Promise<{ wrote: number; reason?: string }> {
+}): Promise<{
+  wrote: number;
+  declined: DeclineTally;
+  declineDetail: Partial<Record<DeclineReason, string>>;
+  reason?: string;
+}> {
   const pull = await pullAllPages({
     zus: props.zus,
     resourceType: props.resourceType,
@@ -1075,11 +1140,12 @@ async function importResourceType(props: {
   log(`${props.resourceType}: ${pull.resources.length} from Zus across ${pull.pages} page(s)`);
 
   if (pull.resources.length === 0) {
-    return { wrote: 0, reason: pull.complete ? undefined : pull.reason };
+    return { wrote: 0, declined: {}, declineDetail: {}, reason: pull.complete ? undefined : pull.reason };
   }
 
-  const entries = [];
-  const zusIds: string[] = [];
+  const system = `${ZUS_IDENTIFIER_BASE}/${props.resourceType}`;
+
+  const candidates: { sourceId: string; value: Resource }[] = [];
   let skipped = 0;
   for (const raw of pull.resources) {
     const prepared = retagForMedplum({
@@ -1093,16 +1159,42 @@ async function importResourceType(props: {
       skipped++;
       continue;
     }
-    entries.push({
-      resourceType: props.resourceType,
-      resource: prepared.resource,
-      system: `${ZUS_IDENTIFIER_BASE}/${props.resourceType}`,
-      value: prepared.zusId,
-    });
-    zusIds.push(prepared.zusId);
+    candidates.push({ sourceId: prepared.zusId, value: prepared.resource });
   }
   if (skipped > 0) {
     log(`${props.resourceType}: skipped ${skipped} resource(s) with no Zus id to key on`);
+  }
+
+  // The guard reads what is already here and hands back only what may be
+  // written. There is no list of entries before this call, which is the point.
+  const selection = await selectWritable({
+    medplum: props.medplum,
+    resourceType: props.resourceType,
+    patient: props.patientRef,
+    system,
+    items: candidates,
+  });
+  const { declined, declineDetail } = selection;
+
+  // A resource that was kept rather than rewritten is still a Zus id this
+  // project knows, so later types can point at the copy already here. Leaving
+  // it out would dangle their references at a Zus id that means nothing in
+  // Medplum — the resource was preserved, not lost.
+  for (const [sourceId, medplumId] of selection.existingIds) {
+    props.referenceMap.set(`${props.resourceType}/${sourceId}`, `${props.resourceType}/${medplumId}`);
+  }
+
+  const entries = selection.writable.map((item) => ({
+    resourceType: props.resourceType,
+    resource: item.value,
+    system,
+    value: item.sourceId,
+  }));
+  const zusIds = selection.writable.map((item) => item.sourceId);
+
+  const declineSummary = describeDeclines(declined, declineDetail);
+  if (declineSummary) {
+    log(`${props.resourceType}: ${declineSummary}`);
   }
 
   if (props.resourceType === 'DocumentReference') {
@@ -1131,7 +1223,7 @@ async function importResourceType(props: {
   if (result.failed > 0) {
     reasons.push(`${result.failed}/${entries.length} writes did not settle 2xx`);
   }
-  return { wrote: result.wrote, reason: reasons.length > 0 ? reasons.join('; ') : undefined };
+  return { wrote: result.wrote, declined, declineDetail, reason: reasons.length > 0 ? reasons.join('; ') : undefined };
 }
 
 /** Cap on Zus document files copied in one run; the rest keep Zus's link until the next run. */

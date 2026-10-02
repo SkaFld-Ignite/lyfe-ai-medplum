@@ -51,7 +51,7 @@ interface CapturedFunction {
     id: string;
     retries?: number;
     debounce?: { key?: string; period: string; timeout?: string };
-    concurrency?: { key: string; limit: number };
+    concurrency?: { key: string; limit: number } | { key: string; limit: number }[];
   };
   trigger: { event: string };
   handler: (ctx: unknown) => Promise<unknown>;
@@ -277,6 +277,36 @@ describe('every link of the chain is registered and triggered by the link before
     expect(registered['zus-record-import'].trigger).toEqual({ event: 'lyfe/zus.import.requested' });
     expect(registered['rag-document-index'].trigger).toEqual({ event: 'lyfe/rag.ingest.requested' });
     expect(registered['patient-ai-summary'].trigger).toEqual({ event: 'lyfe/summary.generate.requested' });
+  });
+});
+
+describe('a network pull is serialised per patient', () => {
+  test('zus-record-import declares a per-patient concurrency limit of 1', () => {
+    // The one race that can genuinely duplicate a chart. Every write is a
+    // conditional update keyed on the Zus id, which the server resolves by
+    // searching and then creating or updating — read-then-write. Two runs for
+    // the same patient at the same moment can both search, both find nothing,
+    // and both create.
+    //
+    // It stopped being hypothetical the moment a clinician got a button: two
+    // clicks, or a manual sync arriving while the chart import's own pull is
+    // still in flight, is exactly this. Nothing inside the bot can fix it,
+    // because by the time the bot runs the race has already started.
+    //
+    // Asserted as configuration because that is what it is. The serialisation
+    // happens inside Inngest, between the event being accepted and the
+    // function being invoked, and no local stubbing reaches it.
+    const concurrency = registered['zus-record-import'].config.concurrency;
+    expect(Array.isArray(concurrency)).toBe(true);
+    expect(concurrency).toEqual(expect.arrayContaining([{ key: 'event.data.medplumPatientId', limit: 1 }]));
+  });
+
+  test('the per-clinic limit is kept alongside it', () => {
+    // Serialising per patient must not cost the per-clinic fairness that keeps
+    // one clinic's backfill from starving the other four.
+    expect(registered['zus-record-import'].config.concurrency).toEqual(
+      expect.arrayContaining([{ key: 'event.data.organizationId', limit: 5 }])
+    );
   });
 });
 

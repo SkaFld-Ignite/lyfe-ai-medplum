@@ -11,6 +11,7 @@ import { inngest } from './inngest.ts';
 import { getMedplum } from './medplum.ts';
 import { handleRagIngest, handleRagSearch, handleRagStatus } from './rag-http.ts';
 import { isRagConfigured } from './rag/db.ts';
+import { handleResync, RESYNC_SOURCES } from './resync.ts';
 import { handleBulkImport } from './trigger.ts';
 
 /**
@@ -72,6 +73,12 @@ createServer((req, res) => {
     route(res, handleBulkImport(req, res));
     return;
   }
+  // Re-pull one patient from one configured source. Same trust boundary as the
+  // bulk endpoint, and it sends the same event the import chain does.
+  if (req.url === '/api/imports/resync' && req.method === 'POST') {
+    route(res, handleResync(req, res));
+    return;
+  }
   // Document RAG. Every one of these authenticates the caller's own Medplum
   // token and resolves their organization server-side; see `rag-http.ts`.
   if (req.url === '/api/rag/ingest' && req.method === 'POST') {
@@ -100,6 +107,10 @@ createServer((req, res) => {
         // imports fine without it — so "the search endpoint 503s" needs a way
         // to be told apart from "the worker is down".
         rag: isRagConfigured() ? 'configured' : 'RAG_DATABASE_URL unset',
+        // Which sources this worker will re-pull a patient from. Reported
+        // rather than duplicated in the app, so adding a source is a registry
+        // entry here and not also a front-end release.
+        resyncSources: Object.values(RESYNC_SOURCES).map((s) => ({ id: s.id, label: s.label })),
       })
     );
     return;

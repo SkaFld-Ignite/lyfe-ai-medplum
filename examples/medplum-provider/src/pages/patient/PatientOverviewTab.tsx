@@ -21,6 +21,7 @@ import { AiSummaryCard } from '../../components/patient-overview/AiSummaryCard';
 import { OverviewSection } from '../../components/patient-overview/OverviewSection';
 import classes from '../../components/patient-overview/PatientOverview.module.css';
 import { ProfileCard } from '../../components/patient-overview/ProfileCard';
+import { RecordSyncCard } from '../../components/patient-overview/RecordSyncCard';
 import { RiskBanner } from '../../components/patient-overview/RiskBanner';
 import { VisitTimeline } from '../../components/patient-overview/VisitTimeline';
 import { VitalCard } from '../../components/patient-overview/VitalCard';
@@ -185,6 +186,12 @@ export function PatientOverviewTab(): JSX.Element | null {
           read with its own states, and a slow Composition search should not hold
           back the vitals and the clinical profile. */}
       <AiSummaryCard patientId={patientId} />
+
+      {/* Below the clinical content on purpose. Re-pulling the record is
+          something a provider does occasionally and deliberately; it does not
+          belong above the vitals they opened the chart to read. Renders
+          nothing when no source is connected. */}
+      <RecordSyncCard patientId={patientId} />
 
       {/* Next to the AI summary rather than on the Medications page: this is the
           chart's advisory-AI area, and the medications page is a fill layout

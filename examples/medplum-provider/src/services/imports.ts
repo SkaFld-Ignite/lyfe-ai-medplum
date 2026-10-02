@@ -183,6 +183,66 @@ function toRun(task: Task): ImportRun | undefined {
 }
 
 /**
+ * The import runs for one patient, newest activity first.
+ *
+ * The same `Task` rows the Imports page lists, narrowed to one patient. There
+ * is no separate "last sync" record anywhere — the run's own Task *is* the
+ * record, so what the patient page shows and what the monitor shows can never
+ * disagree.
+ *
+ * Filtered on `Task.code.text` here rather than in the query: the importers
+ * write the code as text with no coding, and a token search for a
+ * text-only `CodeableConcept` is the kind of thing that works on one server
+ * and returns nothing on another. Over the handful of Tasks one patient has,
+ * reading them is cheaper than being clever.
+ * @param medplum - Authenticated Medplum client.
+ * @param patientId - The Medplum patient id.
+ * @param count - How many Tasks to read.
+ * @returns The patient's runs, newest activity first.
+ */
+export async function listPatientImportRuns(
+  medplum: MedplumClient,
+  patientId: string,
+  count = 25
+): Promise<ImportRun[]> {
+  const tasks = await medplum.searchResources(
+    'Task',
+    {
+      patient: `Patient/${patientId}`,
+      _sort: '-_lastUpdated',
+      _count: String(count),
+    },
+    { cache: 'no-cache' }
+  );
+  return tasks.map(toRun).filter((run): run is ImportRun => run !== undefined);
+}
+
+/**
+ * The most recent run per source.
+ * @param runs - Runs, newest activity first.
+ * @returns The newest run for each source that has one.
+ */
+export function latestRunBySource(runs: readonly ImportRun[]): Partial<Record<ImportSource, ImportRun>> {
+  const latest: Partial<Record<ImportSource, ImportRun>> = {};
+  for (const run of runs) {
+    latest[run.source] ??= run;
+  }
+  return latest;
+}
+
+/** Statuses that mean a run has not finished yet. */
+const RUNNING_STATUSES = new Set(['requested', 'in-progress', 'accepted', 'ready', 'on-hold']);
+
+/**
+ * Whether a run is still going.
+ * @param run - The run, or nothing.
+ * @returns True while the run has not reached a terminal status.
+ */
+export function isRunning(run: ImportRun | undefined): boolean {
+  return run !== undefined && RUNNING_STATUSES.has(run.status);
+}
+
+/**
  * Recent import runs, newest activity first.
  *
  * Sorted by `_lastUpdated` rather than start time on purpose: a run that is
