@@ -93,6 +93,7 @@ vi.mock('../inngest.ts', () => ({
   },
   PER_CLINIC_CONCURRENCY: 5,
   DRCHRONO_IMPORTS_PER_HOUR: 14,
+  AI_CONCURRENCY: 15,
 }));
 
 vi.mock('../medplum.ts', () => {

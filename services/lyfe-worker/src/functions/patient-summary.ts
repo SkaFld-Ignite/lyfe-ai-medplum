@@ -8,7 +8,7 @@ import {
   DOCUMENT_EXCERPT_CHARS,
 } from '../../../../examples/medplum-provider/bots/shared/ai-summary-prompt.ts';
 import { botEvent } from '../bot-event.ts';
-import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
+import { AI_CONCURRENCY, inngest } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
 import { isRagConfigured } from '../rag/db.ts';
 import { recentDocumentExcerpts } from '../rag/retrieve.ts';
@@ -208,7 +208,7 @@ export const patientSummary = inngest.createFunction(
   {
     id: 'patient-ai-summary',
     name: 'Patient AI summary',
-    concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
+    concurrency: { key: 'event.data.organizationId', limit: AI_CONCURRENCY },
     // Keyed on the patient, so the chart-driven and network-driven index
     // completions of one patient collapse into a single run while two different
     // patients importing at the same moment do not wait on each other.

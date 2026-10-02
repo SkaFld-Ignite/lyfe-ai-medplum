@@ -19,18 +19,29 @@ export const inngest = new Inngest({
  * clinic's thousand-patient backfill starves the other four, which is exactly
  * the failure a bounded loop in the browser also had.
  *
- * The number itself is currently set by the Inngest plan, not by anything
- * about this workload. Registering with a higher value is refused outright:
+ * Five was once the Inngest plan's ceiling rather than a judgement about the
+ * workload. Registering anything higher was refused outright:
  *
  *   "The function 'DrChrono chart import' has higher concurrency limits (20)
  *    than your plan limit of 5"
  *
- * Worth being clear-eyed about what that means. It is not a limit DrChrono,
- * Zus or Medplum imposed, and it is lower than the six the in-page loop ran
- * at — so on this plan the move to Inngest buys durability, retries, per-clinic
- * fairness and the step-based waits that a fresh Zus enrolment needs, but it
- * does not by itself buy throughput. Throughput is a billing decision now,
- * which is at least a decision rather than an architectural ceiling.
+ * **That plan is gone** — the account is on Pro, which allows 100+ concurrent
+ * steps. So the number is a choice again, and it is deliberately still small,
+ * because what bounds the two functions using it is the service at the other
+ * end rather than Inngest:
+ *
+ * - **Chart import** is paced by {@link DRCHRONO_IMPORTS_PER_HOUR}, because
+ *   DrChrono's limit is a rate. At roughly seventy seconds an import this
+ *   concurrency never binds; it stays as a guard against runs stacking up when
+ *   one hangs rather than finishes.
+ * - **The network pull** is bounded by Zus, which allows ten enrolment
+ *   requests a minute per customer. At about forty seconds a pull, five at a
+ *   time already sits near that.
+ *
+ * The work that genuinely wanted more room — indexing and summarisation, which
+ * talk to Textract and Bedrock and never to DrChrono — has its own number:
+ * {@link AI_CONCURRENCY}. Raising this one would buy nothing and spend
+ * somebody else's quota.
  */
 export const PER_CLINIC_CONCURRENCY = Number(process.env.INNGEST_CONCURRENCY ?? 5);
 
@@ -63,3 +74,22 @@ export const PER_CLINIC_CONCURRENCY = Number(process.env.INNGEST_CONCURRENCY ?? 
  * change rather than a deploy.
  */
 export const DRCHRONO_IMPORTS_PER_HOUR = Number(process.env.DRCHRONO_IMPORTS_PER_HOUR ?? 14);
+
+/**
+ * How many indexing and AI runs one clinic may have in flight at once.
+ *
+ * Separate from {@link PER_CLINIC_CONCURRENCY} because it is bounded by
+ * something else entirely. Document indexing and summarisation talk to Textract
+ * and Bedrock; they never touch DrChrono, so DrChrono's 500 calls an hour has
+ * no opinion about them. Sharing one number meant the slowest-finishing half of
+ * the chain — the half a clinician actually waits on, since the AI summary is
+ * the last thing to appear — ran at a limit that existed only because the
+ * Inngest Hobby plan allowed five concurrent steps. That plan is gone.
+ *
+ * Fifteen rather than something larger: each index run fans out internally to
+ * four concurrent Textract calls, so fifteen patients is sixty OCR requests in
+ * flight, which is a real fraction of a default Textract quota. Textract
+ * throttles are retried rather than recorded as failures, so overshooting costs
+ * time rather than documents — but there is no reason to aim for it.
+ */
+export const AI_CONCURRENCY = Number(process.env.AI_CONCURRENCY ?? 15);
