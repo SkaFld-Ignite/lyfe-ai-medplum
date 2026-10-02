@@ -33,9 +33,9 @@ import { DRCHRONO_PROVIDER } from '../../../../examples/medplum-provider/bots/sh
  *   for twenty minutes, so an unattended run's worst case is held just below
  *   the worst day anyone has actually had. A clinic that genuinely books more
  *   new patients than this raises it deliberately.
- * - **"new patient"** ({@link DEFAULT_REASON_PHRASE}). The phrase this practice
- *   types, and the one the manual routine reads. The pass never runs without
- *   a phrase at all: see {@link readDiscoveryConfig}.
+ * - **No reason filter.** Every patient with an upcoming active appointment is
+ *   onboarded. A clinic that wants to narrow it sets `discoveryReason`, but
+ *   nothing is excluded by default — see {@link readDiscoveryConfig}.
  * - **US/Pacific** ({@link DEFAULT_TIME_ZONE}). Matches
  *   `DEFAULT_PRACTICE_TIME_ZONE` in the importer and `DEFAULT_CLINIC_TIME_ZONE`
  *   in the UI. A wrong-but-shared default still agrees with itself; two
@@ -63,8 +63,14 @@ export const DEFAULT_MAX_PATIENTS = 25;
 /** Hard ceiling on {@link DiscoveryConfig.maxPatients}, whatever is configured. */
 export const MAX_MAX_PATIENTS = 200;
 
-/** The phrase an appointment's Reason must contain, when the clinic has not said. */
-export const DEFAULT_REASON_PHRASE = 'new patient';
+/**
+ * There is deliberately no default reason phrase.
+ *
+ * A clinic may set one, and then it filters. Unset, every patient with an
+ * upcoming active appointment is onboarded — which is the point: the chart has
+ * to be there when the patient is in the room, and whether the booking staff
+ * typed "new patient" is not a safe thing to hang that on.
+ */
 
 /** The zone "today" is read in, when the clinic has not said. */
 export const DEFAULT_TIME_ZONE = 'US/Pacific';
@@ -77,8 +83,11 @@ export interface DiscoveryConfig {
   readonly enabled: boolean;
   /** Days past today the window reaches. `0` is today only. */
   readonly lookaheadDays: number;
-  /** The free-text phrase an appointment's Reason must contain. Never blank. */
-  readonly reasonPhrase: string;
+  /**
+   * A free-text phrase an appointment's Reason must contain, when a clinic
+   * wants one. Undefined — the default — means every appointment qualifies.
+   */
+  readonly reasonPhrase?: string;
   /** The profile the unattended run acts as, e.g. `Practitioner/abc`. */
   readonly requester?: string;
   /** The most patients this pass may queue. */
@@ -107,16 +116,22 @@ export function readDiscoveryConfig(props: { organizationId: string; record: Bas
   // is still re-resolved against this clinic before it is used — the stored
   // value is a lookup key, never a grant. See `requesterOrganizationProblem`.
   const requester = (config.discoveryRequester || config.webhookRequester || '').trim();
+  const reasonPhrase = (config.discoveryReason || '').trim();
   return {
     organizationId: props.organizationId,
     enabled: isDiscoveryEnabled(config.discoveryEnabled),
     lookaheadDays: boundedInteger(config.discoveryLookaheadDays, DEFAULT_LOOKAHEAD_DAYS, 0, MAX_LOOKAHEAD_DAYS),
-    // Blank falls back to the default rather than to "no filter". An empty
-    // phrase means "match everything" to `matchesReason`, which is right for a
-    // person previewing a day by hand and catastrophic for an unattended run:
-    // it would import the clinic's entire schedule. The pass therefore always
-    // filters, and the only question is on what.
-    reasonPhrase: (config.discoveryReason || '').trim() || DEFAULT_REASON_PHRASE,
+    // Unset means no reason filter: every patient with an upcoming active
+    // appointment is onboarded, which is what this is for. The appointment's
+    // free text is not a reliable gate anyway — it is whatever the booking
+    // staff typed, and a patient whose chart is missing because somebody wrote
+    // "n.p." is a worse outcome than importing a chart that was already there,
+    // which is idempotent and costs one conditional update.
+    //
+    // Volume is bounded by the things that actually bound it — the Directory's
+    // offices and providers, the cancelled/rescheduled exclusions, maxPatients
+    // and the provider brake — not by hoping the Reason column is tidy.
+    ...(reasonPhrase ? { reasonPhrase } : {}),
     ...(requester ? { requester } : {}),
     maxPatients: boundedInteger(config.discoveryMaxPatients, DEFAULT_MAX_PATIENTS, 1, MAX_MAX_PATIENTS),
     timeZone: (config.discoveryTimeZone || '').trim() || DEFAULT_TIME_ZONE,
