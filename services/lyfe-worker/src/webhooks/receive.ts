@@ -52,7 +52,7 @@ import { getAdapter } from './adapters/index.ts';
 import type { InboundRequest } from './contract.ts';
 import { claimDelivery, releaseDelivery } from './delivery-claim.ts';
 import { dispatchIntents } from './dispatch.ts';
-import { loadTenantConfig, WebhookConfigError } from './tenant-config.ts';
+import { loadTenantConfig, TENANT_ID_FIELD, WebhookConfigError } from './tenant-config.ts';
 
 /** URL prefix every inbound callback sits under. */
 export const WEBHOOK_PATH_PREFIX = '/api/webhooks/';
@@ -209,6 +209,37 @@ export async function handleWebhook(props: {
   } catch {
     send(res, 400, { error: 'Body is not valid JSON' });
     return;
+  }
+
+  // Whose event is this, according to the provider?
+  //
+  // The organization in the URL was chosen by whoever configured the webhook,
+  // and a valid signature only proves the sender knows this clinic's secret.
+  // Copy both the callback URL and the token from one clinic into another's
+  // DrChrono — an ordinary mistake when onboarding the second site — and every
+  // delivery verifies perfectly while importing the wrong practice's patients.
+  // The provider's own tenant id is the only thing in the request that
+  // disagrees, so it is checked before any of it is believed.
+  const claimed = adapter.tenantClaim?.({ body });
+  if (claimed && config.tenantId && claimed !== config.tenantId) {
+    console.error(
+      `[webhook] ${adapter.id}/${route.organizationId}: refusing delivery from ${adapter.name} tenant ${claimed}; ` +
+        `this organization is configured as ${config.tenantId}. Check the callback URL and secret on both clinics.`
+    );
+    // 403 and not a 5xx: retrying an identical delivery cannot fix a
+    // configuration mismatch, and a provider's retry ladder is not the place to
+    // wait for a human. Nothing is queued.
+    send(res, 403, { error: 'Delivery does not belong to this organization' });
+    return;
+  }
+  if (claimed && !config.tenantId) {
+    // Not a failure — the check is opt-in — but the value is only discoverable
+    // from a real delivery, so it is printed once here rather than left for
+    // someone to guess at from the provider's console.
+    console.warn(
+      `[webhook] ${adapter.id}/${route.organizationId}: no ${TENANT_ID_FIELD} configured; ` +
+        `this delivery came from ${adapter.name} tenant ${claimed}. Save that value to enable the check.`
+    );
   }
 
   const intents = adapter.toIntents({ eventName, body, context: { subscribedEvents: config.subscribedEvents } });

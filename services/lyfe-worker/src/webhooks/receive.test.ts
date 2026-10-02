@@ -61,6 +61,7 @@ const SECRET_B = 'clinic-b-secret-token-high-entropy';
  * @param props.secret - Its webhook secret.
  * @param props.requester - The configured requester profile.
  * @param props.events - Optional event allow-list.
+ * @param props.tenantId - Optional provider-side id for this clinic.
  * @returns The record.
  */
 function credentialRecord(props: {
@@ -68,6 +69,7 @@ function credentialRecord(props: {
   secret: string;
   requester: string;
   events?: string;
+  tenantId?: string;
 }): Basic {
   const extension = [
     { url: `${SECRET_PREFIX}webhookSecret`, valueString: encryptSecret({ plaintext: props.secret, key: KEY }) },
@@ -75,6 +77,9 @@ function credentialRecord(props: {
   ];
   if (props.events !== undefined) {
     extension.push({ url: `${CONFIG_PREFIX}webhookEvents`, valueString: props.events });
+  }
+  if (props.tenantId !== undefined) {
+    extension.push({ url: `${CONFIG_PREFIX}webhookTenantId`, valueString: props.tenantId });
   }
   return {
     resourceType: 'Basic',
@@ -222,11 +227,24 @@ function headers(props: { secret: string; event: string; delivery?: string }): R
   return out;
 }
 
-/** A PATIENT_MODIFY body in DrChrono's real `{receiver, object}` shape. */
-const PATIENT_BODY = JSON.stringify({
-  receiver: { id: 77, callback_url: 'https://worker.example.com/api/webhooks/drchrono/clinic-a' },
-  object: { id: 12345, first_name: 'Ada', last_name: 'Lovelace' },
-});
+/**
+ * A delivery shaped like a real one.
+ *
+ * `practice_group_id` is here because live deliveries carry it — the published
+ * docs describe only `receiver` and `object`, and the console shows all three.
+ * It arrives as a JSON *number*, which is why the adapter stringifies it.
+ * @param practiceGroupId - The practice the event came from.
+ * @returns The serialised body.
+ */
+function patientBody(practiceGroupId: number | undefined = 222): string {
+  return JSON.stringify({
+    ...(practiceGroupId === undefined ? {} : { practice_group_id: practiceGroupId }),
+    receiver: { id: 77, callback_url: 'https://worker.example.com/api/webhooks/drchrono/clinic-a' },
+    object: { id: 12345, first_name: 'Ada', last_name: 'Lovelace' },
+  });
+}
+
+const PATIENT_BODY = patientBody();
 
 /**
  * Build the standard two-clinic world.
@@ -690,5 +708,142 @@ describe('the GET ownership handshake', () => {
     const medplum = twoClinics();
     const res = await call({ method: 'GET', url: '/api/webhooks/drchrono/clinic-a?msg=abc123', medplum });
     expect(JSON.stringify(res.body)).not.toContain(SECRET_A);
+  });
+});
+
+/**
+ * The provider's own answer to "whose event is this?".
+ *
+ * A valid signature proves the sender knows *this clinic's* secret, and the
+ * organization in the URL is whatever the person configuring the webhook typed.
+ * Copy both from one clinic into another's DrChrono — the obvious slip when
+ * onboarding a second site — and every delivery verifies perfectly while
+ * importing the wrong practice's patients into the wrong chart. The payload's
+ * own `practice_group_id` is the only thing in the request that disagrees.
+ */
+describe('tenant claim', () => {
+  test('a delivery from another practice is refused, and nothing is queued', async () => {
+    const medplum = fakeMedplum({
+      records: {
+        'clinic-a': credentialRecord({
+          organizationId: 'clinic-a',
+          secret: SECRET_A,
+          requester: 'Practitioner/prac-a',
+          tenantId: '222',
+        }),
+      },
+      memberships: { 'Practitioner/prac-a': ['Organization/clinic-a'] },
+    });
+
+    // Correct URL, correct secret — and still the wrong practice.
+    const res = await call({
+      method: 'POST',
+      url: '/api/webhooks/drchrono/clinic-a',
+      headers: headers({ secret: SECRET_A, event: 'PATIENT_MODIFY', delivery: 'd-wrong-tenant' }),
+      body: patientBody(999),
+      medplum,
+    });
+
+    expect(res.status).toBe(403);
+    expect(send).not.toHaveBeenCalled();
+    // No claim either: a refused delivery must not burn its idempotency key, or
+    // a corrected configuration could not replay it.
+    expect(medplum.claims.size).toBe(0);
+  });
+
+  test('the matching practice is accepted', async () => {
+    const medplum = fakeMedplum({
+      records: {
+        'clinic-a': credentialRecord({
+          organizationId: 'clinic-a',
+          secret: SECRET_A,
+          requester: 'Practitioner/prac-a',
+          tenantId: '222',
+        }),
+      },
+      memberships: { 'Practitioner/prac-a': ['Organization/clinic-a'] },
+    });
+
+    const res = await call({
+      method: 'POST',
+      url: '/api/webhooks/drchrono/clinic-a',
+      headers: headers({ secret: SECRET_A, event: 'PATIENT_MODIFY', delivery: 'd-right-tenant' }),
+      body: patientBody(222),
+      medplum,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.accepted).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test('a number in the payload matches a string in the config', async () => {
+    // DrChrono sends practice_group_id as JSON number 222; the config field is
+    // text. Comparing them without normalising would reject every delivery for
+    // a clinic that had correctly configured the check — a fail-closed bug that
+    // looks exactly like a real mismatch.
+    const medplum = fakeMedplum({
+      records: {
+        'clinic-a': credentialRecord({
+          organizationId: 'clinic-a',
+          secret: SECRET_A,
+          requester: 'Practitioner/prac-a',
+          tenantId: '222',
+        }),
+      },
+      memberships: { 'Practitioner/prac-a': ['Organization/clinic-a'] },
+    });
+
+    const res = await call({
+      method: 'POST',
+      url: '/api/webhooks/drchrono/clinic-a',
+      headers: headers({ secret: SECRET_A, event: 'PATIENT_MODIFY', delivery: 'd-numeric' }),
+      body: patientBody(222),
+      medplum,
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  test('an unconfigured clinic still imports — the check is opt-in', async () => {
+    // Making this mandatory would stop deliveries for every clinic already set
+    // up without it. The signature remains the trust boundary.
+    const res = await call({
+      method: 'POST',
+      url: '/api/webhooks/drchrono/clinic-a',
+      headers: headers({ secret: SECRET_A, event: 'PATIENT_MODIFY', delivery: 'd-unconfigured' }),
+      body: patientBody(222),
+      medplum: twoClinics(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test('a payload carrying no practice id is not treated as a mismatch', async () => {
+    const medplum = fakeMedplum({
+      records: {
+        'clinic-a': credentialRecord({
+          organizationId: 'clinic-a',
+          secret: SECRET_A,
+          requester: 'Practitioner/prac-a',
+          tenantId: '222',
+        }),
+      },
+      memberships: { 'Practitioner/prac-a': ['Organization/clinic-a'] },
+    });
+
+    const res = await call({
+      method: 'POST',
+      url: '/api/webhooks/drchrono/clinic-a',
+      headers: headers({ secret: SECRET_A, event: 'PATIENT_MODIFY', delivery: 'd-no-practice' }),
+      body: patientBody(undefined),
+      medplum,
+    });
+
+    // Absent is not "belongs to someone else". A provider that stops sending the
+    // field must not take every clinic's inbound sync down with it.
+    expect(res.status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

@@ -47,6 +47,16 @@ export const REQUESTER_FIELD = 'webhookRequester';
 /** Config field holding the clinic's event allow-list. */
 export const EVENTS_FIELD = 'webhookEvents';
 
+/**
+ * Config field holding the provider's own id for this clinic.
+ *
+ * Optional. When set, a delivery whose {@link InboundAdapter.tenantClaim} says
+ * otherwise is refused — see `receive.ts`. Left unset the check does not run,
+ * because the signature is the trust boundary and making this mandatory would
+ * stop deliveries for every clinic already configured without it.
+ */
+export const TENANT_ID_FIELD = 'webhookTenantId';
+
 /** Everything the receiver needs to serve one clinic's deliveries. */
 export interface TenantWebhookConfig {
   /** The clinic. */
@@ -57,6 +67,8 @@ export interface TenantWebhookConfig {
   readonly requester: string;
   /** Provider event names the clinic opted into, or undefined for all. */
   readonly subscribedEvents?: readonly string[];
+  /** The provider's own id for this clinic, when one has been recorded. */
+  readonly tenantId?: string;
 }
 
 /** Why a clinic's configuration could not be used. */
@@ -145,11 +157,14 @@ export async function loadTenantConfig(props: {
 
   await assertRequesterBelongsTo({ medplum, requester, organizationId });
 
+  const tenantId = values.config[TENANT_ID_FIELD]?.trim();
+
   return {
     organizationId,
     secret,
     requester,
     subscribedEvents: parseEvents(values.config[EVENTS_FIELD]),
+    ...(tenantId ? { tenantId } : {}),
   };
 }
 

@@ -18,8 +18,11 @@
  * - The event name is in the **`X-drchrono-event` header**, not the body.
  *   lyfe-provider-ui read `payload.event`, which does not exist.
  * - `X-drchrono-delivery` is the delivery id.
- * - The body is `{ receiver, object }` — the webhook's own JSON, and the
- *   affected object serialised exactly as the REST API would return it.
+ * - The body is `{ practice_group_id, object, receiver }` — the practice that
+ *   generated the event, the affected object serialised exactly as the REST API
+ *   would return it, and the webhook's own JSON. Confirmed against live
+ *   deliveries in the API console; the published docs describe only the last
+ *   two, and `practice_group_id` is the one the tenant check rests on.
  *   lyfe-provider-ui expected `{ event, data, timestamp }`.
  * - **There is no timestamp anywhere.** Not in the headers, not in the body.
  *   lyfe-provider-ui's 300-second staleness window therefore never rejected
@@ -225,6 +228,20 @@ export const drchronoAdapter: InboundAdapter = {
 
   eventName(props: { request: InboundRequest }): string | undefined {
     return header(props.request.headers, EVENT_HEADER);
+  },
+
+  tenantClaim(props: { body: unknown }): string | undefined {
+    // `practice_group_id` is on every delivery, alongside `object` and
+    // `receiver` — confirmed against live deliveries in the DrChrono console,
+    // where this practice sends 222. It arrives as a JSON number, and is
+    // stringified here because the configured value is stored as text; a
+    // numeric compare would make "222" and 222 different answers to the same
+    // question.
+    const value = (props.body as { practice_group_id?: unknown } | null)?.practice_group_id;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
   },
 
   toIntents(props: { eventName: string; body: unknown; context: AdapterContext }): InboundIntent[] {
