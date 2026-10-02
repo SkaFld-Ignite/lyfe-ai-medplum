@@ -1,0 +1,5 @@
+/* Sits between the identity card and the section menu, sharing the menu's
+   horizontal inset so the button lines up with the nav items below it. */
+.root {
+  padding: 0 var(--mantine-spacing-xs) var(--mantine-spacing-xs);
+}
