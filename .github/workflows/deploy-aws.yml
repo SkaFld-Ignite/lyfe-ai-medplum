@@ -9,7 +9,9 @@ name: Deploy to AWS
 # reaches Lyfe-AI/lyfe-ai-medplum via mirror.yml's force-sync, which also
 # means a push to main fires this workflow's `on: push` in BOTH repos. Only
 # Lyfe-AI's copy can actually deploy -- the IAM role's trust policy is scoped
-# to `repo:Lyfe-AI/lyfe-ai-medplum:ref:refs/heads/main`, so SkaFld-Ignite's
+# to this repo's immutable owner/repo id (the org has GitHub's ID-based OIDC
+# subject claims enabled, so it's `repo:Lyfe-AI@<org id>/lyfe-ai-medplum@<repo
+# id>:...`, not the plain-name form AWS's own docs show), so SkaFld-Ignite's
 # run would just fail the OIDC assume-role step. The job-level `if` below
 # skips it there instead, the same way mirror.yml decides which side acts.
 on:
@@ -35,20 +37,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Debug OIDC token claims
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const token = await core.getIDToken("sts.amazonaws.com");
-            const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
-            console.log("sub:", payload.sub);
-            console.log("aud:", payload.aud);
-            console.log("repository:", payload.repository);
-            console.log("repository_visibility:", payload.repository_visibility);
-            console.log("ref:", payload.ref);
-            console.log("environment:", payload.environment);
-            console.log("job_workflow_ref:", payload.job_workflow_ref);
-
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -58,6 +46,62 @@ jobs:
       - name: Log in to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # docker/server.aws.Dockerfile ADDs prebuilt tarballs rather than
+      # compiling inside the image -- build:fast produces the dist/ output
+      # those tarballs package. It also builds @medplum/app, which bakes
+      # these as Vite env vars at build time; their values don't matter here
+      # since only packages/server's dist ends up in this image, but an
+      # unset one fails the build, so they're set to placeholders exactly as
+      # scripts/build-docker-server.sh's own CI caller (.github/workflows/staging.yml) does.
+      - name: Build server
+        run: npm run build:fast -- --force
+        env:
+          MEDPLUM_BASE_URL: '__MEDPLUM_BASE_URL__'
+          MEDPLUM_CLIENT_ID: '__MEDPLUM_CLIENT_ID__'
+          MEDPLUM_REGISTER_ENABLED: '__MEDPLUM_REGISTER_ENABLED__'
+          MEDPLUM_AWS_TEXTRACT_ENABLED: '__MEDPLUM_AWS_TEXTRACT_ENABLED__'
+          GOOGLE_CLIENT_ID: '__GOOGLE_CLIENT_ID__'
+          RECAPTCHA_SITE_KEY: '__RECAPTCHA_SITE_KEY__'
+
+      # Same tarball packaging scripts/build-docker-server.sh does -- not
+      # calling that script directly because it's hardcoded to
+      # docker/server.Dockerfile and a DockerHub push, neither of which
+      # apply here (this account has no dhi.io entitlement, hence the
+      # .aws.Dockerfile variant; the registry is ECR, not DockerHub).
+      - name: Package server tarballs
+        run: |
+          tar \
+            --no-xattrs \
+            -czf medplum-server-metadata.tar.gz \
+            package.json \
+            package-lock.json \
+            packages/bot-layer/package.json \
+            packages/ccda/package.json \
+            packages/core/package.json \
+            packages/definitions/package.json \
+            packages/fhir-router/package.json \
+            packages/server/package.json
+
+          tar \
+            --no-xattrs \
+            --exclude='*.ts' \
+            --exclude='*.tsbuildinfo' \
+            -czf medplum-server-runtime.tar.gz \
+            LICENSE.txt \
+            NOTICE \
+            packages/ccda/dist \
+            packages/core/dist \
+            packages/definitions/dist \
+            packages/fhir-router/dist \
+            packages/server/dist
 
       - name: Build and push server image
         env:
