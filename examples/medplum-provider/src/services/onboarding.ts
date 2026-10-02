@@ -15,6 +15,7 @@
  */
 import type { MedplumClient } from '@medplum/core';
 import type { OperationOutcome } from '@medplum/fhirtypes';
+import { IMPORT_WORKER_URL, queueDocumentIndex } from './bulk-import';
 
 export interface DrChronoPatientSummary {
   readonly id: number;
@@ -165,6 +166,14 @@ export interface ImportResult {
    * false: the chart imported.
    */
   readonly zus?: ZusImportResult;
+  /**
+   * The document-index request that follows every chart import.
+   *
+   * Present whenever the chart landed, for the same reason `zus` is. `ok: false`
+   * does **not** make `ok` above false — the chart imported; its documents are
+   * simply not searchable yet, and no AI summary will follow until they are.
+   */
+  readonly index?: IndexRequestResult;
 }
 
 /**
@@ -174,7 +183,20 @@ export interface ImportResult {
  * minutes apart and fail for unrelated reasons — and the alternative was
  * matching on the text of the message, which is not a contract.
  */
-export type ImportStage = 'chart' | 'network';
+export type ImportStage = 'chart' | 'network' | 'index';
+
+/**
+ * The outcome of asking the worker to index this patient's documents.
+ *
+ * Queuing only — `ok` means the request was accepted, not that the documents
+ * are indexed. The indexing itself runs for minutes afterwards and its own
+ * progress is on the `rag-index` Task.
+ */
+export interface IndexRequestResult {
+  readonly ok: boolean;
+  readonly batchId?: string;
+  readonly error?: string;
+}
 
 /**
  * Bot ids, looked up once per session.
@@ -406,12 +428,55 @@ export async function importDrChronoPatient(
   const jobId = await startDrChronoImport(medplum, drchronoPatientId);
   const chart = await awaitDrChronoImport(medplum, jobId, (status) => onProgress?.(status, 'chart'));
   if (!chart.ok || !chart.medplumPatientId) {
-    // Nothing to pull a record onto. The network half needs the Medplum patient
-    // the chart import created.
+    // Nothing to pull a record onto, and nothing to index. Both of the halves
+    // below need the Medplum patient the chart import created.
     return chart;
   }
   const zus = await pullNetworkRecord(medplum, chart.medplumPatientId, (status) => onProgress?.(status, 'network'));
-  return { ...chart, zus };
+
+  // Queued after the network pull, so documents the network brought in are
+  // indexed too — and only queued, never awaited, because indexing takes
+  // minutes and the chart is already usable without it.
+  const index = await requestDocumentIndex(medplum, chart.medplumPatientId, (status) => onProgress?.(status, 'index'));
+  return { ...chart, zus, index };
+}
+
+/**
+ * Queue document indexing, reporting every outcome as a result.
+ *
+ * Wraps {@link queueDocumentIndex} so that nothing it does can escape as a
+ * thrown error, for the same reason {@link pullNetworkRecord} does: the only
+ * caller is a chart import that has already succeeded, and a chart with
+ * thousands of resources in it must not be reported as a failure because the
+ * indexer was unreachable.
+ *
+ * Indexing is also what pulls the AI summary along behind it — see the worker's
+ * `functions/patient-summary.ts` — so this one call is what gives a chart
+ * imported through the bots the same ending the worker's bulk path has.
+ * @param medplum - Authenticated Medplum client.
+ * @param medplumPatientId - The patient whose documents to index.
+ * @param onProgress - Called with a human-readable status.
+ * @returns The outcome, never thrown.
+ */
+async function requestDocumentIndex(
+  medplum: MedplumClient,
+  medplumPatientId: string,
+  onProgress?: (status: string) => void
+): Promise<IndexRequestResult> {
+  if (!IMPORT_WORKER_URL) {
+    // Reported rather than passed over in silence. Without a worker the
+    // documents are not searchable and no AI summary will ever appear, and an
+    // absent summary with no explanation is the thing that wastes an afternoon.
+    return { ok: false, error: 'No import worker is configured, so documents were not indexed.' };
+  }
+  try {
+    onProgress?.('queueing document index…');
+    const queued = await queueDocumentIndex(medplum, [medplumPatientId]);
+    onProgress?.('documents queued for indexing');
+    return { ok: true, batchId: queued.batchId };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**
