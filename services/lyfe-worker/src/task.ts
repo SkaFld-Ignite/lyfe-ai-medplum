@@ -146,8 +146,20 @@ export function countsToOutput(counts: CountMap): TaskOutput[] {
  * @param medplum - Authenticated Medplum client.
  * @param taskId - The Task to complete.
  * @param counts - What was written, by resource type.
+ * @param summary - Replaces the default `complete` business status.
+ *
+ * `countsToOutput` drops zeros, so a run that found nothing has no outputs at
+ * all and a completed Task saying only "complete" is indistinguishable from a
+ * run that never looked. The discovery pass passes its own sentence here —
+ * "scanned 171 · queued 0 · 167 wrong reason" — so an empty result reads as an
+ * answer rather than as silence.
  */
-export async function completeTask(medplum: MedplumClient, taskId: string, counts: CountMap): Promise<void> {
+export async function completeTask(
+  medplum: MedplumClient,
+  taskId: string,
+  counts: CountMap,
+  summary?: string
+): Promise<void> {
   const now = new Date().toISOString();
   // `for` and `identifier` are read back and rewritten deliberately: a bare
   // update built from a stale copy silently dropped `Task.for` once, which
@@ -165,7 +177,7 @@ export async function completeTask(medplum: MedplumClient, taskId: string, count
       medplum.updateResource<Task>({
         ...current,
         status: 'completed',
-        businessStatus: { text: 'complete' },
+        businessStatus: { text: summary ?? 'complete' },
         output: countsToOutput(counts),
         lastModified: now,
         executionPeriod: { ...current.executionPeriod, end: now },

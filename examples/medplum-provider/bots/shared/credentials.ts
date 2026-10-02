@@ -126,12 +126,55 @@ export const WEBHOOK_CONFIG_FIELDS = ['webhookRequester', 'webhookEvents', 'webh
 /** Secret fields every integration gets. See {@link WEBHOOK_CONFIG_FIELDS}. */
 export const WEBHOOK_SECRET_FIELDS = ['webhookSecret'] as const;
 
-/** Field allow-lists per integration, with the universal webhook fields folded in. */
+/**
+ * The scheduled new-patient discovery pass, per clinic.
+ *
+ * Here rather than in a new resource for the same reason the webhook fields
+ * are: a clinic that has DrChrono configured and a clinic that has DrChrono
+ * discovery configured are the same clinic, and splitting them would mean two
+ * records to keep in step and a second thing to delete when a practice leaves.
+ * Nothing here is clinical, nothing here is secret, and none of it needs a
+ * profile, a data type or a migration.
+ *
+ * Every field is optional and every default is the cautious one. Specifically
+ * `discoveryEnabled` is **off unless the stored value says otherwise**: a
+ * scheduled job that starts importing real patients the moment it deploys is
+ * not a feature, and "the record exists" must never be read as consent.
+ *
+ * - `discoveryEnabled` — `true` to run the pass for this clinic. Anything else,
+ *   including absent, means no.
+ * - `discoveryLookaheadDays` — how far past today the window reaches, in days.
+ *   `0` is today only.
+ * - `discoveryReason` — the free-text phrase an appointment's Reason must
+ *   contain. Blank means every appointment, so a clinic enabling discovery
+ *   without setting this imports its whole schedule; the pass therefore refuses
+ *   to run without it. See `onboarding-discovery.ts`.
+ * - `discoveryRequester` — the profile the unattended run acts as, e.g.
+ *   `Practitioner/abc`. A lookup key and not a grant, re-resolved against this
+ *   clinic exactly as `webhookRequester` is; falls back to `webhookRequester`
+ *   when unset, since a clinic that has already named a profile for unattended
+ *   inbound work has answered this question.
+ * - `discoveryMaxPatients` — the most patients one pass may queue. A ceiling,
+ *   not a target: it bounds what an unattended run can do to a practice's
+ *   DrChrono quota on the day somebody opens a six-month window by mistake.
+ * - `discoveryTimeZone` — the IANA zone "today" is read in. A clinic in
+ *   Anaheim does not get tomorrow's schedule because the worker is on UTC.
+ */
+export const DISCOVERY_CONFIG_FIELDS = [
+  'discoveryEnabled',
+  'discoveryLookaheadDays',
+  'discoveryReason',
+  'discoveryRequester',
+  'discoveryMaxPatients',
+  'discoveryTimeZone',
+] as const;
+
+/** Field allow-lists per integration, with the universal fields folded in. */
 export const INTEGRATION_SCHEMAS: Record<string, IntegrationSchema> = Object.fromEntries(
   Object.entries(DECLARED_SCHEMAS).map(([key, schema]) => [
     key,
     {
-      config: [...schema.config, ...WEBHOOK_CONFIG_FIELDS],
+      config: [...schema.config, ...WEBHOOK_CONFIG_FIELDS, ...DISCOVERY_CONFIG_FIELDS],
       secrets: [...schema.secrets, ...WEBHOOK_SECRET_FIELDS],
     },
   ])
@@ -349,6 +392,22 @@ export function getCredentialValues(props: { record: Basic | undefined; key: Buf
   }
 
   return { config, secrets, state: collect({ record: props.record, prefix: STATE_PREFIX }), unreadableSecrets };
+}
+
+/**
+ * The plaintext configuration on a credential record, without the key.
+ *
+ * {@link getCredentialValues} is the usual way in and needs the AES key,
+ * because it decrypts. A caller that only wants to know whether a clinic has
+ * switched a feature on should not have to hold the key to find out — and the
+ * scheduled discovery pass enumerates every clinic before it knows which ones
+ * it will act for, so making that read require decryption would mean
+ * decrypting four tenants' OAuth tokens to answer a yes/no question about one.
+ * @param record - The credential record, if one exists.
+ * @returns Plaintext config fields, keyed by name.
+ */
+export function getConfigValues(record: Basic | undefined): Record<string, string> {
+  return collect({ record, prefix: CONFIG_PREFIX });
 }
 
 /**

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, test, vi } from 'vitest';
-import { searchPatients } from './drchrono-search.ts';
+import { matchesReason, previewAppointments, searchPatients } from './drchrono-search.ts';
 
 /**
  * What the onboarding search is allowed to say.
@@ -104,5 +104,158 @@ describe('searchPatients', () => {
 
     await expect(searchPatients(get, 'a')).resolves.toStrictEqual([]);
     expect(paths).toStrictEqual([]);
+  });
+});
+
+/**
+ * The filter the morning routine actually is.
+ *
+ * Somebody opens DrChrono's calendar, reads each appointment's free-text
+ * Reason, keeps the ones that say "new patient" and skips the faded ones. Three
+ * of those four steps were already here; the Reason was not, even though
+ * `verbose=true` has been putting it on the wire all along.
+ *
+ * These are written as what a clinic would notice — "the follow-up was not
+ * imported", "the cancelled one was not" — rather than as which branch ran.
+ */
+
+/** An appointment as DrChrono's verbose payload returns it. */
+interface FakeAppointment {
+  patient?: number;
+  status?: string;
+  office?: number;
+  doctor?: number;
+  reason?: string;
+}
+
+/**
+ * A fake DrChrono holding one page of appointments and naming every patient.
+ * @param appointments - What the calendar holds for the range.
+ * @returns A fetch helper over them.
+ */
+function fakeCalendar(appointments: FakeAppointment[]): (path: string) => Promise<Response> {
+  return async (path: string) => {
+    const body = path.startsWith('/appointments')
+      ? { results: appointments, next: null }
+      : { id: Number(/\/patients\/(\d+)/.exec(path)?.[1] ?? 0), first_name: 'Ada', last_name: 'Lovelace' };
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as Response;
+  };
+}
+
+/** Nothing switched off. */
+const NOTHING_DISABLED = { offices: new Set<string>(), doctors: new Set<string>() };
+
+/** One new patient, one follow-up. */
+const MIXED_DAY: FakeAppointment[] = [
+  { patient: 1, status: 'Confirmed', office: 10, doctor: 20, reason: 'New Patient Consult' },
+  { patient: 2, status: 'Confirmed', office: 10, doctor: 20, reason: 'follow up' },
+];
+
+const DAY = '2026-10-05';
+
+describe('the reason filter', () => {
+  test('an appointment whose reason does not match is not a candidate', async () => {
+    // Undo the `matchesReason` guard and patient 2 comes back too, so the
+    // follow-up has a chart imported for them overnight.
+    const preview = await previewAppointments(fakeCalendar(MIXED_DAY), DAY, DAY, NOTHING_DISABLED, 'new patient');
+
+    expect(preview.results.map((p) => p.id)).toStrictEqual([1]);
+    expect(preview.excludedByReason).toBe(1);
+  });
+
+  test('the phrase belongs to the clinic, not to this file', async () => {
+    // The practice that writes "NP" changes a setting, not the code.
+    const day: FakeAppointment[] = [
+      { patient: 1, status: 'Confirmed', reason: 'NP eval' },
+      { patient: 2, status: 'Confirmed', reason: 'New Patient Consult' },
+    ];
+
+    const preview = await previewAppointments(fakeCalendar(day), DAY, DAY, NOTHING_DISABLED, 'np');
+
+    expect(preview.results.map((p) => p.id)).toStrictEqual([1]);
+  });
+
+  test('no phrase means every appointment, which is what the manual preview wants', async () => {
+    // The onboarding screen passes no phrase: a person reading the day's list
+    // is doing the filtering themselves, and a hidden filter would make the
+    // count on screen disagree with the calendar beside it.
+    const preview = await previewAppointments(fakeCalendar(MIXED_DAY), DAY, DAY, NOTHING_DISABLED);
+
+    expect(preview.results.map((p) => p.id)).toStrictEqual([1, 2]);
+    expect(preview.excludedByReason).toBe(0);
+  });
+
+  test('an appointment with no reason at all does not pass a phrase that was set', async () => {
+    // The front desk left the box empty, so it does not say "new patient".
+    const day: FakeAppointment[] = [{ patient: 1, status: 'Confirmed' }];
+
+    const preview = await previewAppointments(fakeCalendar(day), DAY, DAY, NOTHING_DISABLED, 'new patient');
+
+    expect(preview.results).toStrictEqual([]);
+    expect(preview.excludedByReason).toBe(1);
+  });
+
+  test('a cancelled new patient is still not imported, and is counted as cancelled', async () => {
+    // The faded rows on the calendar. Counted under status rather than reason,
+    // so the summary does not blame the phrase for a visit that never happened.
+    const day: FakeAppointment[] = [{ patient: 1, status: 'Cancelled', reason: 'New Patient' }];
+
+    const preview = await previewAppointments(fakeCalendar(day), DAY, DAY, NOTHING_DISABLED, 'new patient');
+
+    expect(preview.results).toStrictEqual([]);
+    expect(preview.excludedByStatus).toBe(1);
+    expect(preview.excludedByReason).toBe(0);
+  });
+
+  test('a new patient at a switched-off office is not imported, and is counted as off-directory', async () => {
+    const day: FakeAppointment[] = [{ patient: 1, status: 'Confirmed', office: 99, reason: 'New Patient' }];
+    const disabled = { offices: new Set(['99']), doctors: new Set<string>() };
+
+    const preview = await previewAppointments(fakeCalendar(day), DAY, DAY, disabled, 'new patient');
+
+    expect(preview.results).toStrictEqual([]);
+    expect(preview.skippedByDirectory).toBe(1);
+    expect(preview.excludedByReason).toBe(0);
+  });
+
+  test('the counts add up, so a run can explain the gap it leaves', async () => {
+    // The point of counting the exclusions separately: four scanned, one found,
+    // the other three accounted for rather than left to the reader to guess.
+    const day: FakeAppointment[] = [
+      { patient: 1, status: 'Confirmed', reason: 'new patient' },
+      { patient: 2, status: 'Cancelled', reason: 'new patient' },
+      { patient: 3, status: 'Confirmed', office: 99, reason: 'new patient' },
+      { patient: 4, status: 'Confirmed', reason: 'annual physical' },
+      // Blocked time: no patient on it at all, so it is not an appointment and
+      // never reaches the counters.
+      { status: 'Confirmed', reason: 'lunch' },
+    ];
+    const disabled = { offices: new Set(['99']), doctors: new Set<string>() };
+
+    const preview = await previewAppointments(fakeCalendar(day), DAY, DAY, disabled, 'new patient');
+
+    expect(preview.scannedAppointments).toBe(4);
+    expect(preview.results).toHaveLength(1);
+    expect(
+      preview.results.length + preview.excludedByStatus + preview.skippedByDirectory + preview.excludedByReason
+    ).toBe(preview.scannedAppointments);
+  });
+});
+
+describe('matchesReason', () => {
+  test('is case-insensitive and tolerant of how a person types', () => {
+    expect(matchesReason('NEW  Patient eval', 'new patient')).toBe(true);
+    expect(matchesReason('new pt / New Patient', 'new patient')).toBe(true);
+  });
+
+  test('a blank phrase matches everything rather than nothing', () => {
+    // The opposite reading would make a clinic that saved its settings without
+    // touching the box import nobody, and report it as a quiet Tuesday.
+    expect(matchesReason('anything', '')).toBe(true);
+    expect(matchesReason(undefined, undefined)).toBe(true);
+  });
+
+  test('a missing reason never matches a phrase that was set', () => {
+    expect(matchesReason(undefined, 'new patient')).toBe(false);
   });
 });
