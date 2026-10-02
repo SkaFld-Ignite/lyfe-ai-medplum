@@ -175,11 +175,29 @@ function validatePreviewRange(input: PreviewInput): { start: string; end: string
 /**
  * DrChrono has no free-text patient endpoint, so fan the term across the fields
  * a receptionist would type and merge by patient id.
+ *
+ * **A field query that fails stops the search.** It used to `continue`, which
+ * made a refusal indistinguishable from an empty result: under throttling all
+ * three queries 429, the function returned `[]`, and the onboarding page said
+ * "no matches" about a patient who was sitting right there. Someone searching a
+ * date of birth concludes the patient is not in DrChrono and stops looking —
+ * and a bulk import can exhaust the practice's quota for twenty minutes, which
+ * is exactly when a person would be onboarding by hand.
+ *
+ * This is the failure that CLAUDE.md records for Algolia, in a smaller place: a
+ * search that reports empty on failure teaches people the data is not there.
+ *
+ * Partial results are refused for the same reason. If `last_name` answers and
+ * `chart_id` is throttled, what comes back is an unknown fraction of the
+ * matches, and showing it as the whole answer is the same lie in quieter form.
  * @param get - Authenticated fetch helper.
  * @param query - The search text.
  * @returns Distinct matching patients.
  */
-async function searchPatients(get: (path: string) => Promise<Response>, query: string): Promise<PatientSummary[]> {
+export async function searchPatients(
+  get: (path: string) => Promise<Response>,
+  query: string
+): Promise<PatientSummary[]> {
   const trimmed = (query ?? '').trim();
   if (trimmed.length < 2) {
     return [];
@@ -189,7 +207,11 @@ async function searchPatients(get: (path: string) => Promise<Response>, query: s
   for (const field of ['last_name', 'first_name', 'chart_id']) {
     const res = await get(`/patients?${field}=${encodeURIComponent(trimmed)}`);
     if (!res.ok) {
-      continue;
+      // Same shape as previewAppointments, so both actions report a refusal the
+      // same way. The body carries DrChrono's own wait hint on a 429
+      // ("Expected available in N seconds"), which is the most useful thing
+      // anyone can be told here, so it is kept rather than summarised away.
+      throw new Error(`DrChrono patient search by ${field} failed ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }
     const body = (await res.json()) as { results?: DrChronoPatient[] };
     for (const p of body.results ?? []) {
