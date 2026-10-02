@@ -14,6 +14,7 @@ import {
   extractText,
   stripNullBytes,
 } from './extract.ts';
+import { isTransientAwsFailure } from './ocr.ts';
 import { RAG_SCHEMA, toVectorLiteral } from './schema.ts';
 
 /**
@@ -62,6 +63,34 @@ export interface IngestDocumentResult {
   chunkCount: number;
   path?: string;
   reason?: string;
+  /**
+   * A short slug for why, when this is not `indexed`.
+   *
+   * The thing a count cannot tell you. `documents-failed: 151` is where this
+   * work started; `skipped:document-unavailable 138, failed:unknown 13` is a
+   * sentence an operator can act on. Aggregated onto the run's Task by
+   * `rag-index`, because the per-document ledger lives in `lyfe_rag`, which
+   * resolves only inside the Railway network and which nothing reads back.
+   */
+  reasonCode?: string;
+  /** Pages lost on a document that was otherwise indexed. */
+  pageErrors?: number;
+}
+
+/**
+ * Raised when the document's bytes could not be fetched for a reason a retry
+ * fixes — Medplum rate-limiting the Binary read, or answering 5xx.
+ *
+ * Its own class because the alternative is matching on prose, and the whole
+ * reason this file is being changed is that matching on prose put transient
+ * failures in the permanent bucket.
+ */
+export class BinaryFetchError extends Error {
+  /** @param message - What the server answered. */
+  constructor(message: string) {
+    super(message);
+    this.name = 'BinaryFetchError';
+  }
 }
 
 export interface PatientDocument {
@@ -177,12 +206,7 @@ export async function ingestDocument(props: {
   const label = document.metadata.title ?? `DocumentReference/${document.id}`;
 
   try {
-    // One call for both URL forms. `MedplumClient.download` rewrites a
-    // `Binary/<id>` reference into a FHIR URL, and for an absolute URL on the
-    // server's own origin it still attaches the Authorization header — which a
-    // bare `fetch` would not, and the Binary endpoint requires.
-    const blob = await withMedplum429Retry(() => medplum.download(document.url), `download ${document.url}`);
-    const bytes = Buffer.from(await blob.arrayBuffer());
+    const bytes = await downloadDocumentBytes(medplum, document.url);
 
     const extracted = await extractText(bytes, document.contentType, label);
 
@@ -195,6 +219,7 @@ export async function ingestDocument(props: {
     if (extracted.text.trim().length < MIN_INDEXABLE_CHARS) {
       // The header alone is not a document. Recorded so "why is this not
       // searchable" has an answer, with the path that produced nothing.
+      report(document, 'skipped', 'no-extractable-text', `nothing extractable via ${extracted.path}`);
       await recordDocument({
         documentId: document.id,
         organizationId,
@@ -214,6 +239,7 @@ export async function ingestDocument(props: {
         chunkCount: 0,
         path: extracted.path,
         reason: 'no extractable text',
+        reasonCode: 'no-extractable-text',
       };
     }
 
@@ -265,6 +291,20 @@ export async function ingestDocument(props: {
       );
     });
 
+    // A document can be indexed and still be incomplete: `pdf.ts` and `tiff.ts`
+    // both keep going when one page fails, which is the right behaviour and was
+    // previously invisible. Written into the ledger and logged, so "searchable"
+    // and "searchable in full" are distinguishable afterwards.
+    const lostPages = extracted.pageErrors?.length ?? 0;
+    if (lostPages > 0) {
+      report(
+        document,
+        'indexed',
+        'pages-lost',
+        `${lostPages} of ${extracted.pageCount} pages failed: ${extracted.pageErrors?.[0]?.error ?? ''}`
+      );
+    }
+
     await recordDocument({
       documentId: document.id,
       organizationId,
@@ -275,12 +315,22 @@ export async function ingestDocument(props: {
       chunkCount: chunks.length,
       pageCount: extracted.pageCount,
       charCount: text.length,
-      error: null,
+      error:
+        lostPages > 0
+          ? `Indexed without ${lostPages} of ${extracted.pageCount} pages: ${extracted.pageErrors?.[0]?.error ?? ''}`
+          : null,
     });
 
-    return { documentId: document.id, status: 'indexed', chunkCount: chunks.length, path: extracted.path };
+    return {
+      documentId: document.id,
+      status: 'indexed',
+      chunkCount: chunks.length,
+      path: extracted.path,
+      ...(lostPages > 0 ? { pageErrors: lostPages } : {}),
+    };
   } catch (err) {
     if (err instanceof ExtractSkipped) {
+      report(document, 'skipped', err.code, err.message);
       await recordDocument({
         documentId: document.id,
         organizationId,
@@ -293,15 +343,23 @@ export async function ingestDocument(props: {
         charCount: null,
         error: err.message,
       });
-      return { documentId: document.id, status: 'skipped', chunkCount: 0, reason: err.message };
+      return {
+        documentId: document.id,
+        status: 'skipped',
+        chunkCount: 0,
+        reason: err.message,
+        reasonCode: err.code,
+      };
     }
     // Rate limits and database failures belong to the step, not the document.
     // Rethrown so `withStepTimeout` can turn a 429 into a RetryAfterError and
     // Inngest can retry the step rather than marking 40 documents failed.
     if (isStepLevelFailure(err)) {
+      report(document, 'retrying', 'transient', err instanceof Error ? err.message : String(err));
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
+    report(document, 'failed', 'unknown', message);
     await recordDocument({
       documentId: document.id,
       organizationId,
@@ -313,9 +371,91 @@ export async function ingestDocument(props: {
       pageCount: null,
       charCount: null,
       error: message,
-    }).catch(() => undefined);
-    return { documentId: document.id, status: 'failed', chunkCount: 0, reason: message };
+    }).catch((writeErr: unknown) => {
+      // The ledger is the only durable record of this failure and it has just
+      // been lost. Swallowing that silently is how a count ends up being the
+      // only evidence a document ever existed.
+      console.error(
+        `[lyfe-rag] could not record the failure of DocumentReference/${document.id}: ` +
+          `${writeErr instanceof Error ? writeErr.message : String(writeErr)}`
+      );
+    });
+    return { documentId: document.id, status: 'failed', chunkCount: 0, reason: message, reasonCode: 'unknown' };
   }
+}
+
+/**
+ * Say, out loud, what happened to a document that was not plainly indexed.
+ *
+ * This module used to log nothing at all. Every reason went into
+ * `lyfe_rag.documents.error` and stopped there — a table in a database whose
+ * connection string resolves only inside the Railway private network (see
+ * `db.ts`), which nothing reads back, and which no operator has ever opened.
+ * The only thing that left the worker was four integers on a `Task`, so a batch
+ * reporting `151 failed` was not a question anyone could answer, only one they
+ * could restate.
+ *
+ * One line per non-indexed document. It names the resource, so the next step is
+ * `GET /DocumentReference/<id>` rather than a database no one can reach.
+ * @param document - The document.
+ * @param status - What happened.
+ * @param code - The grouping slug.
+ * @param reason - The detail.
+ */
+function report(document: PatientDocument, status: string, code: string, reason: string): void {
+  console.warn(
+    `[lyfe-rag] ${status} ${code} DocumentReference/${document.id} ` +
+      `(${document.contentType ?? 'no content type'}): ${reason.slice(0, 300)}`
+  );
+}
+
+/**
+ * Fetch a document's bytes, and insist that the server actually sent them.
+ *
+ * ## `MedplumClient.download` does not check the response
+ *
+ * It is `fetchWithRetry(...).blob()` with no `response.ok` test anywhere in the
+ * chain, so a 404, a 403 on an expired storage URL, or a 429 the client's own
+ * two retries did not outlast all come back as a **`Blob` of the error body**
+ * and not as a thrown error. The old code then handed those bytes to
+ * `extractText` as though they were the document.
+ *
+ * What that looks like downstream is the reason this is worth the paragraph. A
+ * Medplum rate-limit body is a JSON `OperationOutcome`; the `DocumentReference`
+ * says `application/pdf`; so extraction takes the PDF branch, `unpdf` and
+ * `pdf-lib` both refuse the JSON, and the document is recorded as
+ * **`Could not read PDF <title>`**. A transient rate limit is filed, permanently,
+ * as a corrupt document — with a message that sends the next person to look at
+ * the PDF, which is fine.
+ *
+ * One call for both URL forms. `downloadResponse` rewrites a `Binary/<id>`
+ * reference into a FHIR URL, and for an absolute URL on the server's own origin
+ * it still attaches the Authorization header — which a bare `fetch` would not,
+ * and the Binary endpoint requires.
+ * @param medplum - The worker's admin client.
+ * @param url - The attachment URL, absolute or `Binary/<id>`.
+ * @returns The document's bytes.
+ */
+async function downloadDocumentBytes(medplum: MedplumClient, url: string): Promise<Buffer> {
+  const response = await withMedplum429Retry(() => medplum.downloadResponse(url), `download ${url}`);
+  if (!response.ok) {
+    // The body is an OperationOutcome or an S3 error document — a few hundred
+    // bytes, and the only place the actual reason is written down.
+    const detail = await response
+      .text()
+      .then((text) => text.slice(0, 300).replace(/\s+/g, ' ').trim())
+      .catch(() => '');
+    const where = `${url} answered HTTP ${response.status}`;
+    if (response.status === 429 || response.status === 408 || response.status >= 500) {
+      // The run's problem. Rethrown so the step retries rather than filing a
+      // rate limit as a broken document.
+      throw new BinaryFetchError(`${where}${detail ? `: ${detail}` : ''}`);
+    }
+    // 404, 410, 403 on a signed URL that has expired: this document's problem,
+    // and no number of retries produces the bytes.
+    throw new ExtractSkipped(`${where}${detail ? `: ${detail}` : ''}`, 'document-unavailable');
+  }
+  return Buffer.from(await response.arrayBuffer());
 }
 
 /**
@@ -329,8 +469,18 @@ export async function ingestDocument(props: {
  * @returns True when the error should abort the step.
  */
 export function isStepLevelFailure(err: unknown): boolean {
+  // Typed first, prose second. An AWS service error and a Medplum non-OK
+  // response both say what they are in a field; the message is a fallback for
+  // the errors that carry nothing else, not the primary test. It used to be the
+  // only test, which is how Textract's `ThrottlingException` — message `Rate
+  // exceeded`, matching none of the patterns below — was recorded as a document
+  // that permanently failed, while `ocr.ts` had gone to the trouble of leaving
+  // it out of its permanent list precisely so it would be retried.
+  if (err instanceof BinaryFetchError || isTransientAwsFailure(err)) {
+    return true;
+  }
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  if (/too many requests|throttl|\b429\b/.test(message)) {
+  if (/too many requests|throttl|\b429\b|rate exceeded/.test(message)) {
     return true;
   }
   return /econnrefused|enotfound|connection terminated|too many clients|rag_database_url|pgvector/.test(message);

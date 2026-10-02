@@ -65,6 +65,16 @@ export const DOCS_PER_STEP = 4;
  */
 export const MAX_DOCS_PER_RUN = 400;
 
+/** What a slice reports back: the four counts, plus why anything was not indexed. */
+interface SliceTotals {
+  indexed: number;
+  skipped: number;
+  failed: number;
+  chunks: number;
+  /** `<status>:<reason code>` → count, e.g. `skipped:ocr-unavailable`. */
+  reasons: Record<string, number>;
+}
+
 export const ragIndex = inngest.createFunction(
   {
     id: 'rag-document-index',
@@ -184,7 +194,7 @@ export const ragIndex = inngest.createFunction(
         return { patientId, documents: 0, indexed: 0, skipped: 0, failed: 0, chunks: 0 };
       }
 
-      const totals = { indexed: 0, skipped: 0, failed: 0, chunks: 0 };
+      const totals: SliceTotals = { indexed: 0, skipped: 0, failed: 0, chunks: 0, reasons: {} };
       const sliceCount = Math.ceil(documents.length / DOCS_PER_STEP);
 
       for (let slice = 0; slice < sliceCount; slice++) {
@@ -203,12 +213,23 @@ export const ragIndex = inngest.createFunction(
         totals.skipped += result.skipped;
         totals.failed += result.failed;
         totals.chunks += result.chunks;
+        for (const [reason, count] of Object.entries(result.reasons)) {
+          totals.reasons[reason] = (totals.reasons[reason] ?? 0) + count;
+        }
       }
 
       // Reported on the Task so the Imports page can show what landed without
       // anyone opening Inngest. `skipped` is its own number rather than folded
       // into `failed`: a TIFF nobody can read and a PDF that errored need
       // different responses.
+      //
+      // The per-reason entries alongside them are the point of this run's
+      // changes. Four integers were all that left the worker, and a batch that
+      // reported `151 failed` could not be explained by anyone afterwards
+      // because the reasons were written only into `lyfe_rag.documents`, which
+      // resolves inside the Railway network and nowhere else. `Task.output`
+      // takes a `type.text` and a `valueInteger` and needs no new data type to
+      // carry `skipped:ocr-unavailable 41` beside `documents-skipped 41`.
       await step.run('complete-task', async () =>
         withStepTimeout('complete-task', async () => {
           const ocrNote = getOcrUnavailableReason();
@@ -220,6 +241,7 @@ export const ragIndex = inngest.createFunction(
             'documents-skipped': totals.skipped,
             'documents-failed': totals.failed,
             chunks: totals.chunks,
+            ...totals.reasons,
           });
         })
       );
@@ -279,8 +301,8 @@ async function ingestSlice(props: {
   organizationId: string;
   patientId: string;
   batch: PatientDocument[];
-}): Promise<{ indexed: number; skipped: number; failed: number; chunks: number }> {
-  const totals = { indexed: 0, skipped: 0, failed: 0, chunks: 0 };
+}): Promise<SliceTotals> {
+  const totals: SliceTotals = { indexed: 0, skipped: 0, failed: 0, chunks: 0, reasons: {} };
   for (const document of props.batch) {
     const result = await ingestDocument({
       medplum: props.medplum,
@@ -290,6 +312,13 @@ async function ingestSlice(props: {
     });
     totals[result.status]++;
     totals.chunks += result.chunkCount;
+    if (result.reasonCode) {
+      const key = `${result.status}:${result.reasonCode}`;
+      totals.reasons[key] = (totals.reasons[key] ?? 0) + 1;
+    }
+    if (result.pageErrors) {
+      totals.reasons['indexed:pages-lost'] = (totals.reasons['indexed:pages-lost'] ?? 0) + 1;
+    }
   }
   return totals;
 }

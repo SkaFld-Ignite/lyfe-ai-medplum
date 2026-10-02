@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type * as OcrModule from './ocr.ts';
+import type * as PdfModule from './pdf.ts';
 import type * as TiffModule from './tiff.ts';
 
 /**
@@ -24,11 +25,18 @@ vi.mock('./ocr.ts', async () => {
   return { ...actual, ocrDocument: (...args: unknown[]) => ocrDocument(...args) };
 });
 
-vi.mock('./pdf.ts', () => ({
-  extractPdfText: (...args: unknown[]) => extractPdfText(...args),
-  DIGITAL_TEXT_YIELD_THRESHOLD_CHARS_PER_PAGE: 80,
-  MAX_OCR_PAGES_PER_DOCUMENT: 50,
-}));
+// `PdfUnreadableError` is kept real, like `TiffDecodeError` below, because the
+// dispatch checks it with `instanceof` and a stub class would let the test pass
+// against an implementation that checks for something else.
+vi.mock('./pdf.ts', async () => {
+  const actual = await vi.importActual<typeof PdfModule>('./pdf.ts');
+  return {
+    extractPdfText: (...args: unknown[]) => extractPdfText(...args),
+    PdfUnreadableError: actual.PdfUnreadableError,
+    DIGITAL_TEXT_YIELD_THRESHOLD_CHARS_PER_PAGE: 80,
+    MAX_OCR_PAGES_PER_DOCUMENT: 50,
+  };
+});
 
 // `TiffDecodeError` is kept real so the dispatch tests can throw the error the
 // production code actually checks with `instanceof`.
@@ -332,6 +340,48 @@ describe('extractText dispatch', () => {
     // A skip, so the run records this document and carries on with the C-CDA
     // and plain-text documents that need no OCR at all.
     await expect(extractText(png, 'image/png', 'd')).rejects.toBeInstanceOf(ExtractSkipped);
+  });
+
+  // The PDF branch was the one extractor that did not translate its permanent
+  // failures into `ExtractSkipped`, so the identical condition — Textract out of
+  // reach — was recorded as `skipped` for a TIFF two tests above and as `failed`
+  // for a PDF. PDFs are 734 of the 1,200 sampled documents, which is how that
+  // asymmetry became most of a batch's unexplained failures.
+  test('a scanned PDF whose OCR is unavailable is a skip, exactly as a TIFF is', async () => {
+    const { OcrUnavailableError } = await import('./ocr.ts');
+    extractPdfText.mockRejectedValue(new OcrUnavailableError('textract:AnalyzeDocument is not granted'));
+    await expect(extractText(bytes('%PDF-1.7 scan'), 'application/pdf', 'referral.pdf')).rejects.toBeInstanceOf(
+      ExtractSkipped
+    );
+  });
+
+  test('names the reason on the skip, so a count can be broken down afterwards', async () => {
+    const { OcrUnavailableError } = await import('./ocr.ts');
+    extractPdfText.mockRejectedValue(new OcrUnavailableError('textract:AnalyzeDocument is not granted'));
+    await expect(extractText(bytes('%PDF-1.7 scan'), 'application/pdf', 'referral.pdf')).rejects.toMatchObject({
+      code: 'ocr-unavailable',
+    });
+  });
+
+  test('a PDF that will not open is a skip with its own reason, not a failure', async () => {
+    // Encrypted or truncated. Permanent: the next attempt reads the same bytes.
+    const { PdfUnreadableError } = await import('./pdf.ts');
+    extractPdfText.mockRejectedValue(new PdfUnreadableError('Could not read PDF chart.pdf: xref table is broken'));
+    await expect(extractText(bytes('%PDF-1.7 broken'), 'application/pdf', 'chart.pdf')).rejects.toMatchObject({
+      name: 'ExtractSkipped',
+      code: 'pdf-unreadable',
+    });
+  });
+
+  test('a throttled PDF still escapes, because that one is the run’s problem', async () => {
+    // The counterpart to the two above: translating *everything* the PDF path
+    // throws into a skip would file a Textract rate limit as a document nobody
+    // can read, which is the mirror image of the bug being fixed.
+    const throttled = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    extractPdfText.mockRejectedValue(throttled);
+    await expect(extractText(bytes('%PDF-1.7 scan'), 'application/pdf', 'referral.pdf')).rejects.not.toBeInstanceOf(
+      ExtractSkipped
+    );
   });
 
   test('falls back to a UTF-8 decode when nothing matches', async () => {
