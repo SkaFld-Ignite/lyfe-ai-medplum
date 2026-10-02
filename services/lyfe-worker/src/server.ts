@@ -3,12 +3,15 @@
 import { serve } from 'inngest/node';
 import type { ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
+import type { ProviderBrake } from '../../../examples/medplum-provider/bots/shared/provider-rate-limit.ts';
 import { chartImport } from './functions/chart-import.ts';
 import { patientSummary } from './functions/patient-summary.ts';
 import { ragIndex } from './functions/rag-index.ts';
 import { zusImport } from './functions/zus-import.ts';
 import { inngest } from './inngest.ts';
 import { getMedplum } from './medplum.ts';
+import { installSharedBreakerStore } from './providers/breaker-store.ts';
+import { openProviderBrakes } from './providers/hold.ts';
 import { handleRagIngest, handleRagSearch, handleRagStatus } from './rag-http.ts';
 import { isRagConfigured } from './rag/db.ts';
 import { handleResync, RESYNC_SOURCES } from './resync.ts';
@@ -33,6 +36,13 @@ const handler = serve({ client: inngest, functions: [chartImport, zusImport, rag
 
 /** Browser origins allowed to start a run. */
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:3001').split(',').map((o) => o.trim());
+
+// Installed before anything can import, so the first 429 of the process already
+// has somewhere shared to record itself. Returns false when RAG_DATABASE_URL is
+// unset, in which case the bots keep their per-process fallback — weaker, but
+// the imports do not otherwise need this database and refusing to boot without
+// it would be a worse outage than a brake that forgets on restart.
+const sharedBrakes = installSharedBreakerStore();
 
 // Logged in at startup rather than on the first request. Lazily, a request
 // arriving during a cold start races the login and surfaces as a 500 rather
@@ -120,27 +130,17 @@ createServer((req, res) => {
     return;
   }
   if (req.url === '/health') {
-    // Reports ready only once Medplum login has succeeded. A health check that
-    // passes while the client is still logging in lets a deploy go green and
-    // then fail the first real request, which is a confusing way to find out.
-    res.writeHead(ready ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        ok: ready,
-        medplum: ready ? 'connected' : (startupError ?? 'connecting'),
-        functions: ['drchrono-chart-import', 'zus-record-import', 'rag-document-index', 'patient-ai-summary'],
-        // Reported from the registry rather than written out, so "is this
-        // provider deployed yet" has an answer that cannot drift from the code.
-        inboundProviders: adapterIds(),
-        // Reported rather than inferred. RAG is optional — the worker runs the
-        // imports fine without it — so "the search endpoint 503s" needs a way
-        // to be told apart from "the worker is down".
-        rag: isRagConfigured() ? 'configured' : 'RAG_DATABASE_URL unset',
-        // Which sources this worker will re-pull a patient from. Reported
-        // rather than duplicated in the app, so adding a source is a registry
-        // entry here and not also a front-end release.
-        resyncSources: Object.values(RESYNC_SOURCES).map((s) => ({ id: s.id, label: s.label })),
-      })
+    // Awaited, so the reply carries the brakes rather than a promise. A breaker
+    // that opens silently is a system that looks broken: thirteen charts went
+    // quiet for twenty minutes and the only way to find out why was to read
+    // Inngest. `/health` answering "drchrono is holding clinic abc until 14:05"
+    // is the difference between a diagnosis and a guess.
+    route(
+      res,
+      (async () => {
+        const brakes = await openProviderBrakes().catch(() => []);
+        health(res, brakes);
+      })()
     );
     return;
   }
@@ -149,6 +149,54 @@ createServer((req, res) => {
 }).listen(PORT, () => {
   console.log(`lyfe-worker listening on http://localhost:${PORT}/api/inngest`);
 });
+
+/**
+ * Write the health report.
+ * @param res - The response.
+ * @param brakes - Provider rate-limit brakes currently open.
+ */
+function health(res: ServerResponse, brakes: ProviderBrake[]): void {
+  // Reports ready only once Medplum login has succeeded. A health check that
+  // passes while the client is still logging in lets a deploy go green and
+  // then fail the first real request, which is a confusing way to find out.
+  res.writeHead(ready ? 200 : 503, { 'Content-Type': 'application/json' });
+  res.end(
+    JSON.stringify({
+      ok: ready,
+      medplum: ready ? 'connected' : (startupError ?? 'connecting'),
+      functions: ['drchrono-chart-import', 'zus-record-import', 'rag-document-index', 'patient-ai-summary'],
+      // Reported from the registry rather than written out, so "is this
+      // provider deployed yet" has an answer that cannot drift from the code.
+      inboundProviders: adapterIds(),
+      // Reported rather than inferred. RAG is optional — the worker runs the
+      // imports fine without it — so "the search endpoint 503s" needs a way
+      // to be told apart from "the worker is down".
+      rag: isRagConfigured() ? 'configured' : 'RAG_DATABASE_URL unset',
+      // Which sources this worker will re-pull a patient from. Reported
+      // rather than duplicated in the app, so adding a source is a registry
+      // entry here and not also a front-end release.
+      resyncSources: Object.values(RESYNC_SOURCES).map((s) => ({ id: s.id, label: s.label })),
+      // Which providers are refusing which clinics, and until when. Empty is
+      // the normal answer and is reported as empty rather than omitted, so the
+      // absence of a brake is distinguishable from a worker too old to report
+      // one.
+      //
+      // `shared` says whether those brakes are visible to the other worker
+      // instances. False means every instance is braking alone, which is worth
+      // knowing before concluding that the brake is not working.
+      rateLimits: {
+        shared: sharedBrakes,
+        open: brakes.map((brake) => ({
+          provider: brake.provider,
+          organizationId: brake.organizationId,
+          openUntil: brake.openUntil.toISOString(),
+          secondsRemaining: Math.max(0, Math.round((brake.openUntil.getTime() - Date.now()) / 1000)),
+          reason: brake.reason,
+        })),
+      },
+    })
+  );
+}
 
 /**
  * Send a handler's rejection as a 500 rather than an unhandled rejection.

@@ -2,7 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { MedplumClient } from '@medplum/core';
 import type { Organization, Reference } from '@medplum/fhirtypes';
+import type { IntegrationKey } from './credentials.ts';
 import { getCredentialValues, readCredentialRecord, writeCredentialRecord } from './credentials.ts';
+import { guardProviderCall, organizationIdOf } from './provider-rate-limit.ts';
+
+/**
+ * The integration key DrChrono brakes are filed under.
+ *
+ * Typed as {@link IntegrationKey} rather than as a bare string so the brake, the
+ * credential record and the inbound webhook adapter are provably the same word.
+ */
+export const DRCHRONO_PROVIDER: IntegrationKey = 'drchrono';
 
 /**
  * An authenticated DrChrono client for one clinic, with token refresh.
@@ -84,6 +94,7 @@ export async function createDrChronoClient(props: {
 
   const apiUrl = values.config.apiUrl || 'https://app.drchrono.com/api';
   let accessToken = values.secrets.accessToken;
+  const organizationId = organizationIdOf(organization);
   let refreshed = false;
 
   /**
@@ -99,15 +110,25 @@ export async function createDrChronoClient(props: {
       throw new Error('DrChrono client id and secret are required to refresh the access token.');
     }
 
-    const res = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        client_id: clientId,
-        client_secret: clientSecret,
-      }).toString(),
+    // Guarded like every other call, because the alternative is actively
+    // misleading: a 429 here used to surface as "the grant may have been
+    // revoked", which sends whoever reads it to redo the OAuth flow for a
+    // clinic whose credentials are perfectly good.
+    const res = await guardProviderCall({
+      provider: DRCHRONO_PROVIDER,
+      organizationId,
+      label: 'POST token refresh',
+      call: async () =>
+        fetch(TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: clientId,
+            client_secret: clientSecret,
+          }).toString(),
+        }),
     });
 
     if (!res.ok) {
@@ -149,14 +170,30 @@ export async function createDrChronoClient(props: {
     return body.access_token;
   }
 
+  // Every authenticated DrChrono call in the repo funnels through here — the
+  // importer's paginated reads, the onboarding search, the appointment preview,
+  // the SOAP-note writes — which is why the brake is installed at this line and
+  // nowhere else. A rate-limit policy that each caller has to remember to apply
+  // is a policy three of the five callers do not have, which is what the audit
+  // of this file found.
+  //
+  // The label names the path with its query string stripped: a path is
+  // operator-legible, a query string can carry a patient's name or date of
+  // birth, and this value ends up in a log line and on `/health`.
   const call = async (path: string, token: string, request?: DrChronoRequest): Promise<Response> =>
-    fetch(path.startsWith('http') ? path : `${apiUrl}${path}`, {
-      method: request?.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(request && { 'Content-Type': 'application/json' }),
-      },
-      ...(request && { body: JSON.stringify(request.body) }),
+    guardProviderCall({
+      provider: DRCHRONO_PROVIDER,
+      organizationId,
+      label: `${request?.method ?? 'GET'} ${path.split('?')[0]}`,
+      call: async () =>
+        fetch(path.startsWith('http') ? path : `${apiUrl}${path}`, {
+          method: request?.method ?? 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(request && { 'Content-Type': 'application/json' }),
+          },
+          ...(request && { body: JSON.stringify(request.body) }),
+        }),
     });
 
   return {

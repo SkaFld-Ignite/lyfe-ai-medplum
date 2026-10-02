@@ -108,9 +108,10 @@ import type { DeclineReason, DeclineTally } from './shared/local-edits.ts';
 import { describeDeclines, selectWritable } from './shared/local-edits.ts';
 import { linkPatientCoveragePayors } from './shared/payers.ts';
 import { ImportProgress, buildStatusReason, openOrAdoptTask } from './shared/progress.ts';
+import { guardProviderCall, isProviderRateLimitError, organizationIdOf } from './shared/provider-rate-limit.ts';
 import { ZUS_SOURCE_TAG } from './shared/source.ts';
 import { resolveCallerOrganization } from './shared/tenant.ts';
-import { pushReciprocity } from './shared/zus-push.ts';
+import { ZUS_PROVIDER, pushReciprocity } from './shared/zus-push.ts';
 
 /**
  * Give the bot sandbox the Node globals it does not have.
@@ -279,6 +280,16 @@ type RawResource = Record<string, unknown>;
 
 /** Everything needed to talk to one clinic's Zus tenant. */
 interface ZusConnection {
+  /**
+   * The clinic this connection belongs to.
+   *
+   * Carried on the connection rather than threaded through every call site
+   * because it is what the rate-limit brake is keyed on, and the brake lives
+   * inside `zusFetch`. A clinic's Zus quota is its own: one practice
+   * exhausting theirs must not hold up another's imports, and a connection
+   * that did not know its clinic could only express a global brake.
+   */
+  organizationId: string;
   /** FHIR base, e.g. `https://api.zusapi.com/fhir`. */
   fhirUrl: string;
   /** Data subscription base for enrolment. */
@@ -649,6 +660,7 @@ async function connectToZus(props: {
   const fhirUrl = (values.config.apiUrl || DEFAULT_ZUS_API_URL).replace(/\/$/, '');
   const sandbox = fhirUrl.includes('sandbox') || fhirUrl.includes('.dev.');
   const connection: Omit<ZusConnection, 'token'> = {
+    organizationId: organizationIdOf(props.organization),
     fhirUrl,
     subscriptionsUrl: sandbox ? SUBSCRIPTIONS_URL_SANDBOX : SUBSCRIPTIONS_URL,
     builderId: values.config.builderId,
@@ -738,12 +750,32 @@ async function zusFetch(props: {
     const last = attempt === ZUS_5XX_BACKOFFS_MS.length;
     let res: Response;
     try {
-      res = await withTimeout({
-        promise: fetch(props.url, { method: props.method ?? 'GET', headers, body: props.body }),
-        ms: ZUS_REQUEST_TIMEOUT_MS,
+      // Guarded, which closes the one gap the `res.status < 500` test below
+      // leaves wide open: a 429 is not a 5xx, so it fell straight through to
+      // `return res` with zero retries and zero backoff, and each caller was
+      // left to notice on its own. Now the first 429 brakes this clinic's Zus
+      // calls for the window Zus itself names, and the rest of the run — and
+      // every other run for the same clinic — stops calling rather than
+      // finding out one at a time.
+      res = await guardProviderCall({
+        provider: ZUS_PROVIDER,
+        organizationId: props.connection.organizationId,
         label: props.label,
+        call: async () =>
+          withTimeout({
+            promise: fetch(props.url, { method: props.method ?? 'GET', headers, body: props.body }),
+            ms: ZUS_REQUEST_TIMEOUT_MS,
+            label: props.label,
+          }),
       });
     } catch (err) {
+      // A brake is not a transport blip. Retrying it here is exactly the
+      // behaviour being removed, and the ladder below would spend 37 seconds
+      // doing it before handing up an error that no longer says when to
+      // return. It belongs upward, where a run can be suspended for free.
+      if (isProviderRateLimitError(err)) {
+        throw err;
+      }
       lastError = err;
       if (last) {
         throw err;

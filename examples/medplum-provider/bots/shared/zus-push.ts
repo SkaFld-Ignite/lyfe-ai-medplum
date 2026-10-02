@@ -2,7 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { MedplumClient } from '@medplum/core';
 import type { Condition, MedicationStatement, Observation, Patient, Resource } from '@medplum/fhirtypes';
+import type { IntegrationKey } from './credentials.ts';
+import { guardProviderCall } from './provider-rate-limit.ts';
 import { LYFE_SOURCE_TAG_SYSTEM } from './source.ts';
+
+/**
+ * The integration key Zus brakes are filed under.
+ *
+ * Typed as {@link IntegrationKey} rather than as a bare string so the brake, the
+ * credential record and the inbound webhook adapter are provably the same word.
+ * Three places each spelling `'zus'` independently is how one of them ends up
+ * spelling it `'Zus'` and silently keeping its own brake.
+ */
+export const ZUS_PROVIDER: IntegrationKey = 'zus';
 
 /**
  * Reciprocity: pushing our own data back to Zus.
@@ -58,6 +70,8 @@ export interface ReciprocityReport {
 export interface ZusPushConnection {
   readonly fhirUrl: string;
   readonly token: string;
+  /** The clinic, so a push obeys the same per-clinic brake the pulls do. */
+  readonly organizationId: string;
 }
 
 /**
@@ -140,10 +154,23 @@ async function pushOne(props: {
   // lyfe-provider-ui does too — its `makeAuthenticatedRequest` sends only the
   // bearer token on a POST.
 
-  const res = await fetch(`${props.zus.fhirUrl}/${props.resource.resourceType}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(forZus({ resource: props.resource, zusPatientId: props.zusPatientId, upid: props.upid })),
+  // Guarded for the same reason the pulls are, and with more to gain: a push
+  // runs one POST per eligible resource, so a throttled clinic used to take a
+  // 429 on every one of them and count each as a soft failure. The resource was
+  // dropped, the report said "failed", and nothing said why. With the brake on,
+  // the first refusal stops the rest and the run is suspended until the window
+  // Zus named — and these writes carry `If-None-Exist`, so resuming them is
+  // idempotent rather than a second copy.
+  const res = await guardProviderCall({
+    provider: ZUS_PROVIDER,
+    organizationId: props.zus.organizationId,
+    label: `POST ${props.resource.resourceType}`,
+    call: async () =>
+      fetch(`${props.zus.fhirUrl}/${props.resource.resourceType}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(forZus({ resource: props.resource, zusPatientId: props.zusPatientId, upid: props.upid })),
+      }),
   });
 
   if (res.ok) {

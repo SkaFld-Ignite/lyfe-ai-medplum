@@ -5,6 +5,10 @@ import {
   CITATION_LIMITS,
   DOCUMENT_EXCERPT_CHARS,
 } from '../../../../examples/medplum-provider/bots/shared/ai-summary-prompt.ts';
+import {
+  getProviderBreakerStore,
+  resetProviderBreakerStore,
+} from '../../../../examples/medplum-provider/bots/shared/provider-rate-limit.ts';
 
 /**
  * The import chain: chart → documents indexed → AI summary, with nobody
@@ -163,14 +167,21 @@ interface SentEvent {
  * @param options - Harness options.
  * @param options.sendFails - Make every `step.sendEvent` reject, as it would once
  *   Inngest's event API had exhausted the step's own retries.
+ * @param options.onSleepUntil - Called when the run plans a sleep. The hold tests
+ *   use it to let the rate-limit window close, which is what time does.
  * @returns The handler's result, or the error it threw, plus the events sent.
  */
 async function run(
   id: string,
   data: Record<string, unknown>,
-  options: { sendFails?: boolean } = {}
-): Promise<{ result?: unknown; error?: unknown; sent: SentEvent[]; stepOutput: unknown[] }> {
+  options: { sendFails?: boolean; onSleepUntil?: (at: Date) => void } = {}
+): Promise<{ result?: unknown; error?: unknown; sent: SentEvent[]; stepOutput: unknown[]; slept: Date[] }> {
   const sent: SentEvent[] = [];
+  // Every `step.sleepUntil` the run planned. This is how a *held* run is told
+  // apart from a failed one: holding is a sleep, failing is a Task written
+  // `failed`, and the thirteen dropped charts of 2026-10-02 were the second
+  // when they should have been the first.
+  const slept: Date[] = [];
   // Everything Inngest would persist to memoise a step. Collected so the
   // "no clinical text in the event store" rule can actually be asserted
   // rather than only reasoned about.
@@ -188,13 +199,17 @@ async function run(
       }
     },
     sleep: async () => undefined,
+    sleepUntil: async (_stepId: string, at: Date) => {
+      slept.push(at);
+      options.onSleepUntil?.(at);
+    },
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   try {
     const result = await registered[id].handler({ event: { data }, step, runId: `run-${id}`, logger });
-    return { result, sent, stepOutput };
+    return { result, sent, stepOutput, slept };
   } catch (error) {
-    return { error, sent, stepOutput };
+    return { error, sent, stepOutput, slept };
   }
 }
 
@@ -717,5 +732,111 @@ describe('the summary run', () => {
     // Nothing was failed, and nothing was re-closed, by the summary blowing up.
     expect(failTask).not.toHaveBeenCalled();
     expect(completeTask).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('a clinic the provider is refusing is held, not failed', () => {
+  /**
+   * The thirteen charts.
+   *
+   * On 2026-10-02 a thirty-three patient run met DrChrono's throttle. Thirteen
+   * imports spent a twenty-minute retry budget against a forty-five minute
+   * window, were written to the Imports page as `failed`, and the work was
+   * gone. Everything in this block is one of the two properties that had to
+   * change for that to come out differently: the run *waits* instead of
+   * failing, and while it waits it *says so*.
+   *
+   * Driven through the registered chart-import function rather than through the
+   * hold helper directly, because what was wrong was never the helper — it is
+   * that nothing between the 429 and the Task knew what to do with one.
+   */
+  beforeEach(() => {
+    resetProviderBreakerStore();
+  });
+
+  test('a run that finds the brake on waits for the window DrChrono named', async () => {
+    const openUntil = new Date(Date.now() + 2_710_000);
+    await getProviderBreakerStore().open({
+      provider: 'drchrono',
+      organizationId: 'clinic-1',
+      openUntil,
+      reason: '429 on GET /patients',
+    });
+    drchronoHandler.mockResolvedValue({ ok: true, medplumPatientId: 'pat-1', counts: {} });
+
+    const { error, slept } = await run('drchrono-chart-import', CHART_EVENT, {
+      // The sleep is where time passes, so this is where the window clears.
+      onSleepUntil: () => resetProviderBreakerStore(),
+    });
+
+    expect(error).toBeUndefined();
+    expect(slept).toHaveLength(1);
+    expect(slept[0].getTime()).toBeGreaterThanOrEqual(openUntil.getTime());
+    // And then it imported. Held, not lost — which is the whole difference.
+    expect(drchronoHandler).toHaveBeenCalledTimes(1);
+    expect(completeTask).toHaveBeenCalledTimes(1);
+    expect(failTask).not.toHaveBeenCalled();
+  });
+
+  test('the hold is written on the Task, so the Imports page says held rather than nothing', async () => {
+    await getProviderBreakerStore().open({
+      provider: 'drchrono',
+      organizationId: 'clinic-1',
+      openUntil: new Date(Date.now() + 2_710_000),
+      reason: '429',
+    });
+    drchronoHandler.mockResolvedValue({ ok: true, medplumPatientId: 'pat-1', counts: {} });
+
+    await run('drchrono-chart-import', CHART_EVENT, { onSleepUntil: () => resetProviderBreakerStore() });
+
+    // A run that goes quiet for forty-five minutes and explains nothing is read
+    // as broken, and on the day this happened it was.
+    const phases = setPhase.mock.calls.map((call) => String((call as unknown[])[2]));
+    expect(phases.some((phase) => phase.startsWith('held') && phase.includes('drchrono'))).toBe(true);
+  });
+
+  test("another clinic's import is untouched by this one's throttle", async () => {
+    await getProviderBreakerStore().open({
+      provider: 'drchrono',
+      organizationId: 'clinic-1',
+      openUntil: new Date(Date.now() + 2_710_000),
+      reason: '429',
+    });
+    drchronoHandler.mockResolvedValue({ ok: true, medplumPatientId: 'pat-2', counts: {} });
+
+    const { error, slept } = await run('drchrono-chart-import', { ...CHART_EVENT, organizationId: 'clinic-2' });
+
+    // Clinic 2 never pauses. A brake that stopped every clinic would be a
+    // bigger outage than the one it was built to prevent.
+    expect(error).toBeUndefined();
+    expect(slept).toEqual([]);
+    expect(drchronoHandler).toHaveBeenCalledTimes(1);
+  });
+
+  test('a DrChrono throttle does not hold up the Zus pull for the same clinic', async () => {
+    await getProviderBreakerStore().open({
+      provider: 'drchrono',
+      organizationId: 'clinic-1',
+      openUntil: new Date(Date.now() + 2_710_000),
+      reason: '429',
+    });
+    zusHandler.mockResolvedValue({ ok: true, counts: { Condition: 3 } });
+
+    const { error, slept } = await run('zus-record-import', {
+      organizationId: 'clinic-1',
+      requester: 'Practitioner/prac-1',
+      medplumPatientId: 'pat-1',
+      batchId: 'batch-1',
+    });
+
+    expect(error).toBeUndefined();
+    expect(slept).toEqual([]);
+  });
+
+  test('a clinic with nothing braked pays nothing for the check', async () => {
+    drchronoHandler.mockResolvedValue({ ok: true, medplumPatientId: 'pat-1', counts: {} });
+    const { slept, error } = await run('drchrono-chart-import', CHART_EVENT);
+    expect(error).toBeUndefined();
+    expect(slept).toEqual([]);
   });
 });

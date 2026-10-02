@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 import { NonRetriableError } from 'inngest';
 import { handler as drchronoHandler } from '../../../../examples/medplum-provider/bots/drchrono-import.ts';
+import { DRCHRONO_PROVIDER } from '../../../../examples/medplum-provider/bots/shared/drchrono.ts';
 import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
+import { heldPhase, holdWhileRateLimited } from '../providers/hold.ts';
 import { withStepTimeout } from '../rate-limit.ts';
 import { attachPatient, completeTask, failTask, setPhase, startTask } from '../task.ts';
 
@@ -64,6 +66,28 @@ export const chartImport = inngest.createFunction(
     );
 
     try {
+      // Before the first call, not after the first refusal.
+      //
+      // This is the half of the fix that the retry budget could never provide.
+      // On 2026-10-02 thirty-three runs each walked into DrChrono's throttle
+      // independently, and each one's way of finding out was to make the call
+      // that deepens it. Here the brake another run already opened is read, and
+      // this run waits for the window DrChrono itself named — costing no
+      // attempt, holding no process, and making no request.
+      //
+      // Placed after the Task is opened so the wait is *visible*: `onHold`
+      // writes the phase, and the Imports page says "held until …" instead of
+      // showing nothing for forty-five minutes. A silently held run and a
+      // broken one look identical, and the broken reading is the one people
+      // reach for.
+      await holdWhileRateLimited({
+        provider: DRCHRONO_PROVIDER,
+        organizationId,
+        step,
+        logger,
+        onHold: async (until) => setPhase(medplum, taskId, heldPhase(DRCHRONO_PROVIDER, until)),
+      });
+
       // The success check lives INSIDE the step, not after it.
       //
       // A throw in the function body retries the whole function, and Inngest

@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
+import { ZUS_PROVIDER } from '../../../../examples/medplum-provider/bots/shared/zus-push.ts';
 import { handler as zusHandler } from '../../../../examples/medplum-provider/bots/zus-import.ts';
 import { botEvent } from '../bot-event.ts';
 import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
+import { heldPhase, holdWhileRateLimited } from '../providers/hold.ts';
 import { withStepTimeout } from '../rate-limit.ts';
 import { completeTask, failTask, setPhase, startTask } from '../task.ts';
 import { classify } from './chart-import.ts';
@@ -83,6 +85,18 @@ export const zusImport = inngest.createFunction(
     );
 
     try {
+      // Same brake as the chart import, different provider, and that symmetry
+      // is the point: neither this function nor `holdWhileRateLimited` knows
+      // anything about Zus beyond the key it is filed under. A third EHR adds
+      // its own two lines here and inherits the behaviour whole.
+      await holdWhileRateLimited({
+        provider: ZUS_PROVIDER,
+        organizationId,
+        step,
+        logger,
+        onHold: async (until) => setPhase(medplum, taskId, heldPhase(ZUS_PROVIDER, until)),
+      });
+
       // First attempt. For an already-enrolled patient this is the whole job,
       // and the waits below never happen.
       let result = await step.run('pull-record', async () =>

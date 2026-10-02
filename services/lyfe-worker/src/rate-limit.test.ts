@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { RetryAfterError } from 'inngest';
 import { describe, expect, test, vi } from 'vitest';
+import { ProviderRateLimitError } from '../../../examples/medplum-provider/bots/shared/provider-rate-limit.ts';
 import { retryAfter, withStepTimeout } from './rate-limit.ts';
 
 /**
@@ -32,6 +33,36 @@ describe('retryAfter', () => {
   test('leaves errors that are not rate limits alone', () => {
     expect(retryAfter(new Error('ECONNRESET'))).toBeUndefined();
   });
+
+  test("waits the provider's own forty-five minutes, not a retry budget's twenty", () => {
+    // The number DrChrono actually sent on 2026-10-02. The ladder it met was
+    // thirty-seven seconds across four attempts, so thirteen charts spent their
+    // whole budget on a window that had not begun to close, were marked failed,
+    // and were dropped. Nothing about retry counts could have fixed that; only
+    // listening to the 2710 could.
+    const when = retryAfter(
+      new ProviderRateLimitError({
+        provider: 'drchrono',
+        organizationId: 'clinic-a',
+        retryAt: new Date(Date.now() + 2_710_000),
+      })
+    );
+    expect((when as Date).getTime() - Date.now()).toBeGreaterThan(2_700_000);
+  });
+
+  test('a brake that has already lifted still reschedules at the floor, never into the past', () => {
+    // Inngest is handed an absolute instant. One in the past is either ignored
+    // or an immediate re-run, and an immediate re-run of a throttled call is
+    // the behaviour being removed.
+    const when = retryAfter(
+      new ProviderRateLimitError({
+        provider: 'drchrono',
+        organizationId: 'clinic-a',
+        retryAt: new Date(Date.now() - 60_000),
+      })
+    );
+    expect((when as Date).getTime()).toBeGreaterThan(Date.now());
+  });
 });
 
 describe('withStepTimeout', () => {
@@ -44,6 +75,21 @@ describe('withStepTimeout', () => {
         throw RATE_LIMITED;
       })
     ).rejects.toBeInstanceOf(RetryAfterError);
+  });
+
+  test('a provider brake reaches Inngest as a RetryAfterError too', async () => {
+    // The seam that makes the whole thing work end to end: the bots' HTTP guard
+    // throws this, and Inngest suspends the run until the instant on it. Without
+    // this line a provider 429 is an ordinary error and gets exponential
+    // backoff — which is exactly the twenty minutes that lost the work.
+    const thrown = await withStepTimeout('import', async () => {
+      throw new ProviderRateLimitError({
+        provider: 'drchrono',
+        organizationId: 'clinic-a',
+        retryAt: new Date(Date.now() + 2_710_000),
+      });
+    }).catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(RetryAfterError);
   });
 
   test('leaves an ordinary failure retryable', async () => {
