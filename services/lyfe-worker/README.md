@@ -83,6 +83,62 @@ a real failure somewhere:
   `SUMMARY_DEBOUNCE_PERIOD=off` in `.env.example` for the escape hatch if this
   Inngest plan refuses the registration.
 
+## Pulling a patient again
+
+```
+POST /api/imports/resync   { "source": "zus", "patientId": "<medplum id>" }
+        │
+        ▼
+lyfe/zus.import.requested ──▶ zus-record-import ──▶ (the rest of the chain, unchanged)
+```
+
+The same event the chart import emits, with `reason: "manual-resync"` for the
+log. Not a resync event of its own: the retry budget, the per-clinic
+concurrency, the per-patient serialisation, the fresh-enrolment ladder and the
+rules about what may be overwritten all live on that one function, and a second
+event would mean a second copy of them that nobody notices has drifted. The
+index and the summary follow a re-sync because they are downstream of the
+function, not of the endpoint.
+
+**The source is a parameter.** `src/resync.ts` holds a registry, `/health`
+reports its contents, and the app offers whatever is in it intersected with the
+integrations the clinic has actually connected — so adding a source is a
+registry entry here, not a front-end release and not another button spelled out
+in the UI.
+
+### What makes a second pull safe
+
+Two different properties, and only the first is the one people assume:
+
+1. **No duplicates.** Every write is a conditional update keyed on the source's
+   own id — `PUT Condition?identifier=https://zusapi.com/fhir/Condition|<id>`.
+   The server matches: no match creates, one match updates in place, several
+   return 412. A resource the source returns with no id is skipped rather than
+   written, since there would be nothing to key the next run on. This has been
+   true since the first import.
+2. **No overwriting a clinician.** A conditional update replaces the _whole_
+   resource, so a problem someone resolved or a dose someone corrected would be
+   reverted on the next pull — silently, with the run reporting success. Before
+   each type is written, `bots/shared/local-edits.ts` indexes what is already
+   here and decides per resource. It declines when a **person** last wrote it
+   (`meta.author` is a `Practitioner`, `PractitionerRole`, `Patient`,
+   `RelatedPerson` or `Person`; Medplum sets `meta.author` server-side on every
+   write), when **two** local resources answer to one source id, and when
+   `meta.author` **cannot be read at all**, because then edited and untouched
+   are indistinguishable. Every decline is counted onto the run's Task as
+   `incomplete:preserved`.
+
+A pull **never deletes**. A resource that has vanished upstream stays in the
+chart; removing clinical data because a third party's record changed shape is
+not a trade this makes.
+
+The per-patient concurrency limit of 1 on `zus-record-import` is part of (1),
+not a throughput setting. Medplum resolves a conditional update by searching and
+then creating — read-then-write — so two runs for one patient at the same moment
+can both find nothing and both create. Two clicks of the button, or a manual
+sync landing while the chart import's own pull is still in flight, is exactly
+that race.
+
 ### The summary reads the documents, and the worker is what feeds it
 
 This is the reason the chain is ordered index-then-summarise rather than the

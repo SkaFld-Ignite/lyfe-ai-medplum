@@ -36,7 +36,26 @@ export const zusImport = inngest.createFunction(
   {
     id: 'zus-record-import',
     name: 'Zus record import',
-    concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
+    concurrency: [
+      { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
+      // One pull per patient at a time, and this one is a correctness
+      // requirement rather than a fairness one.
+      //
+      // Every write is a conditional update keyed on the Zus id, which the
+      // server resolves by *searching* and then creating or updating. That is
+      // read-then-write, so two runs pulling the same patient at the same
+      // moment can both search, both find nothing, and both create — which is
+      // the one path by which a re-sync really can duplicate a chart. It is
+      // not hypothetical now that a clinician can press a button: two clicks,
+      // or a click arriving while the chart import's own pull is still in
+      // flight, is exactly this race.
+      //
+      // Serialising per patient removes it without a lock, without a lease and
+      // without anything to expire. The second run does not fail; it waits,
+      // then re-pulls over a chart the first one has finished writing, where
+      // every write is an idempotent no-op or a genuine update.
+      { key: 'event.data.medplumPatientId', limit: 1 },
+    ],
     // Raised from 3, matching chart import: a rate limit now reschedules via
     // RetryAfterError instead of spending an attempt, so the budget covers the
     // failures worth re-running.
@@ -44,7 +63,8 @@ export const zusImport = inngest.createFunction(
   },
   { event: 'lyfe/zus.import.requested' },
   async ({ event, step, runId, logger }) => {
-    const { organizationId, requester, medplumPatientId, batchId } = event.data;
+    const { organizationId, requester, medplumPatientId, batchId, reason } = event.data;
+    logger.info('zus pull requested', { medplumPatientId, reason: reason ?? 'chart-import' });
     const medplum = await getMedplum();
     const organization = { reference: `Organization/${organizationId}` };
 
