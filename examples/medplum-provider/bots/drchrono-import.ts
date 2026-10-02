@@ -3985,6 +3985,7 @@ async function run(
  * @param client - Clinic-scoped DrChrono client.
  * @param organization - The calling clinic.
  * @param drchronoPatientId - DrChrono's id for the patient to import.
+ * @param callerTaskId - A Task the caller already opened, adopted instead of opening a second.
  * @returns The import result, or a described failure.
  */
 async function importChart(

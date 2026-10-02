@@ -474,7 +474,7 @@ async function run(props: {
     const durationMs = Date.now() - startedAt;
     await finishTask({ medplum, task, status: 'completed', counts, incomplete, durationMs });
     log(`done: ${total(counts)} resources in ${Math.round(durationMs / 1000)}s`);
-    return { ok: true, counts, incomplete, taskId: task.id as string, durationMs };
+    return { ok: true, counts, incomplete, taskId: task.id, durationMs };
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     const message = err instanceof Error ? err.message : String(err);
