@@ -98,10 +98,13 @@ describe('the request it sends to $ai', () => {
     await handler(stubClient(), event([{ role: 'user', content: 'Find John Smith' }]));
 
     const sent = JSON.parse(param(posts[0].body, 'messages')?.valueString as string);
-    expect(sent[0]).toStrictEqual({
-      role: 'system',
-      content: 'Use the tool.\n\nThe requester is Practitioner/abc-123.',
-    });
+    expect(sent[0].role).toBe('system');
+    // The prompt now also carries today's date and whether "my patients" is a
+    // filter for this requester, so this asserts the parts rather than the whole.
+    expect(sent[0].content).toContain('Use the tool.');
+    expect(sent[0].content).toContain('The requester is Practitioner/abc-123.');
+    expect(sent[0].content).toContain('Today is');
+    expect(sent[0].content).toMatch(/scheduling provider/);
     expect(sent[1]).toStrictEqual({ role: 'user', content: 'Find John Smith' });
   });
 

@@ -227,7 +227,10 @@ describe('buffered', () => {
     await handler(stubClient(), event(undefined));
 
     const sent = JSON.parse(posts[0].parameter?.find((p) => p.name === 'messages')?.valueString as string);
-    expect(sent[0]).toStrictEqual({ role: 'system', content: 'Summarize clearly.' });
+    expect(sent[0].role).toBe('system');
+    // Carries today's date now, so assert the prompt body and the date separately.
+    expect(sent[0].content).toContain('Summarize clearly.');
+    expect(sent[0].content).toContain('Today is');
     expect(posts[0].parameter?.find((p) => p.name === 'tools')).toBeUndefined();
   });
 });

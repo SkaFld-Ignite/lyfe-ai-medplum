@@ -24,6 +24,7 @@ import {
   buildSystemPrompt,
   callAi,
   deriveVisualize,
+  describeRequesterScope,
   getBotProjectId,
   loadSystemPrompt,
   normalizeToolCallArguments,
@@ -157,10 +158,12 @@ export async function handler(medplum: MedplumClient, event: BotEvent): Promise<
   // error. See CLAUDE.md.
   const projectId = await getBotProjectId(medplum);
   const prompt = await loadSystemPrompt(medplum, BOT_ID, projectId);
+  // Whether "my patients" is a filter or means the whole clinic. Sequential, as above.
+  const scope = await describeRequesterScope(medplum, event.requester);
 
   const response = await callAi(medplum, {
     messages: [
-      { role: 'system', content: buildSystemPrompt(prompt, event.requester) },
+      { role: 'system', content: `${buildSystemPrompt(prompt, event.requester)}\n\n${scope}` },
       ...normalizeToolCallArguments(input.messages),
     ],
     model: input.model,

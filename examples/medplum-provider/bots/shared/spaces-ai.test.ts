@@ -10,6 +10,7 @@
  * chunks is dropped silently and the narration loses a word. A missed `visualize` means the chart
  * panel simply never opens. None of them is caught by types, and none of them announces itself.
  */
+import type { MedplumClient } from '@medplum/core';
 import type { Communication } from '@medplum/fhirtypes';
 import { describe, expect, test } from 'vitest';
 import {
@@ -20,6 +21,7 @@ import {
   buildSystemPrompt,
   collectCitableSources,
   deriveVisualize,
+  describeRequesterScope,
   formatSourceList,
   formatSseFrame,
   normalizeToolCallArguments,
@@ -136,6 +138,84 @@ describe('selectPromptCommunication', () => {
   });
 });
 
+/**
+ * The date line `buildSystemPrompt` appends, rebuilt here rather than exported,
+ * so a change to its wording has to be made deliberately in both places.
+ * @returns The expected line for today.
+ */
+function todayLine(): string {
+  const now = new Date();
+  const weekday = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
+  return (
+    `Today is ${weekday}, ${now.toISOString().slice(0, 10)} (UTC). Resolve every relative date — ` +
+    `"today", "this week", "last month", "recent" — against that date, never against your training data.`
+  );
+}
+
+describe('describeRequesterScope', () => {
+  /**
+   * A Medplum stub whose Appointment count is fixed.
+   * @param total - What `_summary=count` should report.
+   * @returns A client with just enough surface for the helper.
+   */
+  function clientWithAppointments(total: number): MedplumClient {
+    return { search: vi.fn().mockResolvedValue({ resourceType: 'Bundle', total }) } as unknown as MedplumClient;
+  }
+
+  test('a provider with their own schedule gets a practitioner filter', async () => {
+    const scope = await describeRequesterScope(clientWithAppointments(54), {
+      reference: 'Practitioner/bfd2adc5',
+    });
+    expect(scope).toContain('IS a scheduling provider');
+    expect(scope).toContain('actor=Practitioner/bfd2adc5');
+  });
+
+  test('an administrator with no appointments is told NOT to filter', async () => {
+    // The real failure this exists for: 43 appointments in the week, 0 once
+    // filtered by the requester, and the loop burning its whole budget retrying.
+    const scope = await describeRequesterScope(clientWithAppointments(0), {
+      reference: 'Practitioner/f274e9d5',
+    });
+    expect(scope).toContain('NOT a scheduling provider');
+    expect(scope).toContain('do NOT filter by practitioner');
+    expect(scope).not.toContain('actor=');
+  });
+
+  test('a non-practitioner caller is never narrowed, and costs no query', async () => {
+    const medplum = clientWithAppointments(0);
+    const scope = await describeRequesterScope(medplum, { reference: 'ClientApplication/02b847b8' });
+    expect(scope).toContain('NOT a scheduling provider');
+    expect(medplum.search).not.toHaveBeenCalled();
+  });
+
+  test('an unknown requester is never narrowed', async () => {
+    expect(await describeRequesterScope(clientWithAppointments(0), undefined)).toContain('NOT a scheduling provider');
+  });
+
+  test('a client with no search method falls back rather than throwing', async () => {
+    // The call can throw synchronously, not just reject. A chat turn must never
+    // fail because of this lookup.
+    expect(await describeRequesterScope({} as unknown as MedplumClient, { reference: 'Practitioner/abc' })).toContain(
+      'NOT a scheduling provider'
+    );
+  });
+
+  test('a failed count falls back to the clinic, never to an empty answer', async () => {
+    // Degrading to "their own schedule" on an error would answer "you have no
+    // patients" to a question about a full week.
+    const medplum = { search: vi.fn().mockRejectedValue(new Error('boom')) } as unknown as MedplumClient;
+    expect(await describeRequesterScope(medplum, { reference: 'Practitioner/abc' })).toContain(
+      'NOT a scheduling provider'
+    );
+  });
+
+  test('counts rather than fetching a page of appointments', async () => {
+    const medplum = clientWithAppointments(3);
+    await describeRequesterScope(medplum, { reference: 'Practitioner/abc' });
+    expect((medplum.search as ReturnType<typeof vi.fn>).mock.calls[0][1]).toContain('_summary=count');
+  });
+});
+
 describe('buildSystemPrompt', () => {
   /**
    * Builds a prompt Communication.
@@ -151,25 +231,43 @@ describe('buildSystemPrompt', () => {
   }
 
   test('returns payload[0] alone when there is no profile-context template', () => {
-    expect(buildSystemPrompt(prompt('Be useful.'), { reference: 'Practitioner/abc' })).toBe('Be useful.');
+    expect(buildSystemPrompt(prompt('Be useful.'), { reference: 'Practitioner/abc' })).toBe(
+      `Be useful.\n\n${todayLine()}`
+    );
+  });
+
+  test('always tells the model what day it is', () => {
+    // Without this the model answers "this week" from its training prior. It
+    // searched a window more than a year out, found nothing, retried until the
+    // agent loop's iteration budget ran out, and printed a raw unexecuted tool
+    // call into the conversation. Asserted on every shape a prompt can take.
+    const iso = new Date().toISOString().slice(0, 10);
+    for (const built of [
+      buildSystemPrompt(prompt('Be useful.'), undefined),
+      buildSystemPrompt(prompt('Be useful.', 'Requester {{ref}}.'), { reference: 'Practitioner/abc' }),
+      buildSystemPrompt(prompt(''), undefined),
+    ]) {
+      expect(built).toContain(`Today is`);
+      expect(built).toContain(iso);
+    }
   });
 
   test('substitutes {{ref}} and appends the context', () => {
     expect(
       buildSystemPrompt(prompt('Be useful.', 'The requester is {{ref}}.'), { reference: 'Practitioner/abc' })
-    ).toBe('Be useful.\n\nThe requester is Practitioner/abc.');
+    ).toBe(`Be useful.\n\nThe requester is Practitioner/abc.\n\n${todayLine()}`);
   });
 
   test('substitutes every occurrence, not just the first', () => {
     expect(buildSystemPrompt(prompt('', '{{ref}} and {{ref}}'), { reference: 'Practitioner/abc' })).toBe(
-      'Practitioner/abc and Practitioner/abc'
+      `Practitioner/abc and Practitioner/abc\n\n${todayLine()}`
     );
   });
 
   test('names the gap rather than leaving a dangling sentence when there is no requester', () => {
     // "The requester is ." invites the model to guess who is asking.
     expect(buildSystemPrompt(prompt('Be useful.', 'The requester is {{ref}}.'), undefined)).toBe(
-      'Be useful.\n\nThe requester is an unknown requester.'
+      `Be useful.\n\nThe requester is an unknown requester.\n\n${todayLine()}`
     );
   });
 });

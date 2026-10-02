@@ -203,13 +203,102 @@ export async function loadSystemPrompt(
 export function buildSystemPrompt(prompt: Communication, requester: Reference | undefined): string {
   const base = prompt.payload?.[0]?.contentString ?? '';
   const template = prompt.payload?.[1]?.contentString;
+  const today = currentDateLine();
   if (!template) {
-    return base;
+    return base ? `${base}\n\n${today}` : today;
   }
   // No reference should not blank the placeholder: a prompt reading "The requester is ." invites
   // the model to guess, where "an unknown requester" tells it not to.
   const context = template.replaceAll('{{ref}}', requester?.reference ?? 'an unknown requester');
-  return base ? `${base}\n\n${context}` : context;
+  return [base, context, today].filter(Boolean).join('\n\n');
+}
+
+/** What to tell the model when the requester holds no appointments of their own. */
+const CLINIC_WIDE_SCOPE =
+  'The requester is NOT a scheduling provider \u2014 no appointment lists them as the practitioner. ' +
+  'When they say "my patients", "my schedule" or "my appointments" they mean the clinic\'s, so do ' +
+  'NOT filter by practitioner: a practitioner filter here returns nothing. Their access policy ' +
+  'already limits every search to their own clinic.';
+
+/**
+ * Say whether the person asking actually has a schedule of their own.
+ *
+ * "Show me my patients this week" means two different things depending on who
+ * asks, and getting it wrong is not a small error -- it is an empty answer.
+ *
+ * A clinic's providers come across from DrChrono and are the `actor` on their
+ * own appointments, so for them "my patients" is a real filter. An
+ * administrator, an owner, or anyone whose Medplum login was never linked to a
+ * DrChrono provider is the `actor` on nothing. Filtering by them returns zero
+ * rows out of a full week, and the model -- reasonably -- keeps trying other
+ * parameter names until the agent loop runs out of iterations. That is exactly
+ * what happened: 43 appointments in the week, 0 once filtered by the requester.
+ *
+ * So it is answered from the data rather than guessed: one count. It also
+ * self-corrects -- link an account to a provider later and the same code starts
+ * filtering, with nothing to remember to change.
+ *
+ * The clinic boundary is never at stake. The caller's AccessPolicy already
+ * scopes every search to their organization; this only decides whether to
+ * narrow further inside what they can already see.
+ * @param medplum - Bot-scoped Medplum client.
+ * @param requester - Who is asking.
+ * @returns A sentence for the system prompt.
+ */
+export async function describeRequesterScope(
+  medplum: MedplumClient,
+  requester: Reference | undefined
+): Promise<string> {
+  const reference = requester?.reference;
+  if (!reference?.startsWith('Practitioner/')) {
+    // A non-practitioner caller has no schedule by definition; narrowing to it
+    // would hide the entire clinic.
+    return CLINIC_WIDE_SCOPE;
+  }
+  // `_summary=count` so this costs a count, not a page of appointments.
+  //
+  // try/catch, not just `.catch` — the call itself can throw synchronously if
+  // the client does not expose `search`, and this must never be the reason a
+  // chat turn fails. Any doubt resolves to the clinic, because the wrong way to
+  // be wrong is to tell someone they have no patients.
+  let own = 0;
+  try {
+    const bundle = await medplum.search('Appointment', `actor=${encodeURIComponent(reference)}&_summary=count`);
+    own = bundle.total ?? 0;
+  } catch {
+    return CLINIC_WIDE_SCOPE;
+  }
+
+  return own > 0
+    ? 'The requester IS a scheduling provider in this clinic. When they say "my patients", "my ' +
+        `schedule" or "my appointments", filter by that practitioner, e.g. actor=${reference}.`
+    : CLINIC_WIDE_SCOPE;
+}
+
+/**
+ * Tell the model what day it is.
+ *
+ * Without this the model answers date-relative questions from its training prior.
+ * Asked for "this week" it searched `date=ge2025-07-14&date=le2025-07-20` — more
+ * than a year out — found nothing, tried a different search, found nothing again,
+ * and burned the agent loop's whole iteration budget before giving up and
+ * printing a raw unexecuted tool call into the conversation. Every symptom of
+ * that — the wrong results, the slowness, the leaked tool call — was this one
+ * missing line.
+ *
+ * Written as an ISO date plus the weekday because a model reasoning about "this
+ * week" needs to know which day of the week today is, and deriving that from an
+ * ISO string is exactly the sort of arithmetic it gets wrong.
+ * @returns A line naming today's date for the system prompt.
+ */
+function currentDateLine(): string {
+  const now = new Date();
+  const iso = now.toISOString().slice(0, 10);
+  const weekday = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
+  return (
+    `Today is ${weekday}, ${iso} (UTC). Resolve every relative date — "today", "this week", ` +
+    `"last month", "recent" — against that date, never against your training data.`
+  );
 }
 
 /**
