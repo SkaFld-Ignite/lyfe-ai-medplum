@@ -743,4 +743,74 @@ describe('SpacesInbox', () => {
       });
     });
   });
+
+  /*
+   * The `panel` variant is the chat inside the floating Lyfe AI launcher, which mirrors the
+   * production Lyfe chat. The launcher draws its own header and its own one-line disclaimer,
+   * so this component must not add a second one — and because the panel has no model picker,
+   * the model it sends has to be the pinned default rather than whatever hiding the picker
+   * happened to leave behind.
+   */
+  describe('Panel variant', () => {
+    const setupPanel = (): ReturnType<typeof render> =>
+      render(
+        <MemoryRouter>
+          <MedplumProvider medplum={medplum}>
+            <MantineProvider>
+              <Notifications />
+              <SpacesInbox
+                variant="panel"
+                topic={undefined}
+                onNewTopic={onNewTopicMock}
+                onSelectedItem={onSelectedItemMock}
+                onAdd={onAdd}
+              />
+            </MantineProvider>
+          </MedplumProvider>
+        </MemoryRouter>
+      );
+
+    const PAGE_DISCLAIMER = 'AI models can make mistakes. Please double-check important information.';
+
+    test('shows no disclaimer of its own — the launcher footer is the panel`s one line', async () => {
+      await act(async () => {
+        setupPanel();
+      });
+
+      expect(screen.queryByText(PAGE_DISCLAIMER)).not.toBeInTheDocument();
+    });
+
+    test('the page variant still shows its disclaimer', async () => {
+      await act(async () => {
+        setup();
+      });
+
+      expect(screen.getByText(PAGE_DISCLAIMER)).toBeInTheDocument();
+    });
+
+    test('sends the pinned model, even with no picker to choose it', async () => {
+      const user = userEvent.setup();
+      medplum.executeBot = vi.fn().mockResolvedValue({
+        resourceType: 'Parameters',
+        parameter: [{ name: 'content', valueString: 'Bot response' }],
+      });
+
+      await act(async () => {
+        setupPanel();
+      });
+
+      // Production's global placeholder, verbatim.
+      const input = screen.getByPlaceholderText('Ask about patients, appointments, conditions…');
+      await user.type(input, 'Who is due for a visit?');
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+      await waitFor(() => expect(medplum.executeBot).toHaveBeenCalled());
+
+      // `DEFAULT_MODELS` is the fallback a non-admin clinic user actually gets, and it is pinned
+      // to one model. Hiding the picker must not quietly change which model is billed and asked.
+      const parameters = (medplum.executeBot as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as Parameters;
+      const model = parameters.parameter?.find((p) => p.name === 'model')?.valueString;
+      expect(model).toBe('global.anthropic.claude-sonnet-4-6');
+    });
+  });
 });

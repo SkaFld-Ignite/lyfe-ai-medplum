@@ -706,11 +706,17 @@ export function SpacesInbox(props: SpaceInboxProps): JSX.Element {
               onReasoningEffortChange={setSelectedReasoningEffort}
               selectedPatients={selectedPatients}
               setSelectedPatients={setSelectedPatients}
+              variant={variant}
             />
           </div>
-          <Text size="xs" c="gray.6" className={classes.inputDisclaimer}>
-            AI models can make mistakes. Please double-check important information.
-          </Text>
+          {/* The panel host draws its own disclaimer under the composer ("AI responses are
+              informational only. Always verify clinical data."), which is the one production
+              shows. Rendering this one too stacked two disclaimers in a 440px panel. */}
+          {variant !== 'panel' && (
+            <Text size="xs" c="gray.6" className={classes.inputDisclaimer}>
+              AI models can make mistakes. Please double-check important information.
+            </Text>
+          )}
         </div>
       </div>
 

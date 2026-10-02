@@ -345,11 +345,11 @@
   font-size: var(--mantine-font-size-sm);
 }
 
+/*
+ * The 26px bottom padding here used to make room for `.inputDisclaimer`, which the panel
+ * no longer renders — the launcher's footer is the panel's one disclaimer. Left as-is it
+ * was 26px of dead space between the composer and that footer.
+ */
 .inputArea[data-variant='panel'] {
-  padding: 0 10px 26px;
-}
-
-.inputArea[data-variant='panel'] .inputDisclaimer {
-  height: 26px;
-  font-size: 10px;
+  padding: 0 10px 8px;
 }

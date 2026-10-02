@@ -4,14 +4,7 @@ import { ActionIcon, Affix, Box, Paper, Text, Transition } from '@mantine/core';
 import { getDisplayString } from '@medplum/core';
 import type { Communication, Patient, Reference } from '@medplum/fhirtypes';
 import { useResource } from '@medplum/react';
-import {
-  IconChevronDown,
-  IconMaximize,
-  IconMessageCircle,
-  IconMinimize,
-  IconPlus,
-  IconSparkles,
-} from '@tabler/icons-react';
+import { IconChevronDown, IconMaximize, IconMessageCircle, IconMinimize, IconSparkles } from '@tabler/icons-react';
 import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
@@ -154,7 +147,11 @@ export function LyfeAiLauncher(): JSX.Element | null {
                   onSelectedItem={() => ''}
                   onAdd={startNewConversation}
                   preselectedPatients={preselectedPatients}
-                  renderHeader={({ toggleSidebar }) => (
+                  /* Two controls, exactly as production has: expand/collapse and close. No
+                     conversations button and no new-conversation button — production's panel
+                     has neither, so nothing here opens the sidebar and a fresh conversation
+                     comes from switching charts, which remounts on a new `key`. */
+                  renderHeader={() => (
                     <div className={classes.header}>
                       <div className={classes.headerIdentity}>
                         <div className={classes.tile}>
@@ -170,24 +167,6 @@ export function LyfeAiLauncher(): JSX.Element | null {
                         </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                        <ActionIcon
-                          variant="subtle"
-                          color="gray"
-                          size={28}
-                          onClick={toggleSidebar}
-                          aria-label="Conversations"
-                        >
-                          <IconMessageCircle size={16} />
-                        </ActionIcon>
-                        <ActionIcon
-                          variant="subtle"
-                          color="gray"
-                          size={28}
-                          onClick={startNewConversation}
-                          aria-label="New conversation"
-                        >
-                          <IconPlus size={16} />
-                        </ActionIcon>
                         <ActionIcon
                           variant="subtle"
                           color="gray"
