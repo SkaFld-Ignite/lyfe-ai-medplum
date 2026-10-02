@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { ocrDocument, OcrUnavailableError } from './ocr.ts';
 import { extractPdfText } from './pdf.ts';
+import { extractTiffText, TiffDecodeError } from './tiff.ts';
 
 /**
  * Turning a document's bytes into the text that gets indexed.
@@ -24,7 +25,7 @@ import { extractPdfText } from './pdf.ts';
  * | image/jpeg      | 26    | OCR                                   |
  * | HL7 v2          | 12    | read as text                          |
  * | text/plain      | 10    | read as text                          |
- * | image/tiff      | 7     | skipped — see {@link ExtractSkipped}  |
+ * | image/tiff      | 7     | per-page PNG conversion, then OCR     |
  * | image/png       | 2     | OCR                                   |
  * | text/csv        | 1     | read as text                          |
  *
@@ -44,7 +45,17 @@ export const EXTRACTOR_VERSION = 'bedrock-textract-v1.2026-10';
 
 /** Which extractor produced the text. Stored so a cost audit can tell free from billable. */
 export type ExtractorPath =
-  'xml-strip' | 'html-strip' | 'text-utf8' | 'pdf-digital' | 'pdf-ocr' | 'pdf-mixed' | 'image-ocr' | 'unknown-utf8';
+  | 'xml-strip'
+  | 'html-strip'
+  | 'text-utf8'
+  | 'pdf-digital'
+  | 'pdf-ocr'
+  | 'pdf-mixed'
+  | 'image-ocr'
+  // Distinct from image-ocr so a cost audit can separate the TIFF pages, which
+  // carry a conversion step and are billed per page like any other scan.
+  | 'tiff-ocr'
+  | 'unknown-utf8';
 
 export interface ExtractedText {
   text: string;
@@ -62,15 +73,13 @@ export interface ExtractedText {
  * against the document with its reason and the run carries on — the whole point
  * of the degradation requirement. Today it covers two cases:
  *
- * - **TIFF.** Textract's synchronous API rejects raw TIFF outright with
- *   "unsupported document format", despite AWS's docs reading otherwise in
- *   places. Production fixed this by converting to PNG with `sharp` first. That
- *   is not done here: `sharp` ships platform-specific native binaries, and 7 of
- *   1,200 sampled documents — roughly 16 of the corpus — is a thin reason to put
- *   a compiled dependency into this worker's deploy. The documents are recorded
- *   as skipped with this reason, so the gap is a number rather than a mystery.
  * - **OCR unavailable.** Textract permissions missing, or a document over the
  *   10 MB synchronous limit.
+ * - **A TIFF that will not decode**, or whose every page failed. TIFF itself is
+ *   no longer a blanket skip: `tiff.ts` converts each page to PNG in pure
+ *   JavaScript, because Textract's synchronous API rejects raw TIFF and the
+ *   `sharp` that production used for this ships native binaries the worker has
+ *   deliberately stayed free of.
  */
 export class ExtractSkipped extends Error {
   /** @param message - Why this document cannot be indexed. */
@@ -257,14 +266,27 @@ export async function extractText(bytes: Buffer, contentType: string | null, lab
     };
   }
 
-  // TIFF is checked before the general image branch so it fails with the real
-  // reason rather than Textract's "unsupported document format".
+  // TIFF is checked before the general image branch because it cannot go
+  // straight to Textract — each page is converted to PNG first. See tiff.ts.
   if (declared === 'image/tiff' || sniffTiff(bytes)) {
-    throw new ExtractSkipped(
-      `${label} is a TIFF. Textract's synchronous AnalyzeDocument rejects raw TIFF; it needs converting to PNG ` +
-        'first, which production did with `sharp`. That native dependency is not installed here — see the note on ' +
-        'ExtractSkipped. Roughly 16 documents in the corpus are affected.'
-    );
+    try {
+      const result = await extractTiffText(bytes, label);
+      return {
+        text: result.text,
+        path: 'tiff-ocr',
+        pageCount: result.pageCount,
+        confidence: result.confidence,
+        ocrPages: result.ocrPages,
+      };
+    } catch (err) {
+      // A TIFF that cannot be decoded, or that OCR cannot reach, is a skip the
+      // ingest records against the document — not a throw it retries, because
+      // neither condition improves on a second attempt.
+      if (err instanceof TiffDecodeError || err instanceof OcrUnavailableError) {
+        throw new ExtractSkipped(err.message);
+      }
+      throw err;
+    }
   }
 
   if (declared.startsWith('image/') || sniffPng(bytes) || sniffJpeg(bytes)) {

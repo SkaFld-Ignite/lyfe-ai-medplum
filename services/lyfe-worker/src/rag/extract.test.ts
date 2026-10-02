@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type * as OcrModule from './ocr.ts';
+import type * as TiffModule from './tiff.ts';
 
 /**
  * The extraction half of the RAG pipeline.
@@ -16,6 +17,7 @@ import type * as OcrModule from './ocr.ts';
 
 const ocrDocument = vi.fn();
 const extractPdfText = vi.fn();
+const extractTiffText = vi.fn();
 
 vi.mock('./ocr.ts', async () => {
   const actual = await vi.importActual<typeof OcrModule>('./ocr.ts');
@@ -27,6 +29,13 @@ vi.mock('./pdf.ts', () => ({
   DIGITAL_TEXT_YIELD_THRESHOLD_CHARS_PER_PAGE: 80,
   MAX_OCR_PAGES_PER_DOCUMENT: 50,
 }));
+
+// `TiffDecodeError` is kept real so the dispatch tests can throw the error the
+// production code actually checks with `instanceof`.
+vi.mock('./tiff.ts', async () => {
+  const actual = await vi.importActual<typeof TiffModule>('./tiff.ts');
+  return { ...actual, extractTiffText: (...args: unknown[]) => extractTiffText(...args) };
+});
 
 const {
   buildMetadataHeader,
@@ -280,12 +289,40 @@ describe('extractText dispatch', () => {
     expect((await extractText(jpeg, 'image/jpeg', 'd')).path).toBe('image-ocr');
   });
 
-  test('skips TIFF with a reason, rather than letting Textract reject it opaquely', async () => {
+  test('sends TIFF down the conversion path, not straight to Textract', async () => {
     // Textract's synchronous API rejects raw TIFF with "unsupported document
-    // format". Caught here so the ~16 affected documents carry an explanation.
+    // format", so a TIFF has to reach OCR as PNG. Pinned here as dispatch; the
+    // conversion itself is tiff.test.ts's subject.
+    extractTiffText.mockResolvedValue({ text: 'fax words', pageCount: 2, confidence: 0.9, ocrPages: 2 });
+    const tiff = Buffer.concat([Buffer.from('49492a00', 'hex'), Buffer.from('rest')]);
+    const result = await extractText(tiff, 'image/tiff', 'scan.tif');
+    expect(result.path).toBe('tiff-ocr');
+    expect(result.text).toBe('fax words');
+    expect(result.ocrPages).toBe(2);
+    // The raw TIFF must never be handed to Textract.
+    expect(ocrDocument).not.toHaveBeenCalled();
+  });
+
+  test('detects TIFF by magic bytes when the content type is absent', async () => {
+    extractTiffText.mockResolvedValue({ text: 'big-endian fax', pageCount: 1, confidence: 0.8, ocrPages: 1 });
+    // 4d4d002a is big-endian TIFF. A seventh of the corpus arrives unlabelled,
+    // so sniffing has to cover both byte orders.
+    const tiff = Buffer.concat([Buffer.from('4d4d002a', 'hex'), Buffer.from('rest')]);
+    expect((await extractText(tiff, null, 'scan.tif')).path).toBe('tiff-ocr');
+  });
+
+  test('turns an undecodable TIFF into a skip, so the run carries on', async () => {
+    const { TiffDecodeError } = await import('./tiff.ts');
+    extractTiffText.mockRejectedValue(new TiffDecodeError('uncommon compression'));
     const tiff = Buffer.concat([Buffer.from('49492a00', 'hex'), Buffer.from('rest')]);
     await expect(extractText(tiff, 'image/tiff', 'scan.tif')).rejects.toBeInstanceOf(ExtractSkipped);
-    expect(ocrDocument).not.toHaveBeenCalled();
+  });
+
+  test('a TIFF whose OCR is unavailable is a skip, not a retried throw', async () => {
+    const { OcrUnavailableError } = await import('./ocr.ts');
+    extractTiffText.mockRejectedValue(new OcrUnavailableError('textract:AnalyzeDocument is not granted'));
+    const tiff = Buffer.concat([Buffer.from('49492a00', 'hex'), Buffer.from('rest')]);
+    await expect(extractText(tiff, 'image/tiff', 'scan.tif')).rejects.toBeInstanceOf(ExtractSkipped);
   });
 
   test('turns an OCR outage into a skip, not a crash', async () => {
