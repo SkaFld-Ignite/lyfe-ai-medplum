@@ -191,8 +191,49 @@ export interface SummaryGenerateRequested {
   };
 }
 
+/**
+ * One clinic's new-patient discovery pass.
+ *
+ * Emitted by the cron, once per clinic that has switched the pass on, rather
+ * than the cron doing every clinic's work inline. Three things follow from
+ * that, and all three are the reason it is shaped this way:
+ *
+ * - **One clinic's bad day stays one clinic's.** A clinic whose DrChrono is
+ *   throttled or whose credentials have expired fails its own run and retries
+ *   on its own, instead of ending a loop that four other clinics were waiting
+ *   in.
+ * - **Concurrency is keyed per clinic**, exactly as it is for the importers.
+ * - **A pass is replayable.** Re-sending this event for one clinic re-runs that
+ *   clinic's pass and nothing else, which is what an operator wants at 9am when
+ *   one practice's schedule came in late.
+ *
+ * **It deliberately carries no `requester`**, which every other event here
+ * does. There is no user behind a cron, so the profile the run acts as comes
+ * from the clinic's own stored `discoveryRequester` and is re-resolved against
+ * this organization before it is used. Taking it off the event instead would
+ * mean anyone able to send an event could name any profile — the same IDOR the
+ * importers were hardened against, re-opened through the back door.
+ */
+export interface OnboardingDiscoveryRequested {
+  name: 'lyfe/onboarding.discovery.requested';
+  data: {
+    /** The clinic to scan. Also the concurrency key. */
+    organizationId: string;
+    /**
+     * Why this pass was asked for, e.g. `scheduled` or `manual`.
+     *
+     * For the log only, the same as {@link ZusImportRequested.data.reason}. The
+     * pass behaves identically however it was started; the moment this starts
+     * selecting behaviour, a scheduled run and a replayed one stop being the
+     * same thing and the replay stops being a useful test of the schedule.
+     */
+    reason?: string;
+  };
+}
+
 export type LyfeEvents = {
   'lyfe/chart.import.requested': ChartImportRequested;
+  'lyfe/onboarding.discovery.requested': OnboardingDiscoveryRequested;
   'lyfe/zus.import.requested': ZusImportRequested;
   'lyfe/rag.ingest.requested': RagIngestRequested;
   'lyfe/summary.generate.requested': SummaryGenerateRequested;

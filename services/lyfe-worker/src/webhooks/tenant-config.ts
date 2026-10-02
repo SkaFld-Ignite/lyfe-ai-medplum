@@ -196,7 +196,41 @@ async function assertRequesterBelongsTo(props: {
   requester: string;
   organizationId: string;
 }): Promise<void> {
-  const { medplum, requester, organizationId } = props;
+  const problem = await requesterOrganizationProblem({ ...props, field: REQUESTER_FIELD });
+  if (problem) {
+    throw new WebhookConfigError(503, problem);
+  }
+}
+
+/**
+ * Why a configured profile may not be used to act for a clinic — or nothing.
+ *
+ * Split out of {@link loadTenantConfig} because the scheduled discovery pass
+ * needs exactly this check and must not grow a second one. A webhook delivery
+ * and a cron run are both unattended work naming a profile out of a clinic's own
+ * config, and the hazard is identical in both: config is written by an
+ * authenticated admin *of some clinic*, so without this an admin of A could name
+ * a practitioner of B and have A's events land in B's chart. Two
+ * implementations of that rule is how one of them ends up more permissive —
+ * which is the reason `trigger.ts` exports `identify` rather than letting the
+ * RAG endpoints answer it themselves.
+ *
+ * Returns the reason rather than throwing so each caller can shape it: the
+ * receiver needs an HTTP status, the discovery pass needs a Task it can fail.
+ * @param props - What to check.
+ * @param props.medplum - The worker's own Medplum client.
+ * @param props.requester - The configured profile reference.
+ * @param props.organizationId - The clinic that owns the configuration.
+ * @param props.field - The config field it came from, named in the message.
+ * @returns The problem, or undefined when the profile may act for this clinic.
+ */
+export async function requesterOrganizationProblem(props: {
+  medplum: MedplumClient;
+  requester: string;
+  organizationId: string;
+  field: string;
+}): Promise<string | undefined> {
+  const { medplum, requester, organizationId, field } = props;
   const expected = `Organization/${organizationId}`;
 
   const memberships = await medplum
@@ -216,18 +250,13 @@ async function assertRequesterBelongsTo(props: {
   }
 
   if (found.size === 0) {
-    throw new WebhookConfigError(
-      503,
-      `${REQUESTER_FIELD} ${requester} is not scoped to an organization; assign the clinic access policy to it`
-    );
+    return `${field} ${requester} is not scoped to an organization; assign the clinic access policy to it`;
   }
   // Exactly one, and it has to be this one. A profile scoped to two clinics
   // cannot say which this delivery is for, and `resolveCallerOrganization`
   // downstream would refuse it anyway — refusing here makes the reason legible.
   if (found.size > 1 || !found.has(expected)) {
-    throw new WebhookConfigError(
-      503,
-      `${REQUESTER_FIELD} ${requester} resolves to ${[...found].join(', ')}, not ${expected}`
-    );
+    return `${field} ${requester} resolves to ${[...found].join(', ')}, not ${expected}`;
   }
+  return undefined;
 }

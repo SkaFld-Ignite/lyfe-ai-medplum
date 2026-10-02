@@ -35,6 +35,19 @@ interface PreviewInput {
   action: 'preview';
   start: string;
   end?: string;
+  /**
+   * Keep only appointments whose free-text `reason` contains this phrase.
+   *
+   * Optional, and absent means "every appointment", which is what the manual
+   * onboarding screen wants: a person reading the day's list is doing the
+   * filtering themselves and a hidden one would make the count wrong.
+   *
+   * The scheduled discovery pass supplies it from the clinic's own stored
+   * configuration, because the phrase is a clinic's habit and not a fact about
+   * DrChrono. This practice writes "new patient" in the Reason field; another
+   * writes "NP". A constant here would mean the second clinic needs a release.
+   */
+  reason?: string;
 }
 
 type Input = SearchInput | PreviewInput;
@@ -69,6 +82,15 @@ interface DrChronoAppointment {
   office?: number;
   /** DrChrono provider id. Present on every appointment. */
   doctor?: number;
+  /**
+   * The free-text Reason the front desk types when booking.
+   *
+   * This is the field the manual routine reads to decide whether a visit is a
+   * new patient. It only arrives because the request below asks for
+   * `verbose=true` — the compact appointment payload omits it — and it was
+   * already on the wire and simply unread before the filter existed.
+   */
+  reason?: string;
 }
 
 /** A calendar date, as both DrChrono and the UI exchange them. */
@@ -140,7 +162,7 @@ async function run(medplum: MedplumClient, event: BotEvent<Input>): Promise<unkn
     // the toggle, so the filter belongs here at the pull rather than in the UI
     // where a later caller could skip it.
     const disabled = await readDisabledDirectoryIds(medplum, organization);
-    return previewAppointments(get, start, end, disabled);
+    return previewAppointments(get, start, end, disabled, input.reason);
   }
 
   throw new Error(`Unknown action: ${JSON.stringify((input as { action?: string }).action)}`);
@@ -229,18 +251,21 @@ export async function searchPatients(
  * @param disabled - Directory ids whose appointments must be skipped.
  * @param disabled.offices - Switched-off DrChrono office ids.
  * @param disabled.doctors - Switched-off DrChrono provider ids.
+ * @param reasonPhrase - Keep only appointments whose reason contains this. Optional.
  * @returns The candidates and how many appointments were examined.
  */
-async function previewAppointments(
+export async function previewAppointments(
   get: (path: string) => Promise<Response>,
   start: string,
   end: string,
-  disabled: { offices: Set<string>; doctors: Set<string> }
+  disabled: { offices: Set<string>; doctors: Set<string> },
+  reasonPhrase?: string
 ): Promise<{
   scannedAppointments: number;
   results: PatientSummary[];
   skippedByDirectory: number;
   excludedByStatus: number;
+  excludedByReason: number;
 }> {
   const iso = (d: Date): string => d.toISOString().slice(0, 10);
   const startDate = new Date(`${start}T00:00:00Z`);
@@ -253,6 +278,10 @@ async function previewAppointments(
   // and patients found rather than leaving the reader to guess whether
   // somebody was booked twice.
   let excludedByStatus = 0;
+  // Counted last, and separately, for the same reason. An unattended run has
+  // nobody watching it, so "scanned 171, queued 4" has to be explainable from
+  // the record alone or the only available reading is that it is broken.
+  let excludedByReason = 0;
 
   for (let from = startDate; from <= endDate; from = new Date(from.getTime() + CHUNK_DAYS * DAY_MS)) {
     const to = new Date(Math.min(from.getTime() + (CHUNK_DAYS - 1) * DAY_MS, endDate.getTime()));
@@ -285,6 +314,16 @@ async function previewAppointments(
           skippedByDirectory++;
           continue;
         }
+        // Last of the three filters on purpose. A reason exclusion then counts
+        // only appointments that were otherwise importable — at a switched-on
+        // office, with a switched-on provider, and not cancelled — which is the
+        // number that actually answers "why did a 171-appointment day find four
+        // patients". Counting it first would fold the cancelled and the
+        // switched-off rows into it and say nothing.
+        if (!matchesReason(appt.reason, reasonPhrase)) {
+          excludedByReason++;
+          continue;
+        }
         counts.set(appt.patient, (counts.get(appt.patient) ?? 0) + 1);
       }
       next = body.next ?? null;
@@ -300,7 +339,51 @@ async function previewAppointments(
     })
   );
 
-  return { scannedAppointments: scanned, results, skippedByDirectory, excludedByStatus };
+  return { scannedAppointments: scanned, results, skippedByDirectory, excludedByStatus, excludedByReason };
+}
+
+/**
+ * Whether an appointment's free-text reason matches the clinic's phrase.
+ *
+ * Three decisions, each of which is the difference between this working and
+ * this quietly importing the wrong people:
+ *
+ * **No phrase means no filter.** An unset or blank setting is "every
+ * appointment", not "no appointment". The opposite reading would make a clinic
+ * that saved the settings form without touching the box import nobody, and
+ * report it as a day with no new patients — a silence indistinguishable from a
+ * quiet Tuesday.
+ *
+ * **A missing reason never matches a phrase that was set.** The front desk left
+ * the box empty, so the appointment does not say "new patient", so it is not
+ * one. Letting it through would mean the filter is skipped exactly where the
+ * data is weakest.
+ *
+ * **Substring, case-insensitive, and whitespace-normalised.** The field is typed
+ * by a person under time pressure: "New Patient", "new pt / new patient",
+ * "NEW  PATIENT eval" are all the same intent. Matching on equality would reject
+ * every one of them, and a word-boundary regex would reject "newpatient". The
+ * cost is that a phrase of "NP" also matches "NPO" — which is why the phrase is
+ * the clinic's to set and to widen when it is wrong.
+ * @param reason - The appointment's free-text reason, as DrChrono returns it.
+ * @param phrase - The clinic's configured phrase, if it has one.
+ * @returns True when this appointment should be kept.
+ */
+export function matchesReason(reason: string | undefined, phrase: string | undefined): boolean {
+  const needle = normalise(phrase ?? '');
+  if (!needle) {
+    return true;
+  }
+  return normalise(reason ?? '').includes(needle);
+}
+
+/**
+ * Lower-case and collapse runs of whitespace.
+ * @param value - Free text.
+ * @returns The comparable form.
+ */
+function normalise(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 /**

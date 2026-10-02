@@ -5,6 +5,7 @@ import type { ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { ProviderBrake } from '../../../examples/medplum-provider/bots/shared/provider-rate-limit.ts';
 import { chartImport } from './functions/chart-import.ts';
+import { onboardingDiscovery, onboardingDiscoverySchedule } from './functions/onboarding-discovery.ts';
 import { patientSummary } from './functions/patient-summary.ts';
 import { ragIndex } from './functions/rag-index.ts';
 import { zusImport } from './functions/zus-import.ts';
@@ -32,7 +33,10 @@ const PORT = Number(process.env.PORT ?? 3020);
 // registered is a link that silently never runs: Inngest delivers an event only
 // to the functions this endpoint declares, so a missing entry looks exactly
 // like an event nobody sent.
-const handler = serve({ client: inngest, functions: [chartImport, zusImport, ragIndex, patientSummary] });
+const handler = serve({
+  client: inngest,
+  functions: [chartImport, zusImport, ragIndex, patientSummary, onboardingDiscoverySchedule, onboardingDiscovery],
+});
 
 /** Browser origins allowed to start a run. */
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:3001').split(',').map((o) => o.trim());
@@ -164,7 +168,14 @@ function health(res: ServerResponse, brakes: ProviderBrake[]): void {
     JSON.stringify({
       ok: ready,
       medplum: ready ? 'connected' : (startupError ?? 'connecting'),
-      functions: ['drchrono-chart-import', 'zus-record-import', 'rag-document-index', 'patient-ai-summary'],
+      functions: [
+        'drchrono-chart-import',
+        'zus-record-import',
+        'rag-document-index',
+        'patient-ai-summary',
+        'onboarding-discovery-schedule',
+        'onboarding-discovery',
+      ],
       // Reported from the registry rather than written out, so "is this
       // provider deployed yet" has an answer that cannot drift from the code.
       inboundProviders: adapterIds(),
