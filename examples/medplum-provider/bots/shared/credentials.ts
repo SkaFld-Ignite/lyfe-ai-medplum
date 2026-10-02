@@ -114,8 +114,14 @@ const DECLARED_SCHEMAS = {
  * `webhookEvents` is an optional comma-separated allow-list of provider event
  * names. Empty means "every event this provider's adapter can map", which is the
  * right default when the provider's own console already decides what it sends.
+ *
+ * `webhookTenantId` is the provider's own id for this clinic — DrChrono's
+ * `practice_group_id`, for instance. Optional, and when set the receiver refuses
+ * a delivery whose payload claims a different tenant. That is the only check
+ * that catches a callback URL *and* secret copied from another clinic, which
+ * otherwise verifies perfectly and imports the wrong practice's patients.
  */
-export const WEBHOOK_CONFIG_FIELDS = ['webhookRequester', 'webhookEvents'] as const;
+export const WEBHOOK_CONFIG_FIELDS = ['webhookRequester', 'webhookEvents', 'webhookTenantId'] as const;
 
 /** Secret fields every integration gets. See {@link WEBHOOK_CONFIG_FIELDS}. */
 export const WEBHOOK_SECRET_FIELDS = ['webhookSecret'] as const;

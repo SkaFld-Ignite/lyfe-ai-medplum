@@ -36,11 +36,11 @@ live on the `Basic` resource that already holds its integration credentials, one
 per `(Organization, integration)` pair — see
 `examples/medplum-provider/bots/shared/credentials.ts`.
 
-| Field | Bucket | Meaning |
-|---|---|---|
-| `webhookSecret` | secret (AES-256-GCM) | What the provider authenticates with |
-| `webhookRequester` | config | Profile the resulting work runs as, e.g. `Practitioner/abc` |
-| `webhookEvents` | config | Optional comma-separated allow-list. Empty means every event the adapter can map |
+| Field              | Bucket               | Meaning                                                                          |
+| ------------------ | -------------------- | -------------------------------------------------------------------------------- |
+| `webhookSecret`    | secret (AES-256-GCM) | What the provider authenticates with                                             |
+| `webhookRequester` | config               | Profile the resulting work runs as, e.g. `Practitioner/abc`                      |
+| `webhookEvents`    | config               | Optional comma-separated allow-list. Empty means every event the adapter can map |
 
 These three are merged into **every** integration's field allow-list
 (`WEBHOOK_CONFIG_FIELDS` / `WEBHOOK_SECRET_FIELDS`), so a provider added to
@@ -70,13 +70,13 @@ makes the tenant boundary impossible to reimplement per provider.
 
 Providers read the status code and nothing else.
 
-| Code | Meaning | Provider's reaction |
-|---|---|---|
-| 200 | We own this event — including "deliberately ignored" and "we do not recognise this" | Done |
-| 400 | Authentic but unusable: no delivery id, no event name, unparseable body | Retries, then gives up |
-| 401 | Not authentic | Retries, then gives up |
-| 404 | Unknown provider, or a clinic with no such integration | Retries, then gives up |
-| 5xx | Our fault, possibly temporary — a missing secret, a bad requester, Inngest unreachable | Retries |
+| Code | Meaning                                                                                | Provider's reaction    |
+| ---- | -------------------------------------------------------------------------------------- | ---------------------- |
+| 200  | We own this event — including "deliberately ignored" and "we do not recognise this"    | Done                   |
+| 400  | Authentic but unusable: no delivery id, no event name, unparseable body                | Retries, then gives up |
+| 401  | Not authentic                                                                          | Retries, then gives up |
+| 404  | Unknown provider, or a clinic with no such integration                                 | Retries, then gives up |
+| 5xx  | Our fault, possibly temporary — a missing secret, a bad requester, Inngest unreachable | Retries                |
 
 The rule underneath: **never answer 200 for an event we did not take
 responsibility for.** A 200 destroys the event.
@@ -88,16 +88,16 @@ responsibility for.** A 200 destroys the event.
 Read off the live documentation at
 `https://app.drchrono.com/api-docs/#section/Webhooks` on **2026-10-02**.
 
-| | What DrChrono does |
-|---|---|
-| `X-drchrono-signature` | **The secret token itself**, sent verbatim. Not an HMAC of anything |
-| `X-drchrono-event` | The event name, or `PING` |
-| `X-drchrono-delivery` | This delivery's id |
-| Body | `{ receiver, object }` — the webhook's own JSON, and the affected object serialised as the REST API would return it |
-| Timestamp | **There is none.** Not in a header, not in the body |
-| Verification | A **GET** to the callback URL with `?msg=<nonce>`, answered `200 {"secret_token": HMAC_SHA256(secret, msg).hexdigest()}` |
-| Retries | 3, at **+1h, +3h and +7h** after the original event, then manual only |
-| Success | Any 2xx. Everything else, including 302, is a failure |
+|                        | What DrChrono does                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `X-drchrono-signature` | **The secret token itself**, sent verbatim. Not an HMAC of anything                                                      |
+| `X-drchrono-event`     | The event name, or `PING`                                                                                                |
+| `X-drchrono-delivery`  | This delivery's id                                                                                                       |
+| Body                   | `{ receiver, object }` — the webhook's own JSON, and the affected object serialised as the REST API would return it      |
+| Timestamp              | **There is none.** Not in a header, not in the body                                                                      |
+| Verification           | A **GET** to the callback URL with `?msg=<nonce>`, answered `200 {"secret_token": HMAC_SHA256(secret, msg).hexdigest()}` |
+| Retries                | 3, at **+1h, +3h and +7h** after the original event, then manual only                                                    |
+| Success                | Any 2xx. Everything else, including 302, is a failure                                                                    |
 
 `lyfe-provider-ui` was wired to none of this: it computed
 `HMAC-SHA256(secret, rawBody)` and compared it to the signature header, read the
@@ -131,7 +131,7 @@ You need three things:
 - A **secret token with real entropy**. Generate one:
 
   ```sh
-  node -e "console.log(require('crypto').randomBytes(20).toString('hex'))"
+  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
   ```
 
   Each clinic gets its own. Never reuse one across clinics — per-tenant
@@ -151,7 +151,7 @@ compartment:
   "action": "saveCredentials",
   "integration": "drchrono",
   "secrets": { "webhookSecret": "<the token you generated>" },
-  "config": { "webhookRequester": "Practitioner/<id>" }
+  "config": { "webhookRequester": "Practitioner/<id>" },
 }
 ```
 
@@ -160,6 +160,25 @@ one `organization` access parameter, and it must be **this** clinic's. Any
 practitioner already using the product qualifies; a dedicated integration
 practitioner per clinic is tidier, because every Task a hook produces will be
 attributed to it.
+
+Also save `webhookTenantId` — DrChrono's own id for the practice, which it sends
+as `practice_group_id` on every delivery:
+
+```jsonc
+"config": { "webhookRequester": "Practitioner/<id>", "webhookTenantId": "222" }
+```
+
+This is the one check that catches a callback URL **and** secret copied from
+another clinic. That mistake produces deliveries which verify perfectly and
+import the wrong practice's patients into the wrong chart, and nothing else in
+the request disagrees. A delivery whose `practice_group_id` does not match is
+refused with a 403 and queues nothing.
+
+It is optional, and leaving it out only means the check does not run — the
+signature is still the trust boundary. If you do not know the value, omit it,
+let one delivery through, and read it from the worker log: an unconfigured
+clinic logs `this delivery came from DrChrono tenant <id>` precisely so nobody
+has to guess it.
 
 Optionally restrict which events do work, independently of what DrChrono sends:
 
@@ -177,14 +196,14 @@ application the clinic connects through (for Lyfe's own practice group that is
 
 Fill it in:
 
-| Field | Value |
-|---|---|
-| **Name** | anything, e.g. `Lyfe inbound` |
+| Field            | Value                                                     |
+| ---------------- | --------------------------------------------------------- |
+| **Name**         | anything, e.g. `Lyfe inbound`                             |
 | **Callback URL** | `https://<worker>/api/webhooks/drchrono/<organizationId>` |
-| **Secret Token** | the token from step 1, exactly |
-| **Active** | ticked |
+| **Secret Token** | the token from step 1, exactly                            |
+| **Active**       | ticked                                                    |
 
-**Events** — choose *Let me select individual events* and tick the ones Lyfe
+**Events** — choose _Let me select individual events_ and tick the ones Lyfe
 acts on. These map to a chart re-import:
 
 ```
@@ -197,12 +216,12 @@ VACCINE_ADMINISTERED        CLINICAL_NOTE_UNLOCK        LAB_ORDER_MODIFY
                                                         LAB_ORDER_DELETE
 ```
 
-*Send me everything* also works — the billing and practice-task events
+_Send me everything_ also works — the billing and practice-task events
 (`LINE_ITEM_*`, `CASH_PAYMENT_DELETE`, `TASK_*`) are acknowledged and
 deliberately ignored, with the reason in the response. Selecting individual
 events just means less traffic.
 
-Click **Save Changes**. The page confirms with *All changes saved*.
+Click **Save Changes**. The page confirms with _All changes saved_.
 
 ### Step 3 — verify the callback URL
 

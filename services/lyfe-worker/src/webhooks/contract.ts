@@ -164,6 +164,29 @@ export interface InboundAdapter {
   deliveryId(props: { request: InboundRequest }): string | undefined;
 
   /**
+   * The provider's own id for the tenant this event came from, if it sends one.
+   *
+   * A second, independent answer to "whose event is this?", and the only one the
+   * provider itself asserts. The organization in the URL was chosen by whoever
+   * configured the webhook, and the signature proves only that the sender knows
+   * a secret. If someone onboarding a second clinic copies *both* the callback
+   * URL and the token from the first, every delivery verifies cleanly and one
+   * clinic's patients import into the other's chart. Nothing else in the request
+   * can catch that; this can.
+   *
+   * Optional, because not every provider sends one. An adapter that returns
+   * undefined leaves the check unperformed rather than failing it.
+   *
+   * Reads the parsed body rather than the raw bytes: this is only ever consulted
+   * after {@link InboundAdapter.verify} has passed, so the body is already known
+   * to be the provider's own.
+   * @param props - The delivery.
+   * @param props.body - The parsed JSON body.
+   * @returns The provider's tenant id, or undefined when it sends none.
+   */
+  tenantClaim?(props: { body: unknown }): string | undefined;
+
+  /**
    * The provider's own name for this event.
    * @param props - The request.
    * @param props.request - The inbound POST.
