@@ -92,6 +92,7 @@ vi.mock('../inngest.ts', () => ({
     send: vi.fn(),
   },
   PER_CLINIC_CONCURRENCY: 5,
+  DRCHRONO_IMPORTS_PER_HOUR: 14,
 }));
 
 vi.mock('../medplum.ts', () => {

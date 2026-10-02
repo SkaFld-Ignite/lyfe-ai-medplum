@@ -4,7 +4,7 @@ import { NonRetriableError } from 'inngest';
 import { handler as drchronoHandler } from '../../../../examples/medplum-provider/bots/drchrono-import.ts';
 import { DRCHRONO_PROVIDER } from '../../../../examples/medplum-provider/bots/shared/drchrono.ts';
 import { botEvent } from '../bot-event.ts';
-import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
+import { DRCHRONO_IMPORTS_PER_HOUR, inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
 import { heldPhase, holdWhileRateLimited } from '../providers/hold.ts';
 import { withStepTimeout } from '../rate-limit.ts';
@@ -28,6 +28,19 @@ export const chartImport = inngest.createFunction(
     id: 'drchrono-chart-import',
     name: 'DrChrono chart import',
     concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
+    // The rate control, keyed per clinic. See DRCHRONO_IMPORTS_PER_HOUR for
+    // where the number comes from: DrChrono allows 500 calls an hour, reset at
+    // the top of the hour, and a chart costs roughly 25 of them.
+    //
+    // A throttle rather than a tighter concurrency, because the limit being
+    // respected is a rate and concurrency is not one. Inngest spaces starts
+    // evenly across the period, which is what stops a run spending the hour's
+    // whole budget in its first two minutes and then waiting for the clock —
+    // exactly what a 33-patient burst did, for a 45-minute stall.
+    //
+    // Throttled runs are ENQUEUED, not dropped. `rateLimit` would skip them,
+    // and a skipped run means a patient with an appointment and no chart.
+    throttle: { key: 'event.data.organizationId', limit: DRCHRONO_IMPORTS_PER_HOUR, period: '1h' },
     // Raised from 3. With RetryAfterError a rate limit no longer consumes an
     // attempt usefully — it reschedules — so the budget is there for the
     // failures that are actually worth re-running.
