@@ -23,19 +23,17 @@ import { DRCHRONO_PROVIDER } from '../../../../examples/medplum-provider/bots/sh
  *
  * - **Off.** {@link isDiscoveryEnabled} returns true only for a stored `true`.
  *   Deploying this must change nothing for any clinic.
- * - **Two days** ({@link DEFAULT_LOOKAHEAD_DAYS} is 1, meaning today plus one).
- *   Today's schedule is what the manual routine covers, and one day of
- *   lookahead is there so the chart to Zus to index to summary chain has hours
- *   rather than minutes to finish before the patient is in the room. Longer
- *   windows are a product decision and a setting, not a code change.
- * - Twenty-five patients ({@link DEFAULT_MAX_PATIENTS}). A ceiling, not a
- *   target. A 33-patient day is what exhausted this practice's DrChrono quota
- *   for twenty minutes, so an unattended run's worst case is held just below
- *   the worst day anyone has actually had. A clinic that genuinely books more
- *   new patients than this raises it deliberately.
- * - **"new patient"** ({@link DEFAULT_REASON_PHRASE}). The phrase this practice
- *   types, and the one the manual routine reads. The pass never runs without
- *   a phrase at all: see {@link readDiscoveryConfig}.
+ * - **Eight days** ({@link DEFAULT_LOOKAHEAD_DAYS} is 7, meaning today plus a
+ *   week). Imports are paced against DrChrono's hourly budget, so a busy day
+ *   drains over hours; the window has to be wide enough that this is slack
+ *   rather than a race, and wide enough for a Zus enrolment to have answered.
+ * - **Five hundred patients** ({@link DEFAULT_MAX_PATIENTS}). A runaway guard,
+ *   not a daily allowance — pacing belongs to the throttle, which queues
+ *   instead of discarding. The old 25 was a cliff for any practice booking
+ *   more than 25 a day, which is most of them.
+ * - **No reason filter.** Every patient with an upcoming active appointment is
+ *   onboarded. A clinic that wants to narrow it sets `discoveryReason`, but
+ *   nothing is excluded by default — see {@link readDiscoveryConfig}.
  * - **US/Pacific** ({@link DEFAULT_TIME_ZONE}). Matches
  *   `DEFAULT_PRACTICE_TIME_ZONE` in the importer and `DEFAULT_CLINIC_TIME_ZONE`
  *   in the UI. A wrong-but-shared default still agrees with itself; two
@@ -43,8 +41,22 @@ import { DRCHRONO_PROVIDER } from '../../../../examples/medplum-provider/bots/sh
  *   which day it is.
  */
 
-/** Days past today the window reaches, when the clinic has not said. */
-export const DEFAULT_LOOKAHEAD_DAYS = 1;
+/**
+ * Days past today the window reaches, when the clinic has not said.
+ *
+ * Seven, not one. The pass no longer races the appointment: chart imports are
+ * throttled to DrChrono's hourly budget, so a hundred-patient day drains over
+ * hours rather than minutes, and a one-day window would mean patients booked
+ * for tomorrow arriving before their chart did. A week turns that race into
+ * slack.
+ *
+ * It also gives Zus somewhere to be. Enrolment answers over hours to days — the
+ * network pull legitimately returns empty at first, which is why the import
+ * chain re-pulls on a 30m/2h/6h ladder — so finding a patient the day before
+ * their visit systematically produces a thin outside record. A week out does
+ * not.
+ */
+export const DEFAULT_LOOKAHEAD_DAYS = 7;
 
 /**
  * The longest window a clinic may configure.
@@ -57,14 +69,34 @@ export const DEFAULT_LOOKAHEAD_DAYS = 1;
  */
 export const MAX_LOOKAHEAD_DAYS = 30;
 
-/** The most patients one pass may queue, when the clinic has not said. */
-export const DEFAULT_MAX_PATIENTS = 25;
+/**
+ * The most patients one pass may queue, when the clinic has not said.
+ *
+ * A runaway guard, not a daily allowance. It used to be 25, chosen to sit just
+ * under the 33-patient day that exhausted DrChrono's quota — which made it a
+ * cliff: a practice booking a hundred patients a day would have had three
+ * quarters of its schedule truncated every morning, with the Task reporting
+ * "75 left for the next pass" and the next pass covering a different day.
+ *
+ * Pacing is the throttle's job now (`DRCHRONO_IMPORTS_PER_HOUR`), which queues
+ * rather than discards. So this exists only to stop something absurd — a
+ * mis-set window, a duplicated calendar — turning into thousands of imports
+ * before a person notices. 500 is far above any real day and far below a
+ * runaway.
+ */
+export const DEFAULT_MAX_PATIENTS = 500;
 
 /** Hard ceiling on {@link DiscoveryConfig.maxPatients}, whatever is configured. */
-export const MAX_MAX_PATIENTS = 200;
+export const MAX_MAX_PATIENTS = 2000;
 
-/** The phrase an appointment's Reason must contain, when the clinic has not said. */
-export const DEFAULT_REASON_PHRASE = 'new patient';
+/**
+ * There is deliberately no default reason phrase.
+ *
+ * A clinic may set one, and then it filters. Unset, every patient with an
+ * upcoming active appointment is onboarded — which is the point: the chart has
+ * to be there when the patient is in the room, and whether the booking staff
+ * typed "new patient" is not a safe thing to hang that on.
+ */
 
 /** The zone "today" is read in, when the clinic has not said. */
 export const DEFAULT_TIME_ZONE = 'US/Pacific';
@@ -77,8 +109,11 @@ export interface DiscoveryConfig {
   readonly enabled: boolean;
   /** Days past today the window reaches. `0` is today only. */
   readonly lookaheadDays: number;
-  /** The free-text phrase an appointment's Reason must contain. Never blank. */
-  readonly reasonPhrase: string;
+  /**
+   * A free-text phrase an appointment's Reason must contain, when a clinic
+   * wants one. Undefined — the default — means every appointment qualifies.
+   */
+  readonly reasonPhrase?: string;
   /** The profile the unattended run acts as, e.g. `Practitioner/abc`. */
   readonly requester?: string;
   /** The most patients this pass may queue. */
@@ -107,16 +142,22 @@ export function readDiscoveryConfig(props: { organizationId: string; record: Bas
   // is still re-resolved against this clinic before it is used — the stored
   // value is a lookup key, never a grant. See `requesterOrganizationProblem`.
   const requester = (config.discoveryRequester || config.webhookRequester || '').trim();
+  const reasonPhrase = (config.discoveryReason || '').trim();
   return {
     organizationId: props.organizationId,
     enabled: isDiscoveryEnabled(config.discoveryEnabled),
     lookaheadDays: boundedInteger(config.discoveryLookaheadDays, DEFAULT_LOOKAHEAD_DAYS, 0, MAX_LOOKAHEAD_DAYS),
-    // Blank falls back to the default rather than to "no filter". An empty
-    // phrase means "match everything" to `matchesReason`, which is right for a
-    // person previewing a day by hand and catastrophic for an unattended run:
-    // it would import the clinic's entire schedule. The pass therefore always
-    // filters, and the only question is on what.
-    reasonPhrase: (config.discoveryReason || '').trim() || DEFAULT_REASON_PHRASE,
+    // Unset means no reason filter: every patient with an upcoming active
+    // appointment is onboarded, which is what this is for. The appointment's
+    // free text is not a reliable gate anyway — it is whatever the booking
+    // staff typed, and a patient whose chart is missing because somebody wrote
+    // "n.p." is a worse outcome than importing a chart that was already there,
+    // which is idempotent and costs one conditional update.
+    //
+    // Volume is bounded by the things that actually bound it — the Directory's
+    // offices and providers, the cancelled/rescheduled exclusions, maxPatients
+    // and the provider brake — not by hoping the Reason column is tidy.
+    ...(reasonPhrase ? { reasonPhrase } : {}),
     ...(requester ? { requester } : {}),
     maxPatients: boundedInteger(config.discoveryMaxPatients, DEFAULT_MAX_PATIENTS, 1, MAX_MAX_PATIENTS),
     timeZone: (config.discoveryTimeZone || '').trim() || DEFAULT_TIME_ZONE,

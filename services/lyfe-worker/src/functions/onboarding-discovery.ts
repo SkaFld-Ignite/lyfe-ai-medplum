@@ -396,7 +396,9 @@ export function summarise(
     `${window.start}..${window.end}`,
     `scanned ${outcome.scannedAppointments}`,
     `queued ${outcome.queued}`,
-    `reason "${config.reasonPhrase}" excluded ${outcome.excludedByReason}`,
+    // Only mentioned when a clinic set one. Printing `reason "" excluded 0` on
+    // every run invites the reader to hunt for a filter that is not there.
+    ...(config.reasonPhrase ? [`reason "${config.reasonPhrase}" excluded ${outcome.excludedByReason}`] : []),
     `cancelled ${outcome.excludedByStatus}`,
     `off-directory ${outcome.skippedByDirectory}`,
     `already imported ${outcome.alreadyImported}`,

@@ -92,6 +92,8 @@ vi.mock('../inngest.ts', () => ({
     send: vi.fn(),
   },
   PER_CLINIC_CONCURRENCY: 5,
+  DRCHRONO_IMPORTS_PER_HOUR: 14,
+  AI_CONCURRENCY: 15,
 }));
 
 vi.mock('../medplum.ts', () => {
@@ -308,15 +310,19 @@ describe('an enabled clinic', () => {
     configure({ discoveryEnabled: 'true', discoveryRequester: REQUESTER });
   });
 
-  test('queues the new patient, and nobody else', async () => {
+  test('queues everyone with an active appointment, whatever the reason says', async () => {
+    // No reason filter by default. The chart has to be there when the patient
+    // is in the room, and whether the booking staff typed "new patient" is not
+    // a safe thing to hang that on.
     h.store.appointments = [
       { patient: 11, status: 'Confirmed', reason: 'New Patient Consult' },
       { patient: 22, status: 'Confirmed', reason: 'follow up' },
+      { patient: 33, status: 'Confirmed' },
     ];
 
     await runPass();
 
-    expect(queuedPatientIds()).toStrictEqual(['11']);
+    expect(queuedPatientIds()).toStrictEqual(['11', '22', '33']);
   });
 
   test('asks for the import with the event the Import button already sends', async () => {
@@ -412,12 +418,29 @@ describe('the clinic decides the phrase', () => {
     expect(queuedPatientIds()).toStrictEqual(['11']);
   });
 
-  test('a clinic that saved no phrase still filters, rather than importing its whole schedule', async () => {
+  test('a clinic that saved no phrase onboards its whole active schedule', async () => {
+    // Including the appointment with no reason at all. An absent Reason is the
+    // commonest kind, and a patient whose chart is missing because nobody
+    // filled in a free-text box is the failure this exists to prevent.
     configure({ discoveryEnabled: 'true', discoveryRequester: REQUESTER });
     h.store.appointments = [
       { patient: 11, status: 'Confirmed', reason: 'new patient' },
       { patient: 22, status: 'Confirmed', reason: 'annual physical' },
       { patient: 33, status: 'Confirmed' },
+    ];
+
+    await runPass();
+
+    expect(queuedPatientIds()).toStrictEqual(['11', '22', '33']);
+  });
+
+  test('a clinic that wants to narrow it still can', async () => {
+    // The phrase remains available for a clinic that genuinely only wants a
+    // subset. It is opt-in now rather than the default.
+    configure({ discoveryEnabled: 'true', discoveryRequester: REQUESTER, discoveryReason: 'new patient' });
+    h.store.appointments = [
+      { patient: 11, status: 'Confirmed', reason: 'New Patient Consult' },
+      { patient: 22, status: 'Confirmed', reason: 'follow up' },
     ];
 
     await runPass();
@@ -429,21 +452,30 @@ describe('the clinic decides the phrase', () => {
 describe('what the run leaves behind', () => {
   test('a pass that finds nobody says so rather than failing', async () => {
     configure({ discoveryEnabled: 'true', discoveryRequester: REQUESTER });
+    // Everybody on the day is already in Medplum, so there is nothing to do.
     h.store.appointments = [
       { patient: 11, status: 'Confirmed', reason: 'follow up' },
       { patient: 22, status: 'Confirmed', reason: 'annual physical' },
     ];
+    h.store.patients = ['11', '22'].map((value) => ({
+      resourceType: 'Patient',
+      id: `p-${value}`,
+      meta: { account: { reference: `Organization/${ORG}` } },
+      identifier: [{ system: DRCHRONO_PATIENT_SYSTEM, value }],
+    }));
 
     await runPass();
 
     const task = discoveryTask();
     expect(task?.status).toBe('completed');
     // "queued 0" has to be on the row. A Task that merely says "complete" is
-    // indistinguishable from a run that never looked, and the first question
-    // anybody asks is whether it was looking for the right words.
+    // indistinguishable from a run that never looked at all.
     expect(task?.businessStatus?.text).toContain('queued 0');
-    expect(task?.businessStatus?.text).toContain('new patient');
     expect(task?.businessStatus?.text).toContain('scanned 2');
+    expect(task?.businessStatus?.text).toContain('already imported 2');
+    // No phrase was set, so none is claimed. Printing `reason "" excluded 0`
+    // would send the reader hunting for a filter that is not there.
+    expect(task?.businessStatus?.text).not.toContain('reason "');
   });
 
   test('a clinic whose DrChrono refuses is reported as failed, not as a quiet day', async () => {

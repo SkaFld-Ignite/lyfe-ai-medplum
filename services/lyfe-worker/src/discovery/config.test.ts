@@ -6,7 +6,6 @@ import { CONFIG_PREFIX } from '../../../../examples/medplum-provider/bots/shared
 import {
   DEFAULT_LOOKAHEAD_DAYS,
   DEFAULT_MAX_PATIENTS,
-  DEFAULT_REASON_PHRASE,
   discoveryWindow,
   isDiscoveryEnabled,
   MAX_LOOKAHEAD_DAYS,
@@ -65,21 +64,33 @@ describe('the defaults', () => {
     expect(config).toMatchObject({
       enabled: true,
       lookaheadDays: DEFAULT_LOOKAHEAD_DAYS,
-      reasonPhrase: DEFAULT_REASON_PHRASE,
       maxPatients: DEFAULT_MAX_PATIENTS,
     });
+    // No reason filter unless a clinic asks for one. Every patient with an
+    // upcoming active appointment is onboarded, because the chart has to be
+    // there when they are in the room and the Reason column is whatever the
+    // booking staff happened to type.
+    expect(config.reasonPhrase).toBeUndefined();
   });
 
-  test('a blank phrase falls back to the default, never to "no filter"', () => {
-    // An empty phrase matches every appointment. That is right for a person
-    // previewing a day by hand and catastrophic unattended: it would import
-    // the clinic's whole schedule.
+  test('a blank phrase is no filter, not an empty one', () => {
+    // Blank and absent must mean the same thing, or saving the settings with
+    // the box untouched would quietly change which patients get onboarded.
     const config = readDiscoveryConfig({
       organizationId: 'org-1',
       record: record({ discoveryEnabled: 'true', discoveryReason: '   ' }),
     });
 
-    expect(config.reasonPhrase).toBe(DEFAULT_REASON_PHRASE);
+    expect(config.reasonPhrase).toBeUndefined();
+  });
+
+  test('a clinic that wants to narrow it still can', () => {
+    const config = readDiscoveryConfig({
+      organizationId: 'org-1',
+      record: record({ discoveryEnabled: 'true', discoveryReason: '  New Patient  ' }),
+    });
+
+    expect(config.reasonPhrase).toBe('New Patient');
   });
 
   test('a nonsense number is the default rather than a stopped clinic', () => {

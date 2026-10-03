@@ -4,7 +4,7 @@ import type { WithId } from '@medplum/core';
 import type { Task } from '@medplum/fhirtypes';
 import { NonRetriableError } from 'inngest';
 import { openOrAdoptTask } from '../../../../examples/medplum-provider/bots/shared/progress.ts';
-import { inngest, PER_CLINIC_CONCURRENCY } from '../inngest.ts';
+import { AI_CONCURRENCY, inngest } from '../inngest.ts';
 import { getMedplum } from '../medplum.ts';
 import { isRagConfigured } from '../rag/db.ts';
 import type { PatientDocument } from '../rag/ingest.ts';
@@ -79,7 +79,7 @@ export const ragIndex = inngest.createFunction(
   {
     id: 'rag-document-index',
     name: 'Document RAG index',
-    concurrency: { key: 'event.data.organizationId', limit: PER_CLINIC_CONCURRENCY },
+    concurrency: { key: 'event.data.organizationId', limit: AI_CONCURRENCY },
     // Matches the importers. Most of what fails here is a rate limit on
     // Medplum, Bedrock or Textract, and those reschedule rather than spend an
     // attempt usefully.

@@ -56,6 +56,9 @@ interface CapturedFunction {
     retries?: number;
     debounce?: { key?: string; period: string; timeout?: string };
     concurrency?: { key: string; limit: number } | { key: string; limit: number }[];
+    throttle?: { key?: string; limit: number; period: string; burst?: number };
+    /** Never expected to be set — see the throttle tests at the end of this file. */
+    rateLimit?: { key?: string; limit: number; period: string };
   };
   trigger: { event: string };
   handler: (ctx: unknown) => Promise<unknown>;
@@ -82,6 +85,8 @@ vi.mock('../inngest.ts', () => ({
     send: vi.fn(),
   },
   PER_CLINIC_CONCURRENCY: 5,
+  DRCHRONO_IMPORTS_PER_HOUR: 14,
+  AI_CONCURRENCY: 15,
 }));
 
 const medplum = { readResource: vi.fn(), searchResources: vi.fn() };
@@ -838,5 +843,63 @@ describe('a clinic the provider is refusing is held, not failed', () => {
     const { slept, error } = await run('drchrono-chart-import', CHART_EVENT);
     expect(error).toBeUndefined();
     expect(slept).toEqual([]);
+  });
+});
+
+describe('chart imports are paced to DrChrono, not fired in a burst', () => {
+  test('drchrono-chart-import declares a per-clinic hourly throttle', () => {
+    // DrChrono allows 500 API calls an hour, reset at the top of the hour, and
+    // a chart costs roughly 25 of them. Thirty-three patients queued at once
+    // spent that budget in minutes and then stalled for forty-five, because a
+    // throttled window does not reopen until the clock says so.
+    //
+    // A throttle and not a smaller concurrency, because the limit being
+    // respected is a rate. Concurrency bounds how many run at one instant,
+    // which at ~70s an import would never bind at this rate.
+    //
+    // Asserted as configuration for the same reason the concurrency above is:
+    // the spacing happens inside Inngest, between the event being accepted and
+    // the function being invoked, where no local stubbing reaches.
+    const throttle = registered['drchrono-chart-import'].config.throttle;
+    expect(throttle).toMatchObject({ key: 'event.data.organizationId', period: '1h' });
+    expect(throttle?.limit).toBeGreaterThan(0);
+  });
+
+  test('throttled runs queue rather than being skipped', () => {
+    // The distinction that matters clinically. Inngest `rateLimit` drops runs
+    // over the limit; `throttle` enqueues them. A dropped run is a patient who
+    // arrives for an appointment with no chart, and nothing upstream would
+    // know — so the one must never be swapped for the other as a tidy-up.
+    expect(registered['drchrono-chart-import'].config.rateLimit).toBeUndefined();
+    expect(registered['drchrono-chart-import'].config.throttle).toBeDefined();
+  });
+});
+
+describe('the AI half of the chain is not paced by DrChrono', () => {
+  test('indexing and summarisation get their own concurrency', () => {
+    // They talk to Textract and Bedrock; they never call DrChrono, so the
+    // number that paces chart imports has no business bounding them. Sharing
+    // one meant the slowest-finishing part of the chain — the part a clinician
+    // actually waits on, since the summary is the last thing to appear — ran at
+    // a limit that existed only because the Inngest Hobby plan allowed five
+    // concurrent steps.
+    const index = registered['rag-document-index'].config.concurrency;
+    const summary = registered['patient-ai-summary'].config.concurrency;
+
+    expect(index).toMatchObject({ key: 'event.data.organizationId' });
+    expect(summary).toMatchObject({ key: 'event.data.organizationId' });
+    // Strictly more room than the DrChrono-facing path, which is the whole
+    // point of separating them.
+    expect((index as { limit: number }).limit).toBeGreaterThan(5);
+    expect((summary as { limit: number }).limit).toBeGreaterThan(5);
+  });
+
+  test('the DrChrono-facing functions stay where the provider wants them', () => {
+    // Chart import is paced by its throttle, and the network pull by Zus's ten
+    // enrolments a minute. Raising either would buy nothing and spend somebody
+    // else's quota.
+    expect(registered['drchrono-chart-import'].config.concurrency).toMatchObject({ limit: 5 });
+    const zus = registered['zus-record-import'].config.concurrency;
+    expect(zus).toEqual(expect.arrayContaining([{ key: 'event.data.organizationId', limit: 5 }]));
   });
 });
