@@ -103,6 +103,13 @@ import {
   readCredentialRecord,
 } from './shared/credentials.ts';
 import { readZusEnabledLocationRefs } from './shared/directory.ts';
+import type { DocumentFileReport, NetworkOutcome } from './shared/document-files.ts';
+import {
+  describeNetworks,
+  describeRunOutcome,
+  describeWithheldDocuments,
+  partitionBackedDocuments,
+} from './shared/document-files.ts';
 import { mapWithConcurrency, storeFile, storedBinaryReference } from './shared/files.ts';
 import type { DeclineReason, DeclineTally } from './shared/local-edits.ts';
 import { describeDeclines, selectWritable } from './shared/local-edits.ts';
@@ -187,6 +194,14 @@ interface ZusImportSuccess {
   taskId: string;
   /** Wall-clock duration of the whole import. */
   durationMs: number;
+  /**
+   * Documents Zus listed whose file could not be stored, and which were
+   * therefore not written. A number rather than a sentence, so the worker and
+   * any other caller can act on it without parsing prose.
+   */
+  documentsUnavailable: number;
+  /** How each source network / repository fared on documents this run. */
+  networks: readonly NetworkOutcome[];
 }
 
 /** What the caller gets back on failure. */
@@ -455,6 +470,11 @@ async function run(props: {
     const declinedTotal: DeclineTally = {};
     const declinedSample: Partial<Record<DeclineReason, string>> = {};
 
+    // Documents whose file could not be stored, and how each source network
+    // fared. Returned to the worker as well as written onto the Task, so a
+    // caller can act on the number without parsing a sentence.
+    let documentReport: DocumentFileReport | undefined;
+
     for (const resourceType of RESOURCE_TYPES) {
       await progress.phase(resourceType);
       try {
@@ -474,6 +494,27 @@ async function run(props: {
         }
         if (written.reason) {
           incomplete[resourceType] = written.reason;
+        }
+        // The per-network half of the report, ported from the legacy
+        // platform's Zus history job. There a run that finished with one
+        // network still queued or errored was recorded as PARTIAL rather than
+        // SUCCESS, precisely so a real, known gap did not look identical to a
+        // clean sync. The gap is the same gap; the only difference is that it
+        // is read off the provenance tags of the documents that arrived rather
+        // than off a job-status API, which needs no extra call and no new
+        // resource. Both land in `incomplete`, which the Imports page already
+        // renders as "Finished short" and which flips this run's business
+        // status to `partial` below.
+        if (written.documents) {
+          documentReport = written.documents;
+          const withheldSummary = describeWithheldDocuments(written.documents);
+          if (withheldSummary) {
+            incomplete['documents-unavailable'] = withheldSummary;
+          }
+          const networkSummary = describeNetworks(written.documents);
+          if (networkSummary) {
+            incomplete['document-networks'] = networkSummary;
+          }
         }
         // Publish after each type so a long pull shows what it has already
         // landed rather than only its phase name.
@@ -531,9 +572,17 @@ async function run(props: {
     }
 
     const durationMs = Date.now() - startedAt;
-    await finishTask({ medplum, task, status: 'completed', counts, incomplete, durationMs });
+    await finishTask({ medplum, task, status: 'completed', counts, incomplete, durationMs, documentReport });
     log(`done: ${total(counts)} resources in ${Math.round(durationMs / 1000)}s`);
-    return { ok: true, counts, incomplete, taskId: task.id, durationMs };
+    return {
+      ok: true,
+      counts,
+      incomplete,
+      taskId: task.id,
+      durationMs,
+      documentsUnavailable: documentReport?.withheld.length ?? 0,
+      networks: documentReport?.networks ?? [],
+    };
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     const message = err instanceof Error ? err.message : String(err);
@@ -1163,6 +1212,8 @@ async function importResourceType(props: {
   declined: DeclineTally;
   declineDetail: Partial<Record<DeclineReason, string>>;
   reason?: string;
+  /** Set only for DocumentReference: what was withheld, and how each network fared. */
+  documents?: DocumentFileReport;
 }> {
   const pull = await pullAllPages({
     zus: props.zus,
@@ -1222,23 +1273,39 @@ async function importResourceType(props: {
     system,
     value: item.sourceId,
   }));
-  const zusIds = selection.writable.map((item) => item.sourceId);
-
   const declineSummary = describeDeclines(declined, declineDetail);
   if (declineSummary) {
     log(`${props.resourceType}: ${declineSummary}`);
   }
 
+  // Documents are the one type whose resource is a *claim* about bytes held
+  // elsewhere, so they are the one type where writing the resource is not
+  // enough. The copy pass runs first, and then anything whose file did not
+  // land is taken out of the write set rather than written as a reference to
+  // nothing. See `shared/document-files.ts`.
+  let writeEntries = entries;
+  let documents: DocumentFileReport | undefined;
   if (props.resourceType === 'DocumentReference') {
-    await rehostZusDocumentFiles({
+    const failures = await rehostZusDocumentFiles({
       medplum: props.medplum,
       zus: props.zus,
       patientRef: props.patientRef,
       entries,
     });
+    const partition = partitionBackedDocuments({
+      entries,
+      baseUrl: props.medplum.getBaseUrl(),
+      reasons: failures,
+    });
+    writeEntries = partition.writable;
+    documents = partition.report;
+    if (documents.withheld.length > 0) {
+      log(`DocumentReference: ${describeWithheldDocuments(documents)}`);
+    }
   }
 
-  const result = await upsertBatch(props.medplum, entries, { label: `zus-import ${props.resourceType}` });
+  const zusIds = writeEntries.map((entry) => entry.value);
+  const result = await upsertBatch(props.medplum, writeEntries, { label: `zus-import ${props.resourceType}` });
 
   // Feed this type's ids forward so later types can repoint their references.
   for (let i = 0; i < result.ids.length; i++) {
@@ -1253,12 +1320,25 @@ async function importResourceType(props: {
     reasons.push(pull.reason);
   }
   if (result.failed > 0) {
-    reasons.push(`${result.failed}/${entries.length} writes did not settle 2xx`);
+    reasons.push(`${result.failed}/${writeEntries.length} writes did not settle 2xx`);
   }
-  return { wrote: result.wrote, declined, declineDetail, reason: reasons.length > 0 ? reasons.join('; ') : undefined };
+  return {
+    wrote: result.wrote,
+    declined,
+    declineDetail,
+    reason: reasons.length > 0 ? reasons.join('; ') : undefined,
+    documents,
+  };
 }
 
-/** Cap on Zus document files copied in one run; the rest keep Zus's link until the next run. */
+/**
+ * Cap on Zus document files copied in one run.
+ *
+ * What happens to the rest changed with the phantom-document fix: they used to
+ * be written with Zus's own URL still on them, which on our server is a
+ * reference to nothing. They are now withheld and picked up by the next run,
+ * which is the same deferral stated honestly.
+ */
 const MAX_ZUS_DOCUMENT_FILES = 300;
 
 /** In-flight Zus file downloads. */
@@ -1286,18 +1366,22 @@ function zusFileUrl(zus: ZusConnection, url: string | undefined): string | undef
 /**
  * Download one file from Zus. A FHIR Binary may come back raw or wrapped as
  * JSON with base64 `data`, depending on how Zus honours the Accept header.
+ * A failed download now returns the status instead of a bare `undefined`. That
+ * status is the whole answer to "why does this patient have nineteen documents
+ * that will not open", and it used to be discarded right here: the caller saw
+ * nothing it could report, and wrote the document anyway.
  * @param zus - Authenticated Zus connection.
  * @param url - Absolute Zus URL.
- * @returns The bytes and the type Zus reported, or undefined when the download failed.
+ * @returns The bytes and the type Zus reported, or the reason it could not be fetched.
  */
 async function downloadZusFile(
   zus: ZusConnection,
   url: string
-): Promise<{ data: Uint8Array; contentType?: string } | undefined> {
+): Promise<{ data: Uint8Array; contentType?: string } | { error: string }> {
   const res = await zusFetch({ connection: zus, url, label: `zus file ${url}`, headers: { Accept: '*/*' } });
   if (!res.ok) {
     await res.text().catch(() => undefined);
-    return undefined;
+    return { error: `Zus returned HTTP ${res.status} for the file` };
   }
   const headerType = res.headers.get('content-type') ?? undefined;
   if (headerType?.includes('json')) {
@@ -1313,6 +1397,13 @@ async function downloadZusFile(
 /**
  * Files already copied into Medplum by an earlier run, keyed by Zus id and
  * index-aligned to `DocumentReference.content`, so a re-import reuses them.
+ *
+ * `storedBinaryReference` is used as the *test* — it answers "is this URL one
+ * our own server handed out" — but the attachment keeps its original absolute
+ * URL. It used to be rewritten to the relative `Binary/<id>` form, which was
+ * how a perfectly good attachment came to look exactly like the Zus-relative
+ * `Binary/<zus-uuid>` that points at nothing. Keeping the absolute form makes
+ * "has a Medplum file" a property anyone can check by looking at the resource.
  * @param medplum - Bot-scoped Medplum client.
  * @param patientRef - The Medplum Patient.
  * @returns Zus document id to its stored attachments.
@@ -1336,12 +1427,11 @@ async function loadStoredZusFiles(
       }
       stored.set(
         zusId,
-        (doc.content ?? []).map(({ attachment }) => {
-          const binary = storedBinaryReference(attachment.url, baseUrl);
-          return binary && attachment.contentType
-            ? { contentType: attachment.contentType, url: binary, size: attachment.size }
-            : undefined;
-        })
+        (doc.content ?? []).map(({ attachment }) =>
+          storedBinaryReference(attachment.url, baseUrl) && attachment.contentType
+            ? { contentType: attachment.contentType, url: attachment.url, size: attachment.size }
+            : undefined
+        )
       );
     }
   }
@@ -1355,20 +1445,32 @@ async function loadStoredZusFiles(
  * the bot's Zus token, or carry the file inline as base64 (typical for C-CDA
  * XML). Neither can be previewed in the app, so each is stored as a Medplum
  * Binary and the attachment is repointed at it. Files stored by an earlier run
- * are reused. A file that cannot be fetched keeps Zus's link and is retried on
- * the next run.
+ * are reused.
+ *
+ * A file that cannot be fetched used to be left with Zus's own URL on it and
+ * the document written regardless. Zus gives those URLs as a **relative**
+ * `Binary/<zus-uuid>`, so what was stored was not a link to Zus at all — it was
+ * a reference that resolves against our server, where the id does not exist.
+ * That is where Yolanda Sanchez's nineteen 404s came from. Nothing expired;
+ * the Binary was never created.
+ *
+ * So this now reports which files it failed to get and why, and the caller
+ * withholds those documents. See `shared/document-files.ts` for the invariant
+ * and for why withholding is not the same as dropping.
  * @param props - The inputs.
  * @param props.medplum - Bot-scoped Medplum client.
  * @param props.zus - Authenticated Zus connection.
  * @param props.patientRef - The Medplum Patient.
  * @param props.entries - The prepared DocumentReferences, mutated in place.
+ * @returns Why each Zus document's file could not be stored, keyed on Zus id.
  */
 async function rehostZusDocumentFiles(props: {
   medplum: MedplumClient;
   zus: ZusConnection;
   patientRef: Reference<Patient>;
   entries: { resource: Resource; value: string }[];
-}): Promise<void> {
+}): Promise<Map<string, string>> {
+  const failures = new Map<string, string>();
   let stored = new Map<string, (Pick<Attachment, 'contentType' | 'url' | 'size'> | undefined)[]>();
   try {
     stored = await loadStoredZusFiles(props.medplum, props.patientRef);
@@ -1392,6 +1494,12 @@ async function rehostZusDocumentFiles(props: {
     });
   }
   const pending = jobs.slice(0, MAX_ZUS_DOCUMENT_FILES);
+  for (const deferred of jobs.slice(MAX_ZUS_DOCUMENT_FILES)) {
+    // Over the per-run cap. Previously written with Zus's URL still on them,
+    // which is the dangling-pointer case; now deferred to the next run and
+    // said out loud.
+    failures.set(deferred.zusId, `deferred past this run's ${MAX_ZUS_DOCUMENT_FILES}-file copy cap`);
+  }
   if (pending.length > 0) {
     log(`DocumentReference: copying ${pending.length} file(s) into Medplum (${reused} already stored)`);
   }
@@ -1402,7 +1510,9 @@ async function rehostZusDocumentFiles(props: {
       const file = attachment.data
         ? { data: new Uint8Array(NodeBuffer.from(attachment.data, 'base64')), contentType: attachment.contentType }
         : await downloadZusFile(props.zus, zusFileUrl(props.zus, attachment.url) as string);
-      if (!file) {
+      if ('error' in file) {
+        failures.set(zusId, file.error);
+        log(`DocumentReference ${zusId}: ${file.error}`);
         return;
       }
       const storedFile = await storeFile(
@@ -1416,12 +1526,15 @@ async function rehostZusDocumentFiles(props: {
       delete attachment.data;
       copied++;
     } catch (err) {
-      log(`DocumentReference ${zusId}: file copy failed: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      failures.set(zusId, message.slice(0, 120));
+      log(`DocumentReference ${zusId}: file copy failed: ${message}`);
     }
   });
   if (pending.length > 0) {
     log(`DocumentReference: copied ${copied}/${pending.length} file(s)`);
   }
+  return failures;
 }
 
 /**
@@ -1637,6 +1750,7 @@ async function createTask(props: {
  * @param props.incomplete - Types that could not be pulled in full, with reasons.
  * @param props.durationMs - Wall-clock duration of the run.
  * @param props.error - The failure message, when there is one.
+ * @param props.documentReport - Documents withheld and per-network outcomes, when there were any.
  */
 async function finishTask(props: {
   medplum: MedplumClient;
@@ -1646,6 +1760,7 @@ async function finishTask(props: {
   incomplete: Record<string, string>;
   durationMs: number;
   error?: string;
+  documentReport?: DocumentFileReport;
 }): Promise<void> {
   const now = new Date().toISOString();
   const output: NonNullable<Task['output']> = Object.entries(props.counts).map(([resourceType, count]) => ({
@@ -1668,7 +1783,13 @@ async function finishTask(props: {
           ...props.task,
           status: props.status,
           lastModified: now,
-          businessStatus: { text: props.status === 'completed' ? 'complete' : 'failed' },
+          businessStatus: {
+            text: describeRunOutcome({
+              status: props.status,
+              incomplete: props.incomplete,
+              report: props.documentReport,
+            }),
+          },
           executionPeriod: { ...props.task.executionPeriod, end: now },
           ...(props.error ? { statusReason: buildStatusReason(props.error) } : {}),
           output,

@@ -411,6 +411,38 @@ describe('network import completion also triggers indexing', () => {
     expect(names(sent)).toEqual([]);
     expect(failTask).not.toHaveBeenCalled();
   });
+
+  test('documents the bot could not retrieve are reported on the run, not swallowed', async () => {
+    // The whole point of the phantom-document fix. The bot withheld nineteen
+    // documents whose file it could not store; a run that closes its Task
+    // saying "complete" makes that gap invisible to everyone but whoever reads
+    // the worker logs — which is exactly the failure the legacy platform fixed
+    // by recording such a sync as PARTIAL rather than SUCCESS.
+    zusHandler.mockResolvedValue({
+      ok: true,
+      counts: { DocumentReference: 156 },
+      documentsUnavailable: 19,
+      networks: [{ label: 'commonwell', offered: 18, stored: 0, status: 'unavailable' }],
+    });
+
+    await run('zus-record-import', ZUS_EVENT);
+
+    expect(completeTask).toHaveBeenCalledWith(
+      expect.anything(),
+      'task-1',
+      { DocumentReference: 156 },
+      'partial — 19 document(s) not retrievable'
+    );
+    expect(failTask).not.toHaveBeenCalled();
+  });
+
+  test('a run with every file retrieved closes with no caveat attached', async () => {
+    zusHandler.mockResolvedValue({ ok: true, counts: { DocumentReference: 175 }, documentsUnavailable: 0 });
+
+    await run('zus-record-import', ZUS_EVENT);
+
+    expect(completeTask).toHaveBeenCalledWith(expect.anything(), 'task-1', { DocumentReference: 175 }, undefined);
+  });
 });
 
 describe('indexing completion triggers the summary', () => {

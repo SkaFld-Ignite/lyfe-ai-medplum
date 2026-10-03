@@ -142,9 +142,30 @@ export const zusImport = inngest.createFunction(
       }
 
       const counts = ('counts' in result ? result.counts : {}) as Record<string, number>;
+      // The bot has already closed this Task with its own, richer summary —
+      // including the `partial` business status when a source network's
+      // documents could not be retrieved — and `completeTask` leaves a Task the
+      // bot has finished exactly as it found it. This call is the fallback for
+      // a bot that returned without closing, so the summary it passes has to
+      // state the same gap rather than the word "complete".
+      const unavailable = 'documentsUnavailable' in result ? (result.documentsUnavailable ?? 0) : 0;
       await step.run('complete-task', () =>
-        withStepTimeout('complete-task', () => completeTask(medplum, taskId, counts))
+        withStepTimeout('complete-task', () =>
+          completeTask(
+            medplum,
+            taskId,
+            counts,
+            unavailable > 0 ? `partial — ${unavailable} document(s) not retrievable` : undefined
+          )
+        )
       );
+      if (unavailable > 0) {
+        logger.warn('documents withheld — their file could not be retrieved from the source network', {
+          medplumPatientId,
+          unavailable,
+          networks: 'networks' in result ? result.networks : [],
+        });
+      }
 
       // The network half of the chain, and the half that matters most.
       //

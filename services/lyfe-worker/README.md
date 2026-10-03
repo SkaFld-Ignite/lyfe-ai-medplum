@@ -346,6 +346,39 @@ recorded as `skipped` with the reason; C-CDA XML, plain text and PDFs with a
 real text layer — most of the corpus — keep indexing. `/health` and the ingest's
 Task output both report it, so the gap is a number rather than a mystery.
 
+## Finding documents the chart cannot produce
+
+A `DocumentReference` is a claim about bytes held somewhere else, and nothing
+in FHIR makes the server check that the two agree. The Zus importer used to
+write the reference even when the file could not be copied in, leaving an
+attachment URL — Zus's own relative `Binary/<uuid>` — that resolves against
+*this* server, where the id does not exist. The chart listed the document and
+opening it 404'd. One pilot patient had 19 of 175 in that state.
+
+The importer no longer does this: a document whose bytes it could not store is
+withheld, counted on the run's Task, and retried by the next sync. For the ones
+already written there is a read-only audit:
+
+```bash
+# one patient
+npx tsx --env-file services/lyfe-worker/.env \
+  services/lyfe-worker/src/scripts/find-dangling-documents.ts --patient <medplum-patient-id>
+
+# every patient that has documents
+npx tsx --env-file services/lyfe-worker/.env \
+  services/lyfe-worker/src/scripts/find-dangling-documents.ts --all --limit 500
+
+# machine-readable
+… --all --json
+```
+
+It issues `GET` searches and nothing else — it never downloads a file, never
+writes and never deletes. Deleting a dangling reference would destroy the only
+surviving record that the document exists upstream, which is a decision for
+whoever reads the output, not for the script. The report names each affected
+patient, the count, the source network each broken document came from, and the
+URL it points at.
+
 ## What is still Medplum's
 
 The import logic itself did not move. `bots/drchrono-import.ts` and
