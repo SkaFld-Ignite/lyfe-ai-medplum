@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
+import type { PNG } from 'pngjs';
 import { ocrDocument, OcrUnavailableError } from './ocr.ts';
 import { MAX_OCR_PAGES_PER_DOCUMENT } from './pdf.ts';
 
@@ -24,7 +25,91 @@ import { MAX_OCR_PAGES_PER_DOCUMENT } from './pdf.ts';
  * concurrency, same page cap, same "one page failing does not lose the
  * document" behaviour. A second shape here would be a second thing to keep
  * correct.
+ *
+ * ## Why this file loads `utif2` through {@link loadUtif}
+ *
+ * The decoder was never the problem. `utif2` reads every TIFF in the real
+ * corpus — the measured distribution across one patient's 45 is 34 CCITT
+ * Group 4 bilevel faxes and 11 LZW RGB scans, and it decodes all 45. The
+ * problem was that the module was never reached.
+ *
+ * `utif2` is CommonJS. Node's ESM loader does not synthesize named exports for
+ * it, so `await import('utif2')` yields a namespace whose only key is
+ * `default`, and `UTIF.decode` is `undefined`. Vite — and therefore Vitest —
+ * does synthesize them, and `utif2`'s bundled `UTIF.d.ts` declares them
+ * (`export function decode`), so both the type checker and the test run agreed
+ * on a shape the production runtime does not have. Every TIFF failed on
+ * `TypeError: UTIF.decode is not a function`, which `extractTiffText` caught
+ * and reported as `tiff-undecodable` — a decode failure for a file that had
+ * never been decoded. 45 of 45, categorically, whatever was inside them.
+ *
+ * Taking the default export works under both loaders. The assertion in
+ * {@link loadUtif} is the part that matters for next time: if the interop ever
+ * shifts again this fails by name, instead of as a chart that quietly lost a
+ * quarter of its documents.
  */
+
+/** The three `utif2` entry points this module uses. */
+interface Utif {
+  decode(buffer: Buffer | ArrayBuffer): UtifIfd[];
+  decodeImage(buffer: Buffer | ArrayBuffer, ifd: UtifIfd, ifds?: UtifIfd[]): void;
+  toRGBA8(ifd: UtifIfd): Uint8Array;
+}
+
+/** The `pngjs` export this module uses, named so the annotation is not an `import()` type. */
+type PngConstructor = typeof PNG;
+
+/** One image file directory, as `utif2` returns it. */
+interface UtifIfd {
+  width: number;
+  height: number;
+  data: Uint8Array;
+  [tag: string]: unknown;
+}
+
+/**
+ * Load `utif2` in a way that survives both module loaders.
+ *
+ * `import()` is cached by the loader, so this is not re-resolving per call —
+ * only re-checking, which is three `typeof`s.
+ * @returns The decoder, with its entry points verified to exist.
+ */
+async function loadUtif(): Promise<Utif> {
+  const mod = (await import('utif2')) as unknown as { default?: Utif } & Utif;
+  // Node gives `{ default }`; Vite gives the synthesized named exports as well.
+  const utif = mod.default ?? mod;
+  for (const entry of ['decode', 'decodeImage', 'toRGBA8'] as const) {
+    if (typeof utif?.[entry] !== 'function') {
+      throw new TiffDecodeError(
+        `utif2 loaded without a callable ${entry}(). This is a module-interop fault in the worker's build, ` +
+          'not a property of the document: no TIFF can be read until it is fixed.'
+      );
+    }
+  }
+  return utif;
+}
+
+/**
+ * Load `pngjs` the same way, for the same reason.
+ *
+ * Node's named-export detection happens to find `PNG` on this one, so it was
+ * not part of the failure. It is the same class of dependency — CommonJS, read
+ * through a destructured namespace — and it fails the same silent way if that
+ * detection ever stops finding it, so it gets the same assertion rather than
+ * waiting to be the next quarter of a chart.
+ * @returns The `PNG` constructor.
+ */
+async function loadPng(): Promise<PngConstructor> {
+  const mod = (await import('pngjs')) as unknown as { default?: { PNG?: unknown }; PNG?: unknown };
+  const PNG = (mod.PNG ?? mod.default?.PNG) as PngConstructor | undefined;
+  if (typeof PNG !== 'function') {
+    throw new TiffDecodeError(
+      "pngjs loaded without a callable PNG constructor. This is a module-interop fault in the worker's build, " +
+        'not a property of the document: no TIFF can be converted until it is fixed.'
+    );
+  }
+  return PNG;
+}
 
 /** Textract calls in flight per document. Matches the PDF path. */
 const OCR_CONCURRENCY = 4;
@@ -69,8 +154,8 @@ export interface TiffExtractResult {
  * @returns PNG bytes for that page.
  */
 export async function tiffPageToPng(bytes: Buffer, pageIndex: number): Promise<Buffer> {
-  const UTIF = await import('utif2');
-  const { PNG } = await import('pngjs');
+  const UTIF = await loadUtif();
+  const PNG = await loadPng();
 
   const pages = UTIF.decode(bytes);
   const page = pages[pageIndex];
@@ -78,7 +163,11 @@ export async function tiffPageToPng(bytes: Buffer, pageIndex: number): Promise<B
     throw new TiffDecodeError(`TIFF has no page ${pageIndex + 1}`);
   }
 
-  UTIF.decodeImage(bytes, page);
+  // The third argument is the full IFD list. `utif2` needs it to resolve a page
+  // whose decoding depends on another — JPEG tables shared across IFDs, most
+  // obviously. Omitting it works for the compressions measured in this corpus
+  // and quietly does not for those.
+  UTIF.decodeImage(bytes, page, pages);
   const rgba = UTIF.toRGBA8(page);
   const { width, height } = page;
   if (!width || !height) {
@@ -97,7 +186,7 @@ export async function tiffPageToPng(bytes: Buffer, pageIndex: number): Promise<B
  * @returns The text, plus how much of it was billed.
  */
 export async function extractTiffText(bytes: Buffer, label: string): Promise<TiffExtractResult> {
-  const UTIF = await import('utif2');
+  const UTIF = await loadUtif();
 
   let pageCount: number;
   try {

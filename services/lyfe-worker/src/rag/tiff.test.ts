@@ -1,20 +1,49 @@
 // SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
 // SPDX-License-Identifier: Apache-2.0
+import { execFile } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type * as OcrModule from './ocr.ts';
 
 /**
  * TIFF conversion and OCR.
  *
- * The fixtures are **real TIFFs**, encoded here with the same library that
- * decodes them. A hand-rolled byte stub would prove only that the mocks line
- * up; what needs proving is that a TIFF goes in and valid PNG comes out, since
- * the entire reason this module exists is that Textract rejects the TIFF.
- *
  * Textract itself is mocked. It is a billable network call, and what matters
  * here is which bytes reach it and how the pages are assembled — not Textract's
  * own recognition.
+ *
+ * ## Two kinds of fixture, because one kind was not enough
+ *
+ * {@link makeTiff} builds TIFFs with `utif2`, the library that then decodes
+ * them. Those cover the page *assembly* — ordering, the cap, per-page failure —
+ * which is what they are good at, and they are kept for that.
+ *
+ * What they cannot cover is whether the decoder handles what arrives. A
+ * `utif2` round trip proves `utif2` agrees with itself, and it agreed with
+ * itself all the way through a production run that failed on 45 of one
+ * patient's 45 TIFFs. So `__fixtures__/` holds TIFFs written by **libtiff**,
+ * via ImageMagick and `tiffcp`, in the compressions the real corpus measured:
+ *
+ * | compression              | photometric | bits | of the 45 |
+ * | ------------------------ | ----------- | ---- | --------- |
+ * | CCITT Group 4 (T.6) fax  | WhiteIsZero | 1    | 34        |
+ * | LZW                      | RGB         | 8    | 11        |
+ *
+ * Those two account for all 45. The fixtures assert their own tags, so
+ * regenerating one with a different encoder fails here rather than silently
+ * putting the round trip back.
+ *
+ * And {@link describe}`('module interop')` runs the module in a **child Node
+ * process**, because the bug it guards cannot be reproduced in this one: Vite
+ * synthesizes named exports for CommonJS and Node does not, so every test in
+ * this file passed while production could not call `UTIF.decode` at all.
  */
+
+const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '__fixtures__');
 
 const ocrDocument = vi.fn();
 
@@ -167,4 +196,134 @@ describe('extractTiffText', () => {
     // about page 52 deserves to know it was never read.
     expect(result.text).toContain('only the first 50 of 55 pages were read');
   });
+});
+
+/**
+ * Read a fixture written by libtiff, not by `utif2`.
+ * @param name - File name inside `__fixtures__`.
+ * @returns The TIFF bytes.
+ */
+function fixture(name: string): Buffer {
+  return readFileSync(path.join(FIXTURES, name));
+}
+
+/**
+ * Count the dark pixels on each row of a decoded PNG.
+ *
+ * The assertion that matters is *where the ink landed*. "It returned a PNG"
+ * passes for an all-white page, and an all-white page is exactly what a decoder
+ * that silently mishandles a compression tends to produce.
+ * @param png - PNG bytes.
+ * @returns Dark pixels per row, top to bottom.
+ */
+function darkPixelsPerRow(png: Buffer): number[] {
+  const image = PNG.sync.read(png);
+  const rows: number[] = [];
+  for (let y = 0; y < image.height; y++) {
+    let dark = 0;
+    for (let x = 0; x < image.width; x++) {
+      if (image.data[(y * image.width + x) * 4] < 128) {
+        dark++;
+      }
+    }
+    rows.push(dark);
+  }
+  return rows;
+}
+
+describe('the compressions the real corpus actually contains', () => {
+  // Every fixture here is 64x32: white, a full-width black bar across rows
+  // 8–15, and a 16px black square at rows 20–27. Encoded by libtiff, so the
+  // bitstream is the one a fax machine or a scanner emits.
+  const BAR_AND_SQUARE = [
+    ...Array(8).fill(0),
+    ...Array(8).fill(64),
+    ...Array(4).fill(0),
+    ...Array(8).fill(16),
+    ...Array(4).fill(0),
+  ];
+
+  test('CCITT Group 4 bilevel fax — 34 of the 45 — decodes to the right ink', async () => {
+    const png = await tiffPageToPng(fixture('ccitt-g4-bilevel.tif'), 0);
+
+    expect(png.subarray(0, 8).toString('hex')).toBe(PNG_SIGNATURE);
+    expect(darkPixelsPerRow(png)).toEqual(BAR_AND_SQUARE);
+  });
+
+  test('LZW RGB scan — the other 11 — decodes to the right ink', async () => {
+    const png = await tiffPageToPng(fixture('lzw-rgb.tif'), 0);
+
+    expect(png.subarray(0, 8).toString('hex')).toBe(PNG_SIGNATURE);
+    expect(darkPixelsPerRow(png)).toEqual(BAR_AND_SQUARE);
+  });
+
+  test('a multi-page Group 4 fax yields a different page per index', async () => {
+    const bytes = fixture('ccitt-g4-bilevel-2page.tif');
+
+    // Page 1 is barred at the top, page 2 at the bottom. If the page index were
+    // ignored — the shape of bug that indexes a cover sheet 10 times — these
+    // would be equal.
+    expect(darkPixelsPerRow(await tiffPageToPng(bytes, 0))).toEqual([...Array(8).fill(64), ...Array(24).fill(0)]);
+    expect(darkPixelsPerRow(await tiffPageToPng(bytes, 1))).toEqual([...Array(24).fill(0), ...Array(8).fill(64)]);
+  });
+
+  test('the fixtures are still in the compressions they are here to represent', () => {
+    // Guards the fixtures themselves. Regenerating one through `utif2`, or
+    // through an encoder that defaults to no compression, would put the round
+    // trip back and nothing above would notice.
+    // Tags: 259 compression, 262 photometric, 258 bits/sample, 277 samples/pixel.
+    const profile = (tiff: Buffer, page = 0): (number | undefined)[] => {
+      const ifd = UTIF.decode(tiff)[page] as unknown as Record<string, number[] | undefined>;
+      return ['t259', 't262', 't258', 't277'].map((tag) => ifd[tag]?.[0]);
+    };
+
+    expect(profile(fixture('ccitt-g4-bilevel.tif'))).toEqual([4, 0, 1, 1]);
+    expect(profile(fixture('lzw-rgb.tif'))).toEqual([5, 2, 8, 3]);
+
+    const twoPage = fixture('ccitt-g4-bilevel-2page.tif');
+    expect([profile(twoPage, 0)[0], profile(twoPage, 1)[0]]).toEqual([4, 4]);
+  });
+});
+
+describe('module interop', () => {
+  /**
+   * This suite is the one that would have caught the production failure, and it
+   * has to leave this process to do it.
+   *
+   * `utif2` is CommonJS. Vite synthesizes named exports for CommonJS, so inside
+   * Vitest `(await import('utif2')).decode` is a function. Node does not, so
+   * under the Railway start command — `node node_modules/tsx/dist/cli.mjs …` —
+   * the same expression is `undefined`. Every test above passed against a
+   * worker that could not decode a single TIFF.
+   *
+   * So the check runs the real module under plain Node, through `tsx`, exactly
+   * as the service does. Nothing is mocked and Textract is never reached:
+   * `tiffPageToPng` stops at the PNG.
+   */
+  const run = promisify(execFile);
+
+  test('converts a Group 4 fax under Node’s own ESM loader, not just Vite’s', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'tiff-interop-'));
+    const script = path.join(dir, 'convert.mjs');
+    writeFileSync(
+      script,
+      [
+        'const { tiffPageToPng } = await import(process.argv[2]);',
+        "const { readFileSync } = await import('node:fs');",
+        'const png = await tiffPageToPng(readFileSync(process.argv[3]), 0);',
+        "console.log(JSON.stringify({ signature: png.subarray(0, 8).toString('hex'), bytes: png.length }));",
+      ].join('\n')
+    );
+
+    const { stdout } = await run(
+      process.execPath,
+      ['--import', 'tsx', script, path.join(FIXTURES, '..', 'tiff.ts'), path.join(FIXTURES, 'ccitt-g4-bilevel.tif')],
+      { cwd: path.dirname(FIXTURES) }
+    );
+
+    // Before the fix this child exits non-zero on
+    // `TypeError: UTIF.decode is not a function`, which `promisify(execFile)`
+    // turns into a rejection — so the assertion never runs and the test fails.
+    expect(JSON.parse(stdout.trim())).toMatchObject({ signature: PNG_SIGNATURE });
+  }, 60_000);
 });
